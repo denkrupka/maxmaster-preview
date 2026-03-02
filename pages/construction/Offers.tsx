@@ -7,13 +7,17 @@ import {
   Save, X, GripVertical, Percent, AlertCircle, FileSpreadsheet,
   FolderPlus, Package, Star, UserPlus, Briefcase, MapPin,
   ToggleLeft, ToggleRight, ListChecks, ChevronUp, Wrench, Hammer,
-  Zap, FolderOpen, Printer, MessageSquare, Phone, Globe, Store
+  FolderOpen, Printer, MessageSquare, Phone, Globe, Store
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import * as XLSX from 'xlsx';
 import { useAppContext } from '../../context/AppContext';
 import { WholesalerIntegrationModal } from './WholesalerIntegrationModal';
 import { RentalIntegrationModal } from './RentalIntegrationModal';
+import { TIMIntegrator } from './TIMIntegrator';
+import { OninenIntegrator } from './OninenIntegrator';
+import { AtutIntegrator } from './AtutIntegrator';
+import { RamirentIntegrator } from './RamirentIntegrator';
 import { supabase } from '../../lib/supabase';
 import { fetchCompanyByNip, validateNip, normalizeNip } from '../../lib/gusApi';
 import { searchAddress, OSMAddress, createDebouncedSearch } from '../../lib/osmAutocomplete';
@@ -190,6 +194,7 @@ export const OffersPage: React.FC = () => {
   // Editor state
   const [offerData, setOfferData] = useState({
     name: '',
+    number: '',
     project_id: '',
     client_id: '',
     valid_until: '',
@@ -969,6 +974,7 @@ export const OffersPage: React.FC = () => {
         const offer = offerRes.data;
         setOfferData({
           name: offer.name,
+          number: offer.number || '',
           project_id: offer.project_id || '',
           client_id: offer.client_id || '',
           valid_until: offer.valid_until ? offer.valid_until.split('T')[0] : '',
@@ -989,11 +995,18 @@ export const OffersPage: React.FC = () => {
         if (ps.calculation_mode) setCalculationMode(ps.calculation_mode);
         if (ps.issue_date) setIssueDate(ps.issue_date);
 
-        // Restore client data from saved print_settings
-        if (ps.client_data) {
-          const cd = ps.client_data;
+        // Restore client data from saved print_settings and contractor
+        const client = offer.client;
+        if (ps.client_data || client) {
+          const cd = ps.client_data || {};
           setOfferClientData(prev => ({
             ...prev,
+            client_name: client?.name || cd.client_name || prev.client_name,
+            nip: client?.nip || cd.nip || prev.nip,
+            company_street: cd.company_street || client?.address_street || prev.company_street,
+            company_street_number: cd.company_street_number || prev.company_street_number,
+            company_city: cd.company_city || client?.address_city || prev.company_city,
+            company_postal_code: cd.company_postal_code || client?.address_postal_code || prev.company_postal_code,
             investment_name: cd.investment_name || prev.investment_name,
             object_code: cd.object_code || prev.object_code,
             object_category_id: cd.object_category_id || prev.object_category_id,
@@ -1004,6 +1017,8 @@ export const OffersPage: React.FC = () => {
             object_postal_code: cd.object_postal_code || prev.object_postal_code,
           }));
           if (cd.representative_id) setSendRepresentativeId(cd.representative_id);
+          if (cd.work_type_ids) setOfferSelectedWorkTypes(cd.work_type_ids);
+          if (client) setOfferClientSelected(true);
         }
 
         const componentsByItem = (componentsRes.data || []).reduce((acc: Record<string, OfferComponent[]>, c: any) => {
@@ -1256,18 +1271,10 @@ export const OffersPage: React.FC = () => {
         }
       }
 
-      // Build notes with client/object data
-      const notesLines: string[] = [];
-      if (offerData.notes) notesLines.push(offerData.notes);
-      if (offerClientData.investment_name) notesLines.push(`Inwestycja: ${offerClientData.investment_name}`);
-      if (offerClientData.object_code) notesLines.push(`Kod obiektu: ${offerClientData.object_code}`);
-      const objectAddr = [offerClientData.object_street, offerClientData.object_street_number, offerClientData.object_postal_code, offerClientData.object_city].filter(Boolean).join(', ');
-      if (objectAddr) notesLines.push(`Adres obiektu: ${objectAddr}`);
-
+      // Notes: only use what the user typed, no auto-fill
       const internalNotesLines: string[] = [];
       if (offerData.internal_notes) internalNotesLines.push(offerData.internal_notes);
       if (offerClientData.internal_notes) internalNotesLines.push(offerClientData.internal_notes);
-      if (offerClientData.notes) internalNotesLines.push(offerClientData.notes);
 
       // Generate public token for sharing
       const publicToken = crypto.randomUUID().replace(/-/g, '').substring(0, 16);
@@ -1283,7 +1290,7 @@ export const OffersPage: React.FC = () => {
           valid_until: validUntil,
           discount_percent: offerData.discount_percent,
           discount_amount: offerData.discount_amount,
-          notes: notesLines.join('\n') || null,
+          notes: offerData.notes || null,
           internal_notes: internalNotesLines.join('\n') || null,
           status: 'draft',
           created_by_id: currentUser.id,
@@ -1311,7 +1318,8 @@ export const OffersPage: React.FC = () => {
               object_street_number: offerClientData.object_street_number,
               object_city: offerClientData.object_city,
               object_postal_code: offerClientData.object_postal_code,
-              representative_id: sendRepresentativeId || null
+              representative_id: sendRepresentativeId || null,
+              work_type_ids: offerSelectedWorkTypes
             }
           }
         })
@@ -1430,6 +1438,7 @@ export const OffersPage: React.FC = () => {
         .from('offers')
         .update({
           name: offerData.name.trim(),
+          number: offerData.number || selectedOffer.number,
           project_id: offerData.project_id || null,
           client_id: offerData.client_id || null,
           valid_until: offerData.valid_until || null,
@@ -1461,7 +1470,8 @@ export const OffersPage: React.FC = () => {
               object_street_number: offerClientData.object_street_number,
               object_city: offerClientData.object_city,
               object_postal_code: offerClientData.object_postal_code,
-              representative_id: sendRepresentativeId || null
+              representative_id: sendRepresentativeId || null,
+              work_type_ids: offerSelectedWorkTypes
             }
           }
         })
@@ -2001,7 +2011,6 @@ export const OffersPage: React.FC = () => {
       setOfferData(prev => ({
         ...prev,
         name: `Oferta - ${investmentName}`,
-        notes: clientName ? `Klient: ${clientName}\nInwestycja: ${investmentName}` : '',
       }));
 
       // Pre-fill client data from kosztorys request
@@ -2273,13 +2282,13 @@ export const OffersPage: React.FC = () => {
     loadKartoteka();
   }, [showSearchLabourModal, showSearchMaterialModal, showSearchEquipmentModal, currentUser]);
 
-  // Load wholesaler integrations when needed
+  // Load wholesaler integrations when kartoteka opens
   useEffect(() => {
-    if (kartotekaMainTab === 'hurtownie' && currentUser?.company_id && wholesalerIntegrations.length === 0) {
+    if ((showSearchMaterialModal || showSearchEquipmentModal) && currentUser?.company_id && wholesalerIntegrations.length === 0) {
       supabase.from('wholesaler_integrations').select('*').eq('company_id', currentUser.company_id)
         .then(res => { if (res.data) setWholesalerIntegrations(res.data); });
     }
-  }, [kartotekaMainTab, currentUser?.company_id]);
+  }, [showSearchMaterialModal, showSearchEquipmentModal, currentUser?.company_id]);
 
   const handleWholesalerSearch = async (query: string) => {
     if (!query.trim() || !currentUser) return;
@@ -2305,6 +2314,7 @@ export const OffersPage: React.FC = () => {
   const resetOfferForm = () => {
     setOfferData({
       name: '',
+      number: '',
       project_id: '',
       client_id: '',
       valid_until: '',
@@ -2939,13 +2949,13 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                 </div>
               )}
               {offerShowAddWorkType && (
-                <div className="flex gap-1 mt-1">
+                <div className="flex flex-wrap gap-1 mt-1">
                   <input
                     type="text"
                     value={offerNewWorkTypeCode}
                     onChange={e => setOfferNewWorkTypeCode(e.target.value.toUpperCase())}
                     placeholder="Kod (np. IE)"
-                    className="w-20 px-2 py-1.5 border border-slate-200 rounded-lg text-sm"
+                    className="w-16 px-2 py-1.5 border border-slate-200 rounded-lg text-sm"
                     autoFocus
                   />
                   <input
@@ -2953,7 +2963,7 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                     value={offerNewWorkTypeName}
                     onChange={e => setOfferNewWorkTypeName(e.target.value)}
                     placeholder="Nazwa (np. Elektryka)"
-                    className="flex-1 px-2 py-1.5 border border-slate-200 rounded-lg text-sm"
+                    className="flex-1 min-w-[120px] px-2 py-1.5 border border-slate-200 rounded-lg text-sm"
                     onKeyDown={async e => {
                       if (e.key === 'Enter' && offerNewWorkTypeCode.trim() && offerNewWorkTypeName.trim()) {
                         const fullName = `${offerNewWorkTypeCode.trim()} - ${offerNewWorkTypeName.trim()}`;
@@ -3493,7 +3503,7 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
     const itemVat = (itemTotal - itemDiscount) * ((item.vat_rate ?? 23) / 100);
 
     return (
-      <div key={item.id} className={`${item.is_optional ? 'bg-yellow-50' : ''}`}>
+      <div key={item.id} className={`${item.is_optional ? 'bg-yellow-50' : (item.quantity === 0 || item.unit_price === 0) ? 'bg-red-50' : ''}`}>
         {/* Main row */}
         <div className={`grid gap-2 px-4 py-2 items-center text-sm border-b border-slate-50 ${editMode && showBulkBar ? (calculationMode === 'markup' ? 'grid-cols-[24px_1fr_60px_80px_100px_80px_100px_100px_60px_60px_32px]' : 'grid-cols-[24px_1fr_60px_80px_100px_100px_60px_60px_32px]') : editMode ? (calculationMode === 'markup' ? 'grid-cols-[1fr_60px_80px_100px_80px_100px_100px_60px_60px_32px]' : 'grid-cols-[1fr_60px_80px_100px_100px_60px_60px_32px]') : 'grid-cols-[1fr_60px_80px_100px_100px_60px_60px]'}`}>
           {editMode && showBulkBar && (
@@ -3716,6 +3726,7 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                   setSearchComponentTarget({ sectionId, itemId: item.id, type: 'material' });
                   setKartotekaSearchText('');
                   setKartotekaDetailItem(null);
+                  setKartotekaMainTab('katalog');
                   setShowSearchMaterialModal(true);
                 }}
                 className="flex items-center gap-1 px-2.5 py-1 bg-green-50 text-green-600 border border-green-200 rounded text-xs hover:bg-green-100"
@@ -3729,6 +3740,7 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                   setSearchComponentTarget({ sectionId, itemId: item.id, type: 'equipment' });
                   setKartotekaSearchText('');
                   setKartotekaDetailItem(null);
+                  setKartotekaMainTab('katalog');
                   setShowSearchEquipmentModal(true);
                 }}
                 className="flex items-center gap-1 px-2.5 py-1 bg-orange-50 text-orange-600 border border-orange-200 rounded text-xs hover:bg-orange-100"
@@ -3794,9 +3806,16 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                 ) : (
                   <h1 className="text-2xl font-bold text-slate-900">{selectedOffer.name}</h1>
                 )}
-                <p className="text-slate-500 mt-1">
-                  {selectedOffer.number || 'Brak numeru'} • Utworzono {formatDate(selectedOffer.created_at)}
-                </p>
+                {editMode ? (
+                  <input
+                    type="text"
+                    value={offerData.number || selectedOffer.number || ''}
+                    onChange={e => setOfferData({ ...offerData, number: e.target.value })}
+                    className="text-slate-500 mt-1 px-2 py-0.5 border border-slate-200 rounded text-sm"
+                  />
+                ) : (
+                  <p className="text-slate-500 mt-1">{selectedOffer.number || 'Brak numeru'}</p>
+                )}
               </div>
               <div className="flex items-center gap-3">
                 <StatusBadge status={selectedOffer.status} />
@@ -4903,29 +4922,15 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                   {showDownloadDropdown && (
                     <div className="absolute bottom-full mb-1 right-0 bg-white border border-slate-200 rounded-lg shadow-lg z-10 min-w-[160px]">
                       <button
-                        onClick={async () => {
+                        onClick={() => {
                           setShowDownloadDropdown(false);
                           const html = generateOfferHTML();
-                          const container = document.createElement('div');
-                          container.innerHTML = html;
-                          container.style.position = 'absolute';
-                          container.style.left = '-9999px';
-                          container.style.width = '794px';
-                          document.body.appendChild(container);
-                          try {
-                            const pdf = new jsPDF('p', 'mm', 'a4');
-                            await pdf.html(container, {
-                              callback: (doc) => {
-                                doc.save(`${selectedOffer?.number || 'oferta'}.pdf`);
-                              },
-                              x: 0,
-                              y: 0,
-                              width: 210,
-                              windowWidth: 794,
-                              margin: [10, 10, 10, 10]
-                            });
-                          } finally {
-                            document.body.removeChild(container);
+                          const printWindow = window.open('', '_blank');
+                          if (printWindow) {
+                            printWindow.document.write(html);
+                            printWindow.document.close();
+                            printWindow.focus();
+                            setTimeout(() => printWindow.print(), 500);
                           }
                         }}
                         className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left hover:bg-slate-50 rounded-t-lg"
@@ -4937,11 +4942,33 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                         onClick={() => {
                           setShowDownloadDropdown(false);
                           const allItems = getAllItems(sections);
+                          const company = state.currentCompany;
+                          const client = (selectedOffer as any)?.client;
                           const wsData: any[][] = [
-                            ['Oferta', selectedOffer?.number || '', '', '', '', ''],
-                            ['Nazwa', selectedOffer?.name || '', '', '', '', ''],
-                            ['Data wystawienia', issueDate, '', '', '', ''],
-                            ['Ważna do', selectedOffer?.valid_until || '', '', '', '', ''],
+                            ['OFERTA'],
+                            [],
+                            ['Numer oferty:', selectedOffer?.number || ''],
+                            ['Nazwa:', selectedOffer?.name || ''],
+                            ['Data wystawienia:', issueDate],
+                            ['Ważna do:', selectedOffer?.valid_until || ''],
+                            [],
+                            ['WYKONAWCA'],
+                            ['Firma:', company?.name || ''],
+                            ['NIP:', company?.nip || ''],
+                            ['Adres:', [company?.street, company?.building_number, company?.postal_code, company?.city].filter(Boolean).join(', ')],
+                            ['Telefon:', company?.phone || ''],
+                            ['Email:', company?.email || ''],
+                            [],
+                            ['ZAMAWIAJĄCY'],
+                            ['Firma:', client?.name || offerClientData.client_name || ''],
+                            ['NIP:', client?.nip || offerClientData.nip || ''],
+                            ['Adres:', client?.legal_address || [offerClientData.company_street, offerClientData.company_street_number, offerClientData.company_postal_code, offerClientData.company_city].filter(Boolean).join(', ')],
+                            [],
+                            ['OBIEKT'],
+                            ['Nazwa obiektu:', objectName || ''],
+                            ['Adres obiektu:', objectAddress || ''],
+                            ...(workStartDate ? [['Termin rozpoczęcia:', workStartDate]] : []),
+                            ...(workEndDate ? [['Termin zakończenia:', workEndDate]] : []),
                             [],
                             ['Lp.', 'Sekcja', 'Nazwa', 'Jedn.', 'Ilość', 'Cena jedn.', 'Rabat %', 'VAT %', 'Wartość netto']
                           ];
@@ -4967,6 +4994,11 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                           wsData.push(['', '', '', '', '', '', '', 'Suma netto:', totals.total.toFixed(2)]);
                           wsData.push(['', '', '', '', '', '', '', 'VAT:', totals.totalVat.toFixed(2)]);
                           wsData.push(['', '', '', '', '', '', '', 'Brutto:', totals.totalBrutto.toFixed(2)]);
+                          if (offerData.notes) {
+                            wsData.push([]);
+                            wsData.push(['Uwagi:']);
+                            wsData.push([offerData.notes]);
+                          }
 
                           const wb = XLSX.utils.book_new();
                           const ws = XLSX.utils.aoa_to_sheet(wsData);
@@ -5331,38 +5363,72 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
         const kartotekaTypeAddLabel = showSearchLabourModal ? 'Dodaj robociznę' :
           showSearchMaterialModal ? 'Dodaj materiał' : 'Dodaj sprzęt';
 
+        // Dynamic integration tabs based on type
+        const materialIntegrations = wholesalerIntegrations.filter((i: any) => i.is_active && i.branza !== 'sprzet');
+        const equipmentIntegrations = wholesalerIntegrations.filter((i: any) => i.is_active && i.branza === 'sprzet');
+        const isMaterial = showSearchMaterialModal;
+        const isEquipment = showSearchEquipmentModal;
+
+        const handleIntegratorSelect = (product: any) => {
+          handleKartotekaSelect({
+            name: product.name,
+            code: product.sku || '',
+            unit: product.unit || 'szt.',
+            price: product.price || product.catalogPrice || 0
+          });
+        };
+
         return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[70]">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-[90vw] h-[90vh] overflow-hidden flex flex-col">
 
-            {/* Tabs bar (like Dictionaries) */}
-            <div className="px-6 pt-4 pb-0 border-b border-slate-200 flex items-center justify-between">
+            {/* Tabs bar (matching Dictionaries.tsx layout) */}
+            <div className="px-6 pt-4 pb-3 border-b border-slate-200 flex items-center justify-between">
               <div className="flex items-center gap-1">
-                <button
-                  onClick={() => { setKartotekaMainTab('katalog'); setKartotekaTab('own'); }}
-                  className={`px-4 py-2.5 text-sm font-medium border-b-2 transition ${kartotekaMainTab === 'katalog' && kartotekaTab === 'own' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
-                >
-                  Własny katalog
-                </button>
-                <button
-                  onClick={() => { setKartotekaMainTab('katalog'); setKartotekaTab('system'); }}
-                  className={`px-4 py-2.5 text-sm font-medium border-b-2 transition ${kartotekaMainTab === 'katalog' && kartotekaTab === 'system' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
-                >
-                  Katalog systemowy
-                </button>
-                <div className="w-px h-5 bg-slate-200 mx-1" />
-                <button
-                  onClick={() => setKartotekaMainTab('hurtownie')}
-                  className={`px-4 py-2.5 text-sm font-medium border-b-2 transition ${kartotekaMainTab === 'hurtownie' ? 'border-orange-500 text-orange-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
-                >
-                  Hurtownie
-                </button>
-                <button
-                  onClick={() => setKartotekaMainTab('wynajem')}
-                  className={`px-4 py-2.5 text-sm font-medium border-b-2 transition ${kartotekaMainTab === 'wynajem' ? 'border-green-500 text-green-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
-                >
-                  Wynajem sprzętu
-                </button>
+                <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
+                  <button
+                    onClick={() => { setKartotekaMainTab('katalog'); setKartotekaTab('own'); }}
+                    className={`px-4 py-2 rounded-md text-sm font-medium transition ${kartotekaMainTab === 'katalog' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+                  >
+                    Własny katalog
+                  </button>
+                  {isMaterial && materialIntegrations.map((integ: any) => (
+                    <button
+                      key={integ.id}
+                      onClick={() => setKartotekaMainTab(integ.wholesaler_id)}
+                      className={`px-4 py-2 rounded-md text-sm font-medium transition ${kartotekaMainTab === integ.wholesaler_id ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+                    >
+                      {integ.wholesaler_name}
+                    </button>
+                  ))}
+                  {isEquipment && equipmentIntegrations.map((integ: any) => (
+                    <button
+                      key={integ.id}
+                      onClick={() => setKartotekaMainTab(integ.wholesaler_id)}
+                      className={`px-4 py-2 rounded-md text-sm font-medium transition ${kartotekaMainTab === integ.wholesaler_id ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+                    >
+                      {integ.wholesaler_name}
+                    </button>
+                  ))}
+                </div>
+                {isMaterial && (
+                  <button
+                    onClick={() => setShowWholesalerConfig(true)}
+                    className="ml-2 flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors"
+                  >
+                    <Store className="w-4 h-4" />
+                    Integrację
+                  </button>
+                )}
+                {isEquipment && (
+                  <button
+                    onClick={() => setShowRentalConfig(true)}
+                    className="ml-2 flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors"
+                  >
+                    <Store className="w-4 h-4" />
+                    Integracje
+                  </button>
+                )}
               </div>
               <button onClick={closeKartoteka} className="p-1.5 hover:bg-slate-100 rounded-lg">
                 <X className="w-5 h-5 text-slate-400" />
@@ -5372,161 +5438,51 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
             {/* Body */}
             <div className="flex-1 flex overflow-hidden">
 
-            {/* Wholesaler tab */}
-            {kartotekaMainTab === 'hurtownie' && (
-              <div className="flex-1 flex flex-col overflow-hidden">
-                {/* Provider tabs */}
-                <div className="px-4 py-3 flex items-center gap-3 border-b border-slate-100">
-                  <div className="flex gap-1">
-                    {[
-                      { id: 'tim' as const, name: 'TIM S.A.', color: 'bg-red-600' },
-                      { id: 'onninen' as const, name: 'Onninen', color: 'bg-blue-700' }
-                    ].map(p => (
-                      <button
-                        key={p.id}
-                        onClick={() => { setWholesalerProvider(p.id); setWholesalerResults([]); }}
-                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${wholesalerProvider === p.id ? `${p.color} text-white` : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-                      >
-                        {p.name}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex-1 relative">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                    <input
-                      type="text"
-                      value={wholesalerSearchText}
-                      onChange={e => setWholesalerSearchText(e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter') handleWholesalerSearch(wholesalerSearchText); }}
-                      placeholder={`Szukaj w ${wholesalerProvider === 'tim' ? 'TIM' : 'Onninen'}...`}
-                      className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg text-sm"
-                    />
-                  </div>
-                  <button
-                    onClick={() => handleWholesalerSearch(wholesalerSearchText)}
-                    disabled={wholesalerSearching}
-                    className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 text-sm font-medium disabled:opacity-50"
-                  >
-                    {wholesalerSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Szukaj'}
-                  </button>
-                  <button
-                    onClick={() => setShowWholesalerConfig(true)}
-                    className="px-3 py-2 border border-slate-200 rounded-lg hover:bg-slate-50 text-sm text-slate-600"
-                    title="Konfiguracja integracji"
-                  >
-                    <Zap className="w-4 h-4" />
-                  </button>
-                </div>
-                {/* Results */}
-                <div className="flex-1 overflow-y-auto">
-                  {wholesalerSearching ? (
-                    <div className="flex items-center justify-center h-40">
-                      <Loader2 className="w-8 h-8 animate-spin text-orange-500" />
-                    </div>
-                  ) : wholesalerResults.length > 0 ? (
-                    <table className="w-full text-sm">
-                      <thead className="bg-slate-50 sticky top-0">
-                        <tr>
-                          <th className="px-4 py-2.5 text-left text-xs font-medium text-slate-500 uppercase">Kod</th>
-                          <th className="px-4 py-2.5 text-left text-xs font-medium text-slate-500 uppercase">Nazwa</th>
-                          <th className="px-4 py-2.5 text-left text-xs font-medium text-slate-500 uppercase">Jedn.</th>
-                          <th className="px-4 py-2.5 text-right text-xs font-medium text-slate-500 uppercase">Cena netto</th>
-                          <th className="px-4 py-2.5 text-right text-xs font-medium text-slate-500 uppercase">Dostępność</th>
-                          <th className="px-4 py-2.5 w-20"></th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {wholesalerResults.map((item: any, idx: number) => (
-                          <tr key={idx} className="hover:bg-orange-50/50 cursor-pointer transition"
-                            onClick={() => handleKartotekaSelect({
-                              name: item.name || item.description,
-                              code: item.code || item.sku || '',
-                              unit: item.unit || 'szt.',
-                              price: item.price_net || item.price || 0
-                            })}
-                          >
-                            <td className="px-4 py-2.5 text-slate-500 font-mono text-xs">{item.code || item.sku || '-'}</td>
-                            <td className="px-4 py-2.5 font-medium">{item.name || item.description}</td>
-                            <td className="px-4 py-2.5 text-slate-500">{item.unit || 'szt.'}</td>
-                            <td className="px-4 py-2.5 text-right font-bold text-orange-600">
-                              {formatCurrency(item.price_net || item.price || 0)}
-                            </td>
-                            <td className="px-4 py-2.5 text-right">
-                              <span className={`text-xs px-2 py-0.5 rounded-full ${item.available !== false ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                {item.available !== false ? 'Dostępny' : 'Niedostępny'}
-                              </span>
-                            </td>
-                            <td className="px-4 py-2.5">
-                              <button
-                                onClick={(e) => { e.stopPropagation(); handleKartotekaSelect({
-                                  name: item.name || item.description,
-                                  code: item.code || item.sku || '',
-                                  unit: item.unit || 'szt.',
-                                  price: item.price_net || item.price || 0
-                                }); }}
-                                className="px-3 py-1 bg-orange-600 text-white rounded text-xs hover:bg-orange-700"
-                              >
-                                Dodaj
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  ) : (
-                    <div className="flex flex-col items-center justify-center h-64 text-slate-400">
-                      <Store className="w-12 h-12 mb-3 text-slate-300" />
-                      <p className="text-sm">Wyszukaj produkty w hurtowni {wholesalerProvider === 'tim' ? 'TIM' : 'Onninen'}</p>
-                      <p className="text-xs mt-1">Wpisz nazwę lub kod produktu i kliknij Szukaj</p>
-                    </div>
-                  )}
-                </div>
+            {/* TIM integrator tab */}
+            {kartotekaMainTab === 'tim' && (
+              <div className="flex-1 overflow-y-auto">
+                <TIMIntegrator
+                  integrationId={wholesalerIntegrations.find((i: any) => i.wholesaler_id === 'tim')?.id}
+                  onAddToOwnCatalog={handleIntegratorSelect}
+                  catalogButtonLabel="Dodaj do oferty"
+                />
               </div>
             )}
 
-            {/* Rental tab */}
-            {kartotekaMainTab === 'wynajem' && (
-              <div className="flex-1 flex flex-col overflow-hidden">
-                <div className="px-4 py-3 flex items-center gap-3 border-b border-slate-100">
-                  <div className="flex gap-1">
-                    {[
-                      { id: 'atut' as const, name: 'Atut Rental' },
-                      { id: 'ramirent' as const, name: 'Ramirent' }
-                    ].map(p => (
-                      <button
-                        key={p.id}
-                        onClick={() => setRentalProvider(p.id)}
-                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${rentalProvider === p.id ? 'bg-green-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-                      >
-                        {p.name}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex-1 relative">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                    <input
-                      type="text"
-                      placeholder={`Szukaj sprzętu do wynajmu w ${rentalProvider === 'atut' ? 'Atut' : 'Ramirent'}...`}
-                      className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg text-sm"
-                    />
-                  </div>
-                  <button
-                    onClick={() => setShowRentalConfig(true)}
-                    className="px-3 py-2 border border-slate-200 rounded-lg hover:bg-slate-50 text-sm text-slate-600"
-                    title="Konfiguracja integracji"
-                  >
-                    <Zap className="w-4 h-4" />
-                  </button>
-                </div>
-                <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
-                  <Wrench className="w-12 h-12 mb-3 text-slate-300" />
-                  <p className="text-sm">Wyszukaj sprzęt do wynajmu</p>
-                  <p className="text-xs mt-1">Integracja z {rentalProvider === 'atut' ? 'Atut Rental' : 'Ramirent'}</p>
-                </div>
+            {/* Onninen integrator tab */}
+            {kartotekaMainTab === 'oninen' && (
+              <div className="flex-1 overflow-y-auto">
+                <OninenIntegrator
+                  integrationId={wholesalerIntegrations.find((i: any) => i.wholesaler_id === 'oninen')?.id}
+                  onAddToOwnCatalog={handleIntegratorSelect}
+                  catalogButtonLabel="Dodaj do oferty"
+                />
               </div>
             )}
 
-            {/* Catalog tab (existing) */}
+            {/* Atut integrator tab */}
+            {kartotekaMainTab === 'atut-rental' && (
+              <div className="flex-1 overflow-y-auto">
+                <AtutIntegrator
+                  integrationId={wholesalerIntegrations.find((i: any) => i.wholesaler_id === 'atut-rental' && i.is_active)?.id}
+                  onAddToOwnCatalog={handleIntegratorSelect}
+                  catalogButtonLabel="Dodaj do oferty"
+                />
+              </div>
+            )}
+
+            {/* Ramirent integrator tab */}
+            {kartotekaMainTab === 'ramirent' && (
+              <div className="flex-1 overflow-y-auto">
+                <RamirentIntegrator
+                  integrationId={wholesalerIntegrations.find((i: any) => i.wholesaler_id === 'ramirent' && i.is_active)?.id}
+                  onAddToOwnCatalog={handleIntegratorSelect}
+                  catalogButtonLabel="Dodaj do oferty"
+                />
+              </div>
+            )}
+
+            {/* Own catalog tab */}
             {kartotekaMainTab === 'katalog' && <>
               {/* Category sidebar */}
               <div className="w-64 border-r border-slate-200 overflow-y-auto flex flex-col">

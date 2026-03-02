@@ -84,18 +84,49 @@ export const OfferLandingPage: React.FC = () => {
   const loadOffer = async (publicToken: string) => {
     setLoading(true);
     try {
-      // Find offer by public token or ID prefix
-      const { data: offerData, error: offerErr } = await supabase
+      // Find offer by public token
+      let offerData: any = null;
+      let offerErr: any = null;
+
+      // Try exact public_token match first
+      const res1 = await supabase
         .from('offers')
-        .select('*, company:companies(id, name, logo_url, nip, phone, email, street, building_number, city, postal_code)')
-        .or(`public_token.eq.${publicToken},id.ilike.${publicToken}%`)
+        .select('*')
+        .eq('public_token', publicToken)
         .is('deleted_at', null)
-        .single();
+        .maybeSingle();
+
+      if (res1.data) {
+        offerData = res1.data;
+      } else {
+        // Fallback: try matching by ID prefix (cast to text)
+        const res2 = await supabase
+          .from('offers')
+          .select('*')
+          .filter('id::text', 'ilike', `${publicToken}%`)
+          .is('deleted_at', null)
+          .limit(1);
+        if (res2.data && res2.data.length > 0) {
+          offerData = res2.data[0];
+        } else {
+          offerErr = res1.error || res2.error;
+        }
+      }
 
       if (offerErr || !offerData) {
         setError('Oferta nie została znaleziona lub link wygasł.');
         setLoading(false);
         return;
+      }
+
+      // Load company data separately (avoids RLS join issues)
+      if (offerData.company_id) {
+        const { data: companyData } = await supabase
+          .from('companies')
+          .select('id, name, logo_url, nip, phone, email, street, building_number, city, postal_code')
+          .eq('id', offerData.company_id)
+          .single();
+        offerData.company = companyData;
       }
 
       // Track view

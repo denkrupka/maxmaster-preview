@@ -194,7 +194,7 @@ export function generateProposalHTML(data: ProposalData, proposalNumber: string,
 
   // Group items by room
   const itemsByRoom = data.items.reduce((acc: any, item: any) => {
-    const room = item.room_name || 'Inne';
+    const room = item.room_group || item.room_name || 'Inne';
     if (!acc[room]) acc[room] = [];
     acc[room].push(item);
     return acc;
@@ -498,7 +498,7 @@ export async function convertEstimateToOfferData(estimateId: string): Promise<{
 
   // Group items by room
   const itemsByRoom = data.items.reduce((acc: any, item: any) => {
-    const room = item.room_name || 'Inne';
+    const room = item.room_group || item.room_name || 'Inne';
     if (!acc[room]) acc[room] = [];
     acc[room].push(item);
     return acc;
@@ -600,7 +600,7 @@ export async function convertEstimateToOfferData(estimateId: string): Promise<{
       valid_until: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
       discount_percent: data.totals.discountPercent,
       discount_amount: data.totals.discountAmount,
-      notes: `Na podstawie kosztorysu v${data.estimate.version}\nKlient: ${data.request?.client_name || ''}\nInwestycja: ${data.request?.investment_name || ''}`,
+      notes: '',
       internal_notes: `Importowano z kosztorysu ID: ${estimateId}`,
     },
     sections,
