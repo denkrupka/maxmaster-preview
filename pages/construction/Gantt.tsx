@@ -12,6 +12,16 @@ import { useAppContext } from '../../context/AppContext';
 import { supabase } from '../../lib/supabase';
 import { Project, GanttTask, GanttDependency, GanttDependencyType, Offer, KosztorysEstimate } from '../../types';
 import { GANTT_DEPENDENCY_LABELS, GANTT_DEPENDENCY_SHORT_LABELS } from '../../constants';
+import {
+  buildTaskTree as buildTree, flattenTasks as flattenUtil, flattenAll,
+  getDaysBetween, isWorkingDay, getNextWorkingDay, addWorkingDays as addWD,
+  countWorkingDays, workingDaysFromMask, maskFromWorkingDays,
+  formatDuration as fmtDuration, formatDatePL,
+  calcParentStartDate, calcParentEndDate, calcParentDuration, calcParentProgress,
+  recalcParents, hasCircularDependency, validateDependency, validatePhaseForm,
+  findCriticalPath, autoSchedule,
+  GanttTaskNode, GanttDepRecord
+} from '../../lib/ganttUtils';
 
 type ZoomLevel = 'day' | 'week' | 'month';
 
@@ -157,6 +167,9 @@ export const GanttPage: React.FC = () => {
   const [showCriticalPath, setShowCriticalPath] = useState(false);
   const [hideClosedTasks, setHideClosedTasks] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
+  const [depValidationError, setDepValidationError] = useState('');
 
   // Modals
   const [showPhaseModal, setShowPhaseModal] = useState(false);
@@ -209,6 +222,23 @@ export const GanttPage: React.FC = () => {
   const autoSelectDone = useRef(false);
   const settingsRef = useRef<HTMLDivElement>(null);
 
+  // Auto-dismiss notifications
+  useEffect(() => {
+    if (errorMsg) { const t = setTimeout(() => setErrorMsg(''), 5000); return () => clearTimeout(t); }
+  }, [errorMsg]);
+  useEffect(() => {
+    if (successMsg) { const t = setTimeout(() => setSuccessMsg(''), 3000); return () => clearTimeout(t); }
+  }, [successMsg]);
+
+  const showError = (msg: string) => { setErrorMsg(msg); console.error(msg); };
+  const showSuccess = (msg: string) => setSuccessMsg(msg);
+
+  // Critical path calculation
+  const criticalPathIds = useMemo(() => {
+    if (!showCriticalPath || dependencies.length === 0) return new Set<string>();
+    return findCriticalPath(tasks as GanttTaskNode[], dependencies as GanttDepRecord[]);
+  }, [showCriticalPath, tasks, dependencies]);
+
   // Close settings menu on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -243,7 +273,7 @@ export const GanttPage: React.FC = () => {
       const { data } = await supabase.from('projects').select('*')
         .eq('company_id', currentUser.company_id).order('created_at', { ascending: false });
       if (data) setProjects(data);
-    } catch (err) { console.error('Error loading projects:', err); }
+    } catch (err: any) { showError('Błąd ładowania projektów: ' + (err?.message || err)); }
     finally { setLoading(false); }
   };
 
@@ -256,18 +286,22 @@ export const GanttPage: React.FC = () => {
         supabase.from('gantt_dependencies').select('*').eq('project_id', selectedProject.id),
         supabase.from('project_working_days').select('*').eq('project_id', selectedProject.id).maybeSingle()
       ]);
-      const taskTree = buildTaskTree(tasksRes.data || []);
-      setTasks(taskTree);
+      if (tasksRes.error) throw tasksRes.error;
+      if (depsRes.error) throw depsRes.error;
+      // Build tree and auto-recalculate parents
+      const rawTree = buildTree(tasksRes.data || []) as GanttTaskWithChildren[];
+      const recalced = recalcParents(rawTree) as GanttTaskWithChildren[];
+      setTasks(recalced);
       setDependencies(depsRes.data || []);
       if (wdRes.data) {
-        const mask = wdRes.data.working_days_mask || 31;
-        setWorkingDays(Array.from({ length: 7 }, (_, i) => !!(mask & (1 << i))));
+        setWorkingDays(workingDaysFromMask(wdRes.data.working_days_mask || 31));
       }
       setHarmonogramStart(selectedProject.start_date?.split('T')[0] || new Date().toISOString().split('T')[0]);
-    } catch (err) { console.error('Error loading gantt data:', err); }
+    } catch (err: any) { showError('Błąd ładowania danych harmonogramu: ' + (err?.message || err)); }
     finally { setLoading(false); }
   };
 
+  // Kept for backward compatibility reference - now uses imported buildTree
   const buildTaskTree = (tasksData: GanttTask[]): GanttTaskWithChildren[] => {
     const taskMap = new Map<string, GanttTaskWithChildren>();
     tasksData.forEach(task => taskMap.set(task.id, { ...task, children: [], isExpanded: true, level: 0 }));
@@ -347,14 +381,7 @@ export const GanttPage: React.FC = () => {
 
   const getDaysBetween = (start: Date, end: Date) => Math.ceil((end.getTime() - start.getTime()) / 86400000);
 
-  const formatDuration = (days: number): string => {
-    if (!days || days <= 0) return '–';
-    const weeks = Math.floor(days / 7);
-    const rem = days % 7;
-    if (weeks > 0 && rem > 0) return `${days} Dni (${weeks}. tydz. ${rem}. d.)`;
-    if (weeks > 0) return `${days} Dni (${weeks}. tydz.)`;
-    return `${days} Dni`;
-  };
+  const formatDuration = fmtDuration;
 
   const ROW_HEIGHT = 40;
   const dayWidth = zoomLevel === 'day' ? 40 : zoomLevel === 'week' ? 20 : 6;
@@ -444,13 +471,17 @@ export const GanttPage: React.FC = () => {
   };
 
   const handleSavePhase = async () => {
-    if (!currentUser || !selectedProject || !phaseForm.title.trim()) return;
+    if (!currentUser || !selectedProject) return;
+    // Validate
+    const parentTask = phaseForm.parent_id ? allFlatTasks.find(t => t.id === phaseForm.parent_id) : null;
+    const currentLevel = parentTask ? (parentTask.level || 0) + 1 : 0;
+    const validation = validatePhaseForm(phaseForm, 8, currentLevel);
+    if (!validation.valid) { showError(validation.errors.join(' ')); return; }
     setSaving(true);
     try {
       let endDate = phaseForm.end_date;
       if (!endDate && phaseForm.start_date && phaseForm.duration > 0) {
-        const s = new Date(phaseForm.start_date);
-        s.setDate(s.getDate() + phaseForm.duration);
+        const s = addWD(new Date(phaseForm.start_date), phaseForm.duration, workingDays);
         endDate = s.toISOString().split('T')[0];
       }
       const data: any = {
@@ -470,20 +501,54 @@ export const GanttPage: React.FC = () => {
         sort_order: editingPhase ? editingPhase.sort_order : allFlatTasks.length
       };
       if (editingPhase) {
-        await supabase.from('gantt_tasks').update(data).eq('id', editingPhase.id);
+        const { error } = await supabase.from('gantt_tasks').update(data).eq('id', editingPhase.id);
+        if (error) throw error;
       } else {
-        await supabase.from('gantt_tasks').insert(data);
+        const { error } = await supabase.from('gantt_tasks').insert(data);
+        if (error) throw error;
+      }
+      // Auto-update parent dates/progress if parent exists
+      if (phaseForm.parent_id) {
+        await recalcAndSaveParent(phaseForm.parent_id);
       }
       setShowPhaseModal(false);
       setEditingPhase(null);
+      showSuccess(editingPhase ? 'Faza zapisana.' : 'Faza utworzona.');
       await loadGanttData();
-    } catch (err) { console.error('Error saving phase:', err); }
+    } catch (err: any) { showError('Błąd zapisu fazy: ' + (err?.message || err)); }
     finally { setSaving(false); }
+  };
+
+  /** Recalculate and save parent task dates/progress from its children */
+  const recalcAndSaveParent = async (parentId: string) => {
+    try {
+      const { data: children } = await supabase.from('gantt_tasks').select('*').eq('parent_id', parentId);
+      if (!children || children.length === 0) return;
+      const { data: parent } = await supabase.from('gantt_tasks').select('*').eq('id', parentId).single();
+      if (!parent) return;
+      const updates: any = {};
+      if (parent.is_auto) {
+        const start = calcParentStartDate(children as GanttTaskNode[]);
+        const end = calcParentEndDate(children as GanttTaskNode[]);
+        if (start) updates.start_date = start;
+        if (end) updates.end_date = end;
+        updates.duration = calcParentDuration(start, end);
+      }
+      if (!parent.has_custom_progress) {
+        updates.progress = calcParentProgress(children as GanttTaskNode[]);
+      }
+      if (Object.keys(updates).length > 0) {
+        await supabase.from('gantt_tasks').update(updates).eq('id', parentId);
+      }
+      // Recurse upward
+      if (parent.parent_id) await recalcAndSaveParent(parent.parent_id);
+    } catch (err) { console.error('Error recalculating parent:', err); }
   };
 
   const handleDeletePhase = async (task: GanttTask) => {
     if (!confirm(`Czy na pewno chcesz usunąć fazę "${task.title}"?`)) return;
     try {
+      const parentId = task.parent_id;
       // Delete children first
       const deleteChildren = async (parentId: string) => {
         const { data: children } = await supabase.from('gantt_tasks').select('id').eq('parent_id', parentId);
@@ -492,25 +557,37 @@ export const GanttPage: React.FC = () => {
         await supabase.from('gantt_tasks').delete().eq('id', parentId);
       };
       await deleteChildren(task.id);
+      // Recalc parent if exists
+      if (parentId) await recalcAndSaveParent(parentId);
+      showSuccess('Faza usunięta.');
       await loadGanttData();
-    } catch (err) { console.error('Error deleting phase:', err); }
+    } catch (err: any) { showError('Błąd usuwania fazy: ' + (err?.message || err)); }
   };
 
   // Dependencies
   const openCreateDep = (predecessorId?: string, successorId?: string) => {
     setEditingDep(null);
     setDepForm({ predecessor_id: predecessorId || '', successor_id: successorId || '', dependency_type: 'FS', lag: 0 });
+    setDepValidationError('');
     setShowDepModal(true);
   };
 
   const openEditDep = (dep: GanttDependency) => {
     setEditingDep(dep);
     setDepForm({ predecessor_id: dep.predecessor_id, successor_id: dep.successor_id, dependency_type: dep.dependency_type, lag: dep.lag });
+    setDepValidationError('');
     setShowDepModal(true);
   };
 
   const handleSaveDep = async () => {
     if (!selectedProject || !depForm.predecessor_id || !depForm.successor_id) return;
+    // Validate: no self-ref, no duplicate, no circular
+    const depValidation = validateDependency(
+      dependencies as GanttDepRecord[],
+      depForm.predecessor_id, depForm.successor_id,
+      editingDep?.id
+    );
+    if (!depValidation.valid) { setDepValidationError(depValidation.error!); return; }
     setSaving(true);
     try {
       const data = {
@@ -521,13 +598,17 @@ export const GanttPage: React.FC = () => {
         lag: depForm.lag
       };
       if (editingDep) {
-        await supabase.from('gantt_dependencies').update(data).eq('id', editingDep.id);
+        const { error } = await supabase.from('gantt_dependencies').update(data).eq('id', editingDep.id);
+        if (error) throw error;
       } else {
-        await supabase.from('gantt_dependencies').insert(data);
+        const { error } = await supabase.from('gantt_dependencies').insert(data);
+        if (error) throw error;
       }
       setShowDepModal(false);
+      setDepValidationError('');
+      showSuccess('Zależność zapisana.');
       await loadGanttData();
-    } catch (err) { console.error('Error saving dependency:', err); }
+    } catch (err: any) { showError('Błąd zapisu zależności: ' + (err?.message || err)); }
     finally { setSaving(false); }
   };
 
@@ -1075,6 +1156,20 @@ export const GanttPage: React.FC = () => {
 
   return (
     <div className="h-full flex flex-col bg-white">
+      {/* Toast notifications */}
+      {errorMsg && (
+        <div className="fixed top-4 right-4 z-[200] bg-red-600 text-white px-4 py-3 rounded-lg shadow-xl flex items-center gap-2 max-w-md animate-[slideIn_0.3s_ease]">
+          <AlertCircle className="w-5 h-5 flex-shrink-0" />
+          <span className="text-sm">{errorMsg}</span>
+          <button onClick={() => setErrorMsg('')} className="ml-2 p-0.5 hover:bg-red-500 rounded"><X className="w-4 h-4" /></button>
+        </div>
+      )}
+      {successMsg && (
+        <div className="fixed top-4 right-4 z-[200] bg-green-600 text-white px-4 py-3 rounded-lg shadow-xl flex items-center gap-2 max-w-md">
+          <Check className="w-5 h-5 flex-shrink-0" />
+          <span className="text-sm">{successMsg}</span>
+        </div>
+      )}
       {/* Top toolbar */}
       <div className="px-3 py-2 bg-white border-b border-slate-200 flex items-center gap-2 flex-shrink-0">
         <button onClick={() => setSelectedProject(null)} className="p-1.5 hover:bg-slate-100 rounded-lg" title="Wróć do listy">
@@ -1288,7 +1383,7 @@ export const GanttPage: React.FC = () => {
                           </div>
                         ) : (
                           <div className="absolute z-10 rounded overflow-hidden shadow-sm hover:shadow-md transition-shadow cursor-pointer"
-                            style={{ left: pos.left, width: Math.max(pos.width, 4), top: (ROW_HEIGHT - 20) / 2, height: 20, backgroundColor: '#93c5fd' }}>
+                            style={{ left: pos.left, width: Math.max(pos.width, 4), top: (ROW_HEIGHT - 20) / 2, height: 20, backgroundColor: criticalPathIds.has(task.id) ? '#fca5a5' : '#93c5fd' }}>
                             {task.progress > 0 && (
                               <div className="absolute left-0 top-0 bottom-0 rounded" style={{ width: `${task.progress}%`, backgroundColor: '#3b82f6' }} />
                             )}
@@ -1500,7 +1595,12 @@ export const GanttPage: React.FC = () => {
                   <span className="text-sm text-slate-600">Dni</span>
                 </div>
               </div>
-              {depForm.predecessor_id && depForm.successor_id && (
+              {depValidationError && (
+                <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" /> {depValidationError}
+                </div>
+              )}
+              {depForm.predecessor_id && depForm.successor_id && !depValidationError && depForm.dependency_type === 'FS' && (
                 <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-700">
                   <AlertCircle className="w-4 h-4 flex-shrink-0" />
                   Nie można rozpocząć <strong>{getTaskTitle(allFlatTasks.find(t => t.id === depForm.successor_id)!)}</strong> przed zakończeniem <strong>{getTaskTitle(allFlatTasks.find(t => t.id === depForm.predecessor_id)!)}</strong>.
