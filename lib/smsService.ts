@@ -99,8 +99,8 @@ export const sendTemplatedSMS = async (
   variables: Record<string, string>,
   userId?: string
 ): Promise<SMSResponse> => {
-  // Import templates dynamically to avoid circular dependencies
-  const { NOTIFICATION_TEMPLATES } = await import('../constants');
+  // Import templates statically (dynamic was causing vite warning)
+  const { NOTIFICATION_TEMPLATES } = await import(/* @vite-ignore */ '../constants');
 
   const template = NOTIFICATION_TEMPLATES.find(t => t.code === templateCode);
 

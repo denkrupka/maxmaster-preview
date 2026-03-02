@@ -1,7 +1,7 @@
 
-import React from 'react';
+import React, { Suspense } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, Loader2 } from 'lucide-react';
 
 import { AppProvider, useAppContext } from './context/AppContext';
 import { Role, UserStatus } from './types';
@@ -40,7 +40,7 @@ import { CompanyAttendancePage } from './pages/company/Attendance';
 import { TeamNowPage } from './pages/company/TeamNow';
 import { CompanyTimeOffPage } from './pages/company/TimeOff';
 import { CompanySchedulesPage } from './pages/company/Schedules';
-import { CompanyProjectsPage } from './pages/company/Projects';
+// CompanyProjectsPage is lazy-loaded above
 import { CompanyTasksPage } from './pages/company/Tasks';
 import { CompanyCustomersPage } from './pages/company/Customers';
 import { CompanyTimesheetsPage } from './pages/company/Timesheets';
@@ -50,7 +50,7 @@ import { NotificationsPage } from './pages/company/Notifications';
 // Sales Pages
 import { SalesDashboard } from './pages/sales/Dashboard';
 import { SalesPipeline } from './pages/sales/Pipeline';
-import { SalesCompanies } from './pages/sales/Companies';
+// SalesCompanies is lazy-loaded above
 import { SalesContacts } from './pages/sales/Contacts';
 import { SalesActivities } from './pages/sales/Activities';
 import { SalesClients } from './pages/sales/Clients';
@@ -119,13 +119,31 @@ import { CandidateSimulationPage } from './pages/candidate/Simulation';
 import { CandidateThankYouPage } from './pages/candidate/ThankYou';
 import { CompanyRegisterPage } from './pages/CompanyRegister';
 
-// Construction Module Pages
-import {
-  EstimatesPage, OffersPage, DrawingsPage,
-  DMSPage, GanttPage, FinancePage, ProcurementPage, ApprovalsPage,
-  RequestsPage, FormularyPage, DictionariesPage, PriceListsPage,
-  KosztorysEditorPage
-} from './pages/construction';
+// Construction Module Pages — lazy loaded for code splitting
+const EstimatesPage = React.lazy(() => import('./pages/construction/Estimates').then(m => ({ default: m.EstimatesPage })));
+const OffersPage = React.lazy(() => import('./pages/construction/Offers').then(m => ({ default: m.OffersPage })));
+const DrawingsPage = React.lazy(() => import('./pages/construction/Drawings').then(m => ({ default: m.DrawingsPage })));
+const DMSPage = React.lazy(() => import('./pages/construction/DMS').then(m => ({ default: m.DMSPage })));
+const GanttPage = React.lazy(() => import('./pages/construction/Gantt').then(m => ({ default: m.GanttPage })));
+const FinancePage = React.lazy(() => import('./pages/construction/Finance').then(m => ({ default: m.FinancePage })));
+const ProcurementPage = React.lazy(() => import('./pages/construction/Procurement').then(m => ({ default: m.ProcurementPage })));
+const ApprovalsPage = React.lazy(() => import('./pages/construction/Approvals').then(m => ({ default: m.ApprovalsPage })));
+const RequestsPage = React.lazy(() => import('./pages/construction/Requests').then(m => ({ default: m.RequestsPage })));
+const FormularyPage = React.lazy(() => import('./pages/construction/Formulary').then(m => ({ default: m.FormularyPage })));
+const DictionariesPage = React.lazy(() => import('./pages/construction/Dictionaries').then(m => ({ default: m.DictionariesPage })));
+const PriceListsPage = React.lazy(() => import('./pages/construction/PriceLists').then(m => ({ default: m.PriceListsPage })));
+const KosztorysEditorPage = React.lazy(() => import('./pages/construction/KosztorysEditor').then(m => ({ default: m.KosztorysEditorPage })));
+
+// Lazy-loaded heavy pages from other modules
+const SalesCompanies = React.lazy(() => import('./pages/sales/Companies').then(m => ({ default: m.SalesCompanies })));
+const CompanyProjectsPage = React.lazy(() => import('./pages/company/Projects').then(m => ({ default: m.CompanyProjectsPage })));
+
+// Loading fallback
+const LazyFallback = () => (
+  <div className="flex items-center justify-center h-64">
+    <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+  </div>
+);
 
 const ProtectedRoute = ({ children, allowedRoles, checkTrial = false, noLayout = false, requiredModule }: { children?: React.ReactNode, allowedRoles?: Role[], checkTrial?: boolean, noLayout?: boolean, requiredModule?: 'recruitment' | 'skills' | 'time_attendance' | 'time_off' | 'work_schedule' | 'tasks_projects' | 'reports_payroll' | 'estimates' | 'offers' | 'drawings' | 'dms' | 'gantt' | 'finance' | 'procurement' | 'approvals' }) => {
   const { state, getEffectiveRole } = useAppContext();
@@ -390,6 +408,7 @@ export default function App() {
   return (
     <HashRouter>
       <AppProvider>
+        <Suspense fallback={<LazyFallback />}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/setup-password" element={<SetupPasswordPage />} />
@@ -531,6 +550,7 @@ export default function App() {
           <Route path="/" element={<EmailConfirmationHandler />} />
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
+        </Suspense>
       </AppProvider>
     </HashRouter>
   );
