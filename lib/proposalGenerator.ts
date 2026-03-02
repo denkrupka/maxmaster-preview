@@ -507,45 +507,97 @@ export async function convertEstimateToOfferData(estimateId: string): Promise<{
   let sections: any[] = [];
 
   if (dataJson && dataJson.sections && dataJson.positions && dataJson.root) {
+    // Collect all overheads (root + section level)
+    const rootOverheads = dataJson.root.overheads || [];
+
     // Use data_json hierarchical structure (sections → positions)
-    const buildItemFromPosition = (pos: any, sIndex: number, iIndex: number) => {
+    const buildItemFromPosition = (pos: any, sIndex: number, iIndex: number, sectionOverheads: any[] = []) => {
       const components: any[] = [];
-      // Extract labor and material resources from position
+      let laborTotal = 0;
+      let materialTotal = 0;
+      let equipmentTotal = 0;
+      const factors = pos.factors || { labor: 1, material: 1, equipment: 1, waste: 0 };
+
+      // Extract labor, material, equipment resources from position
       if (pos.resources) {
         pos.resources.forEach((res: any) => {
+          const qty = res.norma || 1;
+          const price = res.unitPrice?.value || 0;
           if (res.type === 'labor' || res.type === 'R') {
+            laborTotal += qty * price;
             components.push({
               type: 'labor',
               name: res.name || 'Robocizna',
               code: res.code || '',
               unit: res.unit?.label || 'r-g',
-              quantity: res.norma || 1,
-              unit_price: res.unitPrice?.value || 0,
-              total_price: (res.norma || 1) * (res.unitPrice?.value || 0),
+              quantity: qty,
+              unit_price: price,
+              total_price: qty * price,
             });
           } else if (res.type === 'material' || res.type === 'M') {
+            materialTotal += qty * price;
             components.push({
               type: 'material',
               name: res.name || 'Materiał',
               code: res.code || '',
               unit: res.unit?.label || 'szt.',
-              quantity: res.norma || 1,
-              unit_price: res.unitPrice?.value || 0,
-              total_price: (res.norma || 1) * (res.unitPrice?.value || 0),
+              quantity: qty,
+              unit_price: price,
+              total_price: qty * price,
             });
           } else if (res.type === 'equipment' || res.type === 'S') {
+            equipmentTotal += qty * price;
             components.push({
               type: 'equipment',
               name: res.name || 'Sprzęt',
               code: res.code || '',
               unit: res.unit?.label || 'mg',
-              quantity: res.norma || 1,
-              unit_price: res.unitPrice?.value || 0,
-              total_price: (res.norma || 1) * (res.unitPrice?.value || 0),
+              quantity: qty,
+              unit_price: price,
+              total_price: qty * price,
             });
           }
         });
       }
+
+      // Apply factors
+      laborTotal *= factors.labor;
+      materialTotal *= factors.material * (1 + (factors.waste || 0) / 100);
+      equipmentTotal *= factors.equipment;
+
+      // Calculate overheads (Kp, Z, Kz) and add as components
+      const allOverheads = [...sectionOverheads, ...rootOverheads]
+        .sort((a: any, b: any) => (a.order || 0) - (b.order || 0));
+      let kpValue = 0;
+      allOverheads.forEach((oh: any) => {
+        const isKp = oh.name?.includes('Kp') || oh.name?.includes('pośrednie');
+        const isZ = oh.name?.includes('Zysk') || oh.name?.includes('(Z)');
+        const isKz = oh.name?.includes('zakupu') || oh.name?.includes('Kz');
+        let base = 0;
+        if (isKp) base = laborTotal;
+        else if (isZ) base = laborTotal + kpValue;
+        else if (isKz) base = materialTotal;
+        else {
+          // Generic overhead: apply to whatever appliesTo says
+          if (oh.appliesTo?.includes('labor')) base += laborTotal;
+          if (oh.appliesTo?.includes('material')) base += materialTotal;
+          if (oh.appliesTo?.includes('equipment')) base += equipmentTotal;
+        }
+        const val = oh.type === 'percentage' ? base * (oh.value || 0) / 100 : (oh.value || 0);
+        if (isKp) kpValue = val;
+        if (val > 0) {
+          components.push({
+            type: 'labor',
+            name: oh.name || 'Narzut',
+            code: isKp ? 'Kp' : isZ ? 'Z' : isKz ? 'Kz' : 'N',
+            unit: '%',
+            quantity: oh.value || 0,
+            unit_price: +(val / (oh.value || 1)).toFixed(4),
+            total_price: +val.toFixed(2),
+          });
+        }
+      });
+
       const quantity = pos.measurements?.finalQuantity || pos.measurements?.expressionResult || 1;
       const unitPrice = pos.unitPrice?.value || 0;
       return {
@@ -571,10 +623,11 @@ export async function convertEstimateToOfferData(estimateId: string): Promise<{
     const buildSection = (sectionId: string, sIndex: number): any => {
       const sec = dataJson.sections[sectionId];
       if (!sec) return null;
+      const sectionOverheads = sec.overheads || [];
       const items = (sec.positionIds || []).map((posId: string, iIndex: number) => {
         const pos = dataJson.positions[posId];
         if (!pos) return null;
-        return buildItemFromPosition(pos, sIndex, iIndex);
+        return buildItemFromPosition(pos, sIndex, iIndex, sectionOverheads);
       }).filter(Boolean);
 
       const children = (sec.subsectionIds || []).map((subId: string, subIdx: number) =>

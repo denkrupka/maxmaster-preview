@@ -103,6 +103,8 @@ interface OfferComponent {
   quantity: number;
   unit_price: number;
   total_price: number;
+  markup_percent?: number;
+  discount_percent?: number;
 }
 
 interface LocalOfferItem extends Omit<OfferItem, 'total_price'> {
@@ -220,18 +222,38 @@ export const OffersPage: React.FC = () => {
   const [warrantyPeriod, setWarrantyPeriod] = useState('');
 
   // Koszty powiązane
-  interface RelatedCost { id: string; name: string; value: number; }
+  interface RelatedCost {
+    id: string; name: string; value: number;
+    mode: 'fixed' | 'percent'; // fixed sum or % of net contract
+    frequency: 'one_time' | 'monthly'; // only for fixed mode
+    show_on_offer: boolean; // show as separate line in offer
+  }
   const [relatedCosts, setRelatedCosts] = useState<RelatedCost[]>([
-    { id: 'koszty_budowy', name: 'Koszty budowy', value: 0 },
-    { id: 'kaucja_gwarancyjna', name: 'Kaucja Gwarancyjna', value: 0 },
-    { id: 'polisa_oc', name: 'Polisa OC', value: 0 },
-    { id: 'wynajem_konteneru', name: 'Wynajem Konteneru', value: 0 }
+    { id: 'koszty_budowy', name: 'Koszty budowy', value: 0, mode: 'fixed', frequency: 'one_time', show_on_offer: false },
+    { id: 'kaucja_gwarancyjna', name: 'Kaucja Gwarancyjna', value: 0, mode: 'percent', frequency: 'one_time', show_on_offer: false },
+    { id: 'polisa_oc', name: 'Polisa OC', value: 0, mode: 'fixed', frequency: 'one_time', show_on_offer: false },
+    { id: 'wynajem_konteneru', name: 'Wynajem Konteneru', value: 0, mode: 'fixed', frequency: 'monthly', show_on_offer: false }
   ]);
 
   // Settings modal
   const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'dodatki' | 'wid'>('dodatki');
+  const [settingsTab, setSettingsTab] = useState<'dodatki' | 'widok'>('dodatki');
   const [showComponentsInPrint, setShowComponentsInPrint] = useState(false);
+
+  // Dropdown options for warunki istotne (configurable in settings)
+  const [paymentTermOptions, setPaymentTermOptions] = useState<number[]>([1, 3, 7, 14, 21, 30, 45, 60]);
+  const [invoiceFreqOptions, setInvoiceFreqOptions] = useState<number[]>([7, 14, 21, 30]);
+  const [warrantyOptions, setWarrantyOptions] = useState<number[]>([12, 24, 36, 48, 60]);
+
+  // Surcharge/discount rules based on payment term, warranty, invoice frequency
+  interface SurchargeRule { value: number; surcharge: number; } // surcharge > 0 = narzut, < 0 = rabat
+  const [paymentTermRules, setPaymentTermRules] = useState<SurchargeRule[]>([
+    { value: 7, surcharge: -2 }, { value: 14, surcharge: -1 }, { value: 30, surcharge: 0 }, { value: 60, surcharge: 2 }
+  ]);
+  const [warrantyRules, setWarrantyRules] = useState<SurchargeRule[]>([
+    { value: 24, surcharge: 0 }, { value: 36, surcharge: 1 }, { value: 48, surcharge: 2 }, { value: 60, surcharge: 3 }
+  ]);
+  const [invoiceFreqRules, setInvoiceFreqRules] = useState<SurchargeRule[]>([]);
 
   // Bulk operations
   const [showBulkBar, setShowBulkBar] = useState(false);
@@ -1017,6 +1039,12 @@ export const OffersPage: React.FC = () => {
           setPaymentTerm(ps.warunki.payment_term || '');
           setInvoiceFrequency(ps.warunki.invoice_frequency || '');
           setWarrantyPeriod(ps.warunki.warranty_period || '');
+          if (ps.warunki.payment_term_options) setPaymentTermOptions(ps.warunki.payment_term_options);
+          if (ps.warunki.invoice_freq_options) setInvoiceFreqOptions(ps.warunki.invoice_freq_options);
+          if (ps.warunki.warranty_options) setWarrantyOptions(ps.warunki.warranty_options);
+          if (ps.warunki.payment_term_rules) setPaymentTermRules(ps.warunki.payment_term_rules);
+          if (ps.warunki.warranty_rules) setWarrantyRules(ps.warunki.warranty_rules);
+          if (ps.warunki.invoice_freq_rules) setInvoiceFreqRules(ps.warunki.invoice_freq_rules);
         }
         if (ps.related_costs) setRelatedCosts(ps.related_costs);
         if (ps.show_components_in_print !== undefined) setShowComponentsInPrint(ps.show_components_in_print);
@@ -1345,12 +1373,21 @@ export const OffersPage: React.FC = () => {
               object_city: offerClientData.object_city,
               object_postal_code: offerClientData.object_postal_code,
               representative_id: sendRepresentativeId || null,
+              representative_name: (() => { const r = offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0]; return r ? `${r.first_name || ''} ${r.last_name || ''}`.trim() : ''; })(),
+              representative_email: (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.email || '',
+              representative_phone: (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.phone || '',
               work_type_ids: offerSelectedWorkTypes
             },
             warunki: {
               payment_term: paymentTerm,
               invoice_frequency: invoiceFrequency,
-              warranty_period: warrantyPeriod
+              warranty_period: warrantyPeriod,
+              payment_term_options: paymentTermOptions,
+              invoice_freq_options: invoiceFreqOptions,
+              warranty_options: warrantyOptions,
+              payment_term_rules: paymentTermRules,
+              warranty_rules: warrantyRules,
+              invoice_freq_rules: invoiceFreqRules
             },
             related_costs: relatedCosts,
             show_components_in_print: showComponentsInPrint
@@ -1504,12 +1541,21 @@ export const OffersPage: React.FC = () => {
               object_city: offerClientData.object_city,
               object_postal_code: offerClientData.object_postal_code,
               representative_id: sendRepresentativeId || null,
+              representative_name: (() => { const r = offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0]; return r ? `${r.first_name || ''} ${r.last_name || ''}`.trim() : ''; })(),
+              representative_email: (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.email || '',
+              representative_phone: (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.phone || '',
               work_type_ids: offerSelectedWorkTypes
             },
             warunki: {
               payment_term: paymentTerm,
               invoice_frequency: invoiceFrequency,
-              warranty_period: warrantyPeriod
+              warranty_period: warrantyPeriod,
+              payment_term_options: paymentTermOptions,
+              invoice_freq_options: invoiceFreqOptions,
+              warranty_options: warrantyOptions,
+              payment_term_rules: paymentTermRules,
+              warranty_rules: warrantyRules,
+              invoice_freq_rules: invoiceFreqRules
             },
             related_costs: relatedCosts,
             show_components_in_print: showComponentsInPrint
@@ -2452,12 +2498,15 @@ export const OffersPage: React.FC = () => {
     const clientPostal = cd.company_postal_code || offerClientData.company_postal_code || client?.address_postal_code || '';
     const clientCity = cd.company_city || offerClientData.company_city || client?.address_city || '';
     const clientFullAddress = [clientStreet, clientStreetNum, clientPostal, clientCity].filter(Boolean).join(', ');
-    // Find representative
+    // Find representative - try by ID, fallback to first contact, fallback to saved data
     const repId = cd.representative_id || sendRepresentativeId;
-    const representative = repId ? offerClientContacts.find((c: any) => c.id === repId) : null;
-    const repName = representative ? `${representative.first_name || ''} ${representative.last_name || ''}`.trim() : '';
-    const repEmail = representative?.email || '';
-    const repPhone = representative?.phone || '';
+    const representative = repId
+      ? offerClientContacts.find((c: any) => c.id === repId) || offerClientContacts[0]
+      : offerClientContacts[0] || null;
+    const repName = representative ? `${representative.first_name || ''} ${representative.last_name || ''}`.trim()
+      : cd.representative_name || '';
+    const repEmail = representative?.email || cd.representative_email || client?.email || '';
+    const repPhone = representative?.phone || cd.representative_phone || client?.phone || '';
     const fmtCur = (v: number) => v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
     const isBrutto = previewTemplate === 'brutto';
     const priceLabel = isBrutto ? 'brutto' : 'netto';
@@ -3764,27 +3813,28 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
               ) : (
                 <div className="space-y-1">
                   {/* Component header row */}
-                  <div className="grid grid-cols-[28px_1fr_60px_70px_90px_90px_90px_28px] gap-1 px-2 py-1 text-[10px] text-slate-400 font-medium uppercase">
+                  <div className="grid grid-cols-[28px_1fr_55px_65px_80px_60px_80px_60px_80px_28px] gap-1 px-2 py-1 text-[10px] text-slate-400 font-medium uppercase">
                     <div></div>
                     <div>Nazwa</div>
                     <div className="text-center">Jedn.</div>
                     <div className="text-right">Ilość</div>
-                    {calculationMode === 'markup' ? (
-                      <>
-                        <div className="text-right">Koszt</div>
-                        <div className="text-right">Narzut %</div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="text-right">Cena jedn.</div>
-                        <div></div>
-                      </>
-                    )}
+                    <div className="text-right">{calculationMode === 'markup' ? 'Koszt' : 'Cena'}</div>
+                    <div className="text-right">Narzut%</div>
+                    <div className="text-right">Cena jedn.</div>
+                    <div className="text-right">Rabat%</div>
                     <div className="text-right">Wartość</div>
                     <div></div>
                   </div>
-                  {(item.components || []).map(comp => (
-                    <div key={comp.id} className="grid grid-cols-[28px_1fr_60px_70px_90px_90px_90px_28px] gap-1 items-center text-sm bg-white rounded px-2 py-1 border border-slate-100">
+                  {(item.components || []).map(comp => {
+                    const compMarkup = comp.markup_percent || 0;
+                    const compPrice = calculationMode === 'markup' && compMarkup > 0
+                      ? comp.unit_price * (1 + compMarkup / 100)
+                      : comp.unit_price;
+                    const compDisc = comp.discount_percent || 0;
+                    const compTotal = comp.quantity * compPrice;
+                    const compValue = compTotal - compTotal * (compDisc / 100);
+                    return (
+                    <div key={comp.id} className="grid grid-cols-[28px_1fr_55px_65px_80px_60px_80px_60px_80px_28px] gap-1 items-center text-sm bg-white rounded px-2 py-1 border border-slate-100">
                       <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium uppercase text-center ${
                         comp.type === 'labor' ? 'bg-purple-100 text-purple-700' :
                         comp.type === 'material' ? 'bg-green-100 text-green-700' :
@@ -3820,10 +3870,28 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                           step="0.01"
                         />
                       </div>
-                      <div className="text-right text-xs text-slate-400">
-                        {calculationMode === 'markup' ? '-' : ''}
+                      <div className="text-right">
+                        <input
+                          type="number"
+                          value={comp.markup_percent || 0}
+                          onChange={e => updateComponent(sectionId, item.id, comp.id, { markup_percent: parseFloat(e.target.value) || 0 })}
+                          className="w-full px-1 py-0.5 border border-slate-200 rounded text-right text-xs"
+                          step="1"
+                        />
                       </div>
-                      <div className="text-right text-xs font-medium">{formatCurrency(comp.quantity * comp.unit_price)}</div>
+                      <div className="text-right text-xs text-slate-500">{formatCurrency(compPrice)}</div>
+                      <div className="text-right">
+                        <input
+                          type="number"
+                          value={comp.discount_percent || 0}
+                          onChange={e => updateComponent(sectionId, item.id, comp.id, { discount_percent: parseFloat(e.target.value) || 0 })}
+                          className="w-full px-1 py-0.5 border border-slate-200 rounded text-right text-xs"
+                          step="1"
+                          min="0"
+                          max="100"
+                        />
+                      </div>
+                      <div className="text-right text-xs font-medium">{formatCurrency(compValue)}</div>
                       <button
                         onClick={() => deleteComponent(sectionId, item.id, comp.id)}
                         className="p-0.5 hover:bg-red-50 rounded text-red-400"
@@ -3831,7 +3899,7 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                         <X className="w-3.5 h-3.5" />
                       </button>
                     </div>
-                  ))}
+                  );})}
                 </div>
               )}
             </div>
@@ -4328,48 +4396,76 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
           </div>
 
           {/* Warunki istotne block */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 px-6 py-4 border-b border-slate-200">
-            <div>
-              <p className="text-xs font-medium text-slate-500 mb-1">Termin płatności</p>
-              {editMode ? (
-                <input
-                  type="text"
-                  value={paymentTerm}
-                  onChange={e => setPaymentTerm(e.target.value)}
-                  className="w-full px-2 py-1 border border-slate-200 rounded text-sm"
-                  placeholder="np. 30 dni"
-                />
-              ) : (
-                <p className="text-sm font-medium text-slate-900">{paymentTerm || '-'}</p>
-              )}
+          <div className="px-6 py-4 border-b border-slate-200">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-slate-700">Warunki istotne</h3>
+              {(() => {
+                const ptRule = paymentTermRules.find(r => String(r.value) === paymentTerm);
+                const wrRule = warrantyRules.find(r => String(r.value) === warrantyPeriod);
+                const ifRule = invoiceFreqRules.find(r => String(r.value) === invoiceFrequency);
+                const totalSurcharge = (ptRule?.surcharge || 0) + (wrRule?.surcharge || 0) + (ifRule?.surcharge || 0);
+                return totalSurcharge !== 0 ? (
+                  <span className={`text-xs font-medium px-2 py-0.5 rounded ${totalSurcharge > 0 ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'}`}>
+                    {totalSurcharge > 0 ? '+' : ''}{totalSurcharge}% {totalSurcharge > 0 ? 'narzut' : 'rabat'}
+                  </span>
+                ) : null;
+              })()}
             </div>
-            <div>
-              <p className="text-xs font-medium text-slate-500 mb-1">Wystawienie faktur</p>
-              {editMode ? (
-                <input
-                  type="text"
-                  value={invoiceFrequency}
-                  onChange={e => setInvoiceFrequency(e.target.value)}
-                  className="w-full px-2 py-1 border border-slate-200 rounded text-sm"
-                  placeholder="np. co 30 dni"
-                />
-              ) : (
-                <p className="text-sm font-medium text-slate-900">{invoiceFrequency || '-'}</p>
-              )}
-            </div>
-            <div>
-              <p className="text-xs font-medium text-slate-500 mb-1">Okres gwarancyjny</p>
-              {editMode ? (
-                <input
-                  type="text"
-                  value={warrantyPeriod}
-                  onChange={e => setWarrantyPeriod(e.target.value)}
-                  className="w-full px-2 py-1 border border-slate-200 rounded text-sm"
-                  placeholder="np. 24 miesiące"
-                />
-              ) : (
-                <p className="text-sm font-medium text-slate-900">{warrantyPeriod || '-'}</p>
-              )}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <p className="text-xs font-medium text-slate-500 mb-1">Termin płatności (dni)</p>
+                {editMode ? (
+                  <select
+                    value={paymentTerm}
+                    onChange={e => setPaymentTerm(e.target.value)}
+                    className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"
+                  >
+                    <option value="">— Wybierz —</option>
+                    {paymentTermOptions.map(v => {
+                      const rule = paymentTermRules.find(r => r.value === v);
+                      return <option key={v} value={String(v)}>{v} dni{rule && rule.surcharge !== 0 ? ` (${rule.surcharge > 0 ? '+' : ''}${rule.surcharge}%)` : ''}</option>;
+                    })}
+                  </select>
+                ) : (
+                  <p className="text-sm font-medium text-slate-900">{paymentTerm ? `${paymentTerm} dni` : '-'}</p>
+                )}
+              </div>
+              <div>
+                <p className="text-xs font-medium text-slate-500 mb-1">Wystawienie faktur (co ile dni)</p>
+                {editMode ? (
+                  <select
+                    value={invoiceFrequency}
+                    onChange={e => setInvoiceFrequency(e.target.value)}
+                    className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"
+                  >
+                    <option value="">— Wybierz —</option>
+                    {invoiceFreqOptions.map(v => {
+                      const rule = invoiceFreqRules.find(r => r.value === v);
+                      return <option key={v} value={String(v)}>co {v} dni{rule && rule.surcharge !== 0 ? ` (${rule.surcharge > 0 ? '+' : ''}${rule.surcharge}%)` : ''}</option>;
+                    })}
+                  </select>
+                ) : (
+                  <p className="text-sm font-medium text-slate-900">{invoiceFrequency ? `co ${invoiceFrequency} dni` : '-'}</p>
+                )}
+              </div>
+              <div>
+                <p className="text-xs font-medium text-slate-500 mb-1">Okres gwarancyjny (miesięcy)</p>
+                {editMode ? (
+                  <select
+                    value={warrantyPeriod}
+                    onChange={e => setWarrantyPeriod(e.target.value)}
+                    className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"
+                  >
+                    <option value="">— Wybierz —</option>
+                    {warrantyOptions.map(v => {
+                      const rule = warrantyRules.find(r => r.value === v);
+                      return <option key={v} value={String(v)}>{v} mies.{rule && rule.surcharge !== 0 ? ` (${rule.surcharge > 0 ? '+' : ''}${rule.surcharge}%)` : ''}</option>;
+                    })}
+                  </select>
+                ) : (
+                  <p className="text-sm font-medium text-slate-900">{warrantyPeriod ? `${warrantyPeriod} mies.` : '-'}</p>
+                )}
+              </div>
             </div>
           </div>
 
@@ -4487,42 +4583,75 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
           <div className="p-6 border-b border-slate-200">
             <h2 className="text-lg font-semibold text-slate-900 mb-4">Koszty powiązane</h2>
             <div className="space-y-2">
-              {relatedCosts.map(cost => (
-                <div key={cost.id} className="flex items-center gap-3">
-                  {editMode ? (
-                    <>
-                      <input
-                        type="text"
-                        value={cost.name}
-                        onChange={e => setRelatedCosts(prev => prev.map(c => c.id === cost.id ? { ...c, name: e.target.value } : c))}
-                        className="flex-1 px-2 py-1.5 border border-slate-200 rounded text-sm"
-                      />
-                      <input
-                        type="number"
-                        value={cost.value}
-                        onChange={e => setRelatedCosts(prev => prev.map(c => c.id === cost.id ? { ...c, value: parseFloat(e.target.value) || 0 } : c))}
-                        className="w-32 px-2 py-1.5 border border-slate-200 rounded text-right text-sm"
-                        step="0.01"
-                      />
-                      <span className="text-sm text-slate-500">zł</span>
-                      <button
-                        onClick={() => setRelatedCosts(prev => prev.filter(c => c.id !== cost.id))}
-                        className="p-1 hover:bg-red-50 rounded text-red-400"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <span className="flex-1 text-sm text-slate-700">{cost.name}</span>
-                      <span className="text-sm font-medium text-slate-900">{formatCurrency(cost.value)}</span>
-                    </>
-                  )}
+              {relatedCosts.map(cost => {
+                const resolvedValue = cost.mode === 'percent' ? totals.nettoAfterDiscount * (cost.value / 100) : cost.value;
+                return (
+                <div key={cost.id} className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    {editMode ? (
+                      <>
+                        <input
+                          type="checkbox"
+                          checked={cost.show_on_offer}
+                          onChange={e => setRelatedCosts(prev => prev.map(c => c.id === cost.id ? { ...c, show_on_offer: e.target.checked } : c))}
+                          className="w-3.5 h-3.5 text-blue-600 rounded"
+                          title="Pokaż na ofercie"
+                        />
+                        <input
+                          type="text"
+                          value={cost.name}
+                          onChange={e => setRelatedCosts(prev => prev.map(c => c.id === cost.id ? { ...c, name: e.target.value } : c))}
+                          className="flex-1 px-2 py-1.5 border border-slate-200 rounded text-sm"
+                        />
+                        <select
+                          value={cost.mode}
+                          onChange={e => setRelatedCosts(prev => prev.map(c => c.id === cost.id ? { ...c, mode: e.target.value as 'fixed' | 'percent' } : c))}
+                          className="w-20 px-1 py-1.5 border border-slate-200 rounded text-xs"
+                        >
+                          <option value="fixed">Kwota</option>
+                          <option value="percent">%</option>
+                        </select>
+                        <input
+                          type="number"
+                          value={cost.value}
+                          onChange={e => setRelatedCosts(prev => prev.map(c => c.id === cost.id ? { ...c, value: parseFloat(e.target.value) || 0 } : c))}
+                          className="w-24 px-2 py-1.5 border border-slate-200 rounded text-right text-sm"
+                          step="0.01"
+                        />
+                        <span className="text-xs text-slate-500 w-8">{cost.mode === 'percent' ? '%' : 'zł'}</span>
+                        {cost.mode === 'fixed' && (
+                          <select
+                            value={cost.frequency}
+                            onChange={e => setRelatedCosts(prev => prev.map(c => c.id === cost.id ? { ...c, frequency: e.target.value as 'one_time' | 'monthly' } : c))}
+                            className="w-28 px-1 py-1.5 border border-slate-200 rounded text-xs"
+                          >
+                            <option value="one_time">Jednorazowo</option>
+                            <option value="monthly">Miesięcznie</option>
+                          </select>
+                        )}
+                        <button
+                          onClick={() => setRelatedCosts(prev => prev.filter(c => c.id !== cost.id))}
+                          className="p-1 hover:bg-red-50 rounded text-red-400"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="flex-1 text-sm text-slate-700">
+                          {cost.name}
+                          {cost.mode === 'percent' && <span className="text-xs text-slate-400 ml-1">({cost.value}%)</span>}
+                          {cost.mode === 'fixed' && cost.frequency === 'monthly' && <span className="text-xs text-slate-400 ml-1">(mies.)</span>}
+                        </span>
+                        <span className="text-sm font-medium text-slate-900">{formatCurrency(resolvedValue)}</span>
+                      </>
+                    )}
+                  </div>
                 </div>
-              ))}
+              );})}
               {editMode && (
                 <button
-                  onClick={() => setRelatedCosts(prev => [...prev, { id: `custom_${Date.now()}`, name: '', value: 0 }])}
+                  onClick={() => setRelatedCosts(prev => [...prev, { id: `custom_${Date.now()}`, name: '', value: 0, mode: 'fixed', frequency: 'one_time', show_on_offer: false }])}
                   className="flex items-center gap-1 px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 rounded border border-dashed border-blue-300"
                 >
                   <Plus className="w-3.5 h-3.5" />
@@ -4532,7 +4661,9 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
               {relatedCosts.some(c => c.value > 0) && (
                 <div className="flex justify-between pt-2 border-t border-slate-200">
                   <span className="text-sm font-medium text-slate-700">Suma kosztów powiązanych:</span>
-                  <span className="text-sm font-bold text-slate-900">{formatCurrency(relatedCosts.reduce((s, c) => s + c.value, 0))}</span>
+                  <span className="text-sm font-bold text-slate-900">
+                    {formatCurrency(relatedCosts.reduce((s, c) => s + (c.mode === 'percent' ? totals.nettoAfterDiscount * (c.value / 100) : c.value), 0))}
+                  </span>
                 </div>
               )}
             </div>
@@ -4562,6 +4693,22 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                 <span className="text-slate-600 font-bold">Netto po rabacie:</span>
                 <span className="font-bold text-blue-600">{formatCurrency(totals.nettoAfterDiscount)}</span>
               </div>
+              {/* Surcharges from warunki */}
+              {(() => {
+                const ptRule = paymentTermRules.find(r => String(r.value) === paymentTerm);
+                const wrRule = warrantyRules.find(r => String(r.value) === warrantyPeriod);
+                const ifRule = invoiceFreqRules.find(r => String(r.value) === invoiceFrequency);
+                const surcharges: { label: string; pct: number; val: number }[] = [];
+                if (ptRule && ptRule.surcharge !== 0) surcharges.push({ label: `Termin płatności (${paymentTerm} dni)`, pct: ptRule.surcharge, val: totals.nettoAfterDiscount * (ptRule.surcharge / 100) });
+                if (wrRule && wrRule.surcharge !== 0) surcharges.push({ label: `Gwarancja (${warrantyPeriod} mies.)`, pct: wrRule.surcharge, val: totals.nettoAfterDiscount * (wrRule.surcharge / 100) });
+                if (ifRule && ifRule.surcharge !== 0) surcharges.push({ label: `Fakturowanie (co ${invoiceFrequency} dni)`, pct: ifRule.surcharge, val: totals.nettoAfterDiscount * (ifRule.surcharge / 100) });
+                return surcharges.length > 0 ? surcharges.map((s, i) => (
+                  <div key={i} className={`flex justify-between text-sm ${s.pct > 0 ? 'text-red-500' : 'text-green-600'}`}>
+                    <span>{s.label} ({s.pct > 0 ? '+' : ''}{s.pct}%):</span>
+                    <span>{s.pct > 0 ? '+' : ''}{formatCurrency(s.val)}</span>
+                  </div>
+                )) : null;
+              })()}
               {totals.profit !== 0 && (
                 <div className="flex justify-between text-slate-500">
                   <span className="text-sm">Zysk netto:</span>
@@ -4929,7 +5076,7 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
       {/* Settings Modal */}
       {showSettingsModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[70] p-4">
-          <div className="bg-white rounded-xl w-full max-w-lg">
+          <div className="bg-white rounded-xl w-full max-w-2xl max-h-[85vh] flex flex-col">
             <div className="p-4 border-b border-slate-200 flex justify-between items-center">
               <h2 className="text-lg font-semibold">Ustawienia oferty</h2>
               <button onClick={() => setShowSettingsModal(false)} className="p-1 hover:bg-slate-100 rounded">
@@ -4945,47 +5092,177 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                 Dodatki
               </button>
               <button
-                onClick={() => setSettingsTab('wid')}
-                className={`flex-1 py-3 text-sm font-medium text-center ${settingsTab === 'wid' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-slate-500 hover:text-slate-700'}`}
+                onClick={() => setSettingsTab('widok')}
+                className={`flex-1 py-3 text-sm font-medium text-center ${settingsTab === 'widok' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-slate-500 hover:text-slate-700'}`}
               >
-                WID
+                Widok
               </button>
             </div>
-            <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
+            <div className="p-4 space-y-5 overflow-y-auto flex-1">
               {settingsTab === 'dodatki' && (
-                <div className="space-y-4">
-                  <p className="text-sm text-slate-600">Dodatki i dopłaty wpływające na końcową wartość oferty.</p>
+                <div className="space-y-6">
+                  <p className="text-sm text-slate-600">Ustaw narzut (+) lub rabat (-) w zależności od wybranych warunków. Wartość w % od netto.</p>
+
+                  {/* Payment term rules */}
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Dopłata za termin płatności</label>
-                    <div className="flex items-center gap-2">
+                    <h4 className="text-sm font-semibold text-slate-700 mb-2">Termin płatności (dni)</h4>
+                    <div className="space-y-1.5">
+                      {paymentTermRules.map((rule, idx) => (
+                        <div key={idx} className="flex items-center gap-2">
+                          <select
+                            value={rule.value}
+                            onChange={e => setPaymentTermRules(prev => prev.map((r, i) => i === idx ? { ...r, value: Number(e.target.value) } : r))}
+                            className="w-24 px-2 py-1.5 border border-slate-200 rounded text-sm"
+                          >
+                            {paymentTermOptions.map(v => <option key={v} value={v}>{v} dni</option>)}
+                          </select>
+                          <span className="text-xs text-slate-400">=</span>
+                          <input
+                            type="number"
+                            value={rule.surcharge}
+                            onChange={e => setPaymentTermRules(prev => prev.map((r, i) => i === idx ? { ...r, surcharge: parseFloat(e.target.value) || 0 } : r))}
+                            className="w-20 px-2 py-1.5 border border-slate-200 rounded text-sm text-right"
+                            step="0.5"
+                          />
+                          <span className="text-xs text-slate-500">%</span>
+                          <span className={`text-xs ${rule.surcharge > 0 ? 'text-red-500' : rule.surcharge < 0 ? 'text-green-500' : 'text-slate-400'}`}>
+                            {rule.surcharge > 0 ? 'narzut' : rule.surcharge < 0 ? 'rabat' : '-'}
+                          </span>
+                          <button onClick={() => setPaymentTermRules(prev => prev.filter((_, i) => i !== idx))} className="p-0.5 hover:bg-red-50 rounded text-red-400 ml-auto">
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        onClick={() => setPaymentTermRules(prev => [...prev, { value: paymentTermOptions[0] || 30, surcharge: 0 }])}
+                        className="text-xs text-blue-600 hover:underline"
+                      >+ Dodaj regułę</button>
+                    </div>
+                    <div className="mt-2 flex items-center gap-1">
                       <input
                         type="number"
-                        value={0}
-                        className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm"
-                        placeholder="0"
-                        step="0.1"
+                        id="newPaymentTerm"
+                        placeholder="Nowa wartość"
+                        className="w-28 px-2 py-1 border border-slate-200 rounded text-xs"
                       />
-                      <span className="text-sm text-slate-500">%</span>
+                      <button
+                        onClick={() => {
+                          const inp = document.getElementById('newPaymentTerm') as HTMLInputElement;
+                          const v = parseInt(inp?.value);
+                          if (v > 0 && !paymentTermOptions.includes(v)) {
+                            setPaymentTermOptions(prev => [...prev, v].sort((a, b) => a - b));
+                            inp.value = '';
+                          }
+                        }}
+                        className="text-xs text-blue-600 hover:underline"
+                      >+ Dodaj opcję</button>
                     </div>
-                    <p className="text-xs text-slate-400 mt-1">Naliczana gdy termin płatności przekracza standard</p>
                   </div>
+
+                  {/* Warranty rules */}
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Dopłata za gwarancję</label>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        value={0}
-                        className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm"
-                        placeholder="0"
-                        step="0.1"
-                      />
-                      <span className="text-sm text-slate-500">%</span>
+                    <h4 className="text-sm font-semibold text-slate-700 mb-2">Okres gwarancyjny (miesięcy)</h4>
+                    <div className="space-y-1.5">
+                      {warrantyRules.map((rule, idx) => (
+                        <div key={idx} className="flex items-center gap-2">
+                          <select
+                            value={rule.value}
+                            onChange={e => setWarrantyRules(prev => prev.map((r, i) => i === idx ? { ...r, value: Number(e.target.value) } : r))}
+                            className="w-24 px-2 py-1.5 border border-slate-200 rounded text-sm"
+                          >
+                            {warrantyOptions.map(v => <option key={v} value={v}>{v} mies.</option>)}
+                          </select>
+                          <span className="text-xs text-slate-400">=</span>
+                          <input
+                            type="number"
+                            value={rule.surcharge}
+                            onChange={e => setWarrantyRules(prev => prev.map((r, i) => i === idx ? { ...r, surcharge: parseFloat(e.target.value) || 0 } : r))}
+                            className="w-20 px-2 py-1.5 border border-slate-200 rounded text-sm text-right"
+                            step="0.5"
+                          />
+                          <span className="text-xs text-slate-500">%</span>
+                          <span className={`text-xs ${rule.surcharge > 0 ? 'text-red-500' : rule.surcharge < 0 ? 'text-green-500' : 'text-slate-400'}`}>
+                            {rule.surcharge > 0 ? 'narzut' : rule.surcharge < 0 ? 'rabat' : '-'}
+                          </span>
+                          <button onClick={() => setWarrantyRules(prev => prev.filter((_, i) => i !== idx))} className="p-0.5 hover:bg-red-50 rounded text-red-400 ml-auto">
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        onClick={() => setWarrantyRules(prev => [...prev, { value: warrantyOptions[0] || 24, surcharge: 0 }])}
+                        className="text-xs text-blue-600 hover:underline"
+                      >+ Dodaj regułę</button>
                     </div>
-                    <p className="text-xs text-slate-400 mt-1">Naliczana za wydłużony okres gwarancyjny</p>
+                    <div className="mt-2 flex items-center gap-1">
+                      <input type="number" id="newWarranty" placeholder="Nowa wartość" className="w-28 px-2 py-1 border border-slate-200 rounded text-xs" />
+                      <button
+                        onClick={() => {
+                          const inp = document.getElementById('newWarranty') as HTMLInputElement;
+                          const v = parseInt(inp?.value);
+                          if (v > 0 && !warrantyOptions.includes(v)) {
+                            setWarrantyOptions(prev => [...prev, v].sort((a, b) => a - b));
+                            inp.value = '';
+                          }
+                        }}
+                        className="text-xs text-blue-600 hover:underline"
+                      >+ Dodaj opcję</button>
+                    </div>
+                  </div>
+
+                  {/* Invoice frequency rules */}
+                  <div>
+                    <h4 className="text-sm font-semibold text-slate-700 mb-2">Wystawienie faktur (co ile dni)</h4>
+                    <div className="space-y-1.5">
+                      {invoiceFreqRules.map((rule, idx) => (
+                        <div key={idx} className="flex items-center gap-2">
+                          <select
+                            value={rule.value}
+                            onChange={e => setInvoiceFreqRules(prev => prev.map((r, i) => i === idx ? { ...r, value: Number(e.target.value) } : r))}
+                            className="w-24 px-2 py-1.5 border border-slate-200 rounded text-sm"
+                          >
+                            {invoiceFreqOptions.map(v => <option key={v} value={v}>co {v} dni</option>)}
+                          </select>
+                          <span className="text-xs text-slate-400">=</span>
+                          <input
+                            type="number"
+                            value={rule.surcharge}
+                            onChange={e => setInvoiceFreqRules(prev => prev.map((r, i) => i === idx ? { ...r, surcharge: parseFloat(e.target.value) || 0 } : r))}
+                            className="w-20 px-2 py-1.5 border border-slate-200 rounded text-sm text-right"
+                            step="0.5"
+                          />
+                          <span className="text-xs text-slate-500">%</span>
+                          <span className={`text-xs ${rule.surcharge > 0 ? 'text-red-500' : rule.surcharge < 0 ? 'text-green-500' : 'text-slate-400'}`}>
+                            {rule.surcharge > 0 ? 'narzut' : rule.surcharge < 0 ? 'rabat' : '-'}
+                          </span>
+                          <button onClick={() => setInvoiceFreqRules(prev => prev.filter((_, i) => i !== idx))} className="p-0.5 hover:bg-red-50 rounded text-red-400 ml-auto">
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        onClick={() => setInvoiceFreqRules(prev => [...prev, { value: invoiceFreqOptions[0] || 30, surcharge: 0 }])}
+                        className="text-xs text-blue-600 hover:underline"
+                      >+ Dodaj regułę</button>
+                    </div>
+                    <div className="mt-2 flex items-center gap-1">
+                      <input type="number" id="newInvoiceFreq" placeholder="Nowa wartość" className="w-28 px-2 py-1 border border-slate-200 rounded text-xs" />
+                      <button
+                        onClick={() => {
+                          const inp = document.getElementById('newInvoiceFreq') as HTMLInputElement;
+                          const v = parseInt(inp?.value);
+                          if (v > 0 && !invoiceFreqOptions.includes(v)) {
+                            setInvoiceFreqOptions(prev => [...prev, v].sort((a, b) => a - b));
+                            inp.value = '';
+                          }
+                        }}
+                        className="text-xs text-blue-600 hover:underline"
+                      >+ Dodaj opcję</button>
+                    </div>
                   </div>
                 </div>
               )}
-              {settingsTab === 'wid' && (
+              {settingsTab === 'widok' && (
                 <div className="space-y-4">
                   <p className="text-sm text-slate-600">Widoczność elementów w druku i generacji dokumentu.</p>
                   <label className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg cursor-pointer hover:bg-slate-100">

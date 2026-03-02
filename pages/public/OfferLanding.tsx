@@ -39,6 +39,8 @@ interface PublicOffer {
     name: string;
     nip: string | null;
     legal_address: string | null;
+    phone: string | null;
+    email: string | null;
   } | null;
   sections: {
     id: string;
@@ -153,7 +155,7 @@ export const OfferLandingPage: React.FC = () => {
           .eq('offer_id', offerData.id)
           .order('sort_order'),
         offerData.client_id
-          ? supabase.from('contractors').select('name, nip, legal_address').eq('id', offerData.client_id).single()
+          ? supabase.from('contractors').select('name, nip, legal_address, phone, email').eq('id', offerData.client_id).single()
           : Promise.resolve({ data: null })
       ]);
 
@@ -410,21 +412,27 @@ export const OfferLandingPage: React.FC = () => {
               <div className="grid grid-cols-2 gap-8">
                 <div>
                   <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Zamawiający</h4>
-                  {offer.client ? (
-                    <div className="text-sm text-slate-700 space-y-0.5">
-                      <p className="font-semibold text-slate-900">{offer.client.name}</p>
-                      {offer.client.nip && <p>NIP: {offer.client.nip}</p>}
-                      {offer.client.legal_address && <p>{offer.client.legal_address}</p>}
-                      {(() => {
-                        const cd = offer.print_settings?.client_data;
-                        if (!cd) return null;
-                        const addr = [cd.company_street, cd.company_street_number, cd.company_postal_code, cd.company_city].filter(Boolean).join(', ');
-                        return addr && !offer.client.legal_address ? <p>{addr}</p> : null;
-                      })()}
-                    </div>
-                  ) : (
-                    <p className="text-sm text-slate-400 italic">Brak danych</p>
-                  )}
+                  {(() => {
+                    const cd = offer.print_settings?.client_data || {};
+                    const clientName = offer.client?.name || cd.client_name || '';
+                    const clientNip = offer.client?.nip || cd.nip || '';
+                    const clientAddr = offer.client?.legal_address || [cd.company_street, cd.company_street_number, cd.company_postal_code, cd.company_city].filter(Boolean).join(', ');
+                    const repName = cd.representative_name || '';
+                    const repEmail = cd.representative_email || offer.client?.email || '';
+                    const repPhone = cd.representative_phone || offer.client?.phone || '';
+                    return clientName ? (
+                      <div className="text-sm text-slate-700 space-y-0.5">
+                        <p className="font-semibold text-slate-900">{clientName}</p>
+                        {clientNip && <p>NIP: {clientNip}</p>}
+                        {clientAddr && <p>{clientAddr}</p>}
+                        {repName && <p className="mt-1">Przedstawiciel: {repName}</p>}
+                        {repEmail && <p>email: {repEmail}</p>}
+                        {repPhone && <p>tel. {repPhone}</p>}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-slate-400 italic">Brak danych</p>
+                    );
+                  })()}
                 </div>
                 <div>
                   <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Wykonawca</h4>
