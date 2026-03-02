@@ -514,22 +514,51 @@ export async function convertEstimateToOfferData(estimateId: string): Promise<{
     created_at: '',
     updated_at: '',
     isExpanded: true,
-    items: (items as any[]).map((item: any, iIndex: number) => ({
-      id: `kosztorys-item-${sIndex}-${iIndex}`,
-      offer_id: '',
-      section_id: `kosztorys-section-${sIndex}`,
-      name: item.work_name || item.work_code || `Pozycja ${iIndex + 1}`,
-      description: item.work_code || '',
-      quantity: item.quantity,
-      unit: item.unit,
-      unit_price: item.unit_price,
-      total_price: item.total_price,
-      sort_order: iIndex,
-      is_optional: false,
-      created_at: '',
-      updated_at: '',
-      isNew: true,
-    })),
+    items: (items as any[]).map((item: any, iIndex: number) => {
+      // Build components from work and material data
+      const components: any[] = [];
+      if (item.unit_price_work && item.unit_price_work > 0) {
+        components.push({
+          type: 'labor',
+          name: item.task_description || item.work_name || 'Robocizna',
+          code: item.work_code || '',
+          unit: item.unit || 'szt.',
+          quantity: item.quantity || 1,
+          unit_price: item.unit_price_work,
+          total_price: item.total_work || (item.quantity || 1) * item.unit_price_work,
+        });
+      }
+      if (item.material_name && item.unit_price_material && item.unit_price_material > 0) {
+        components.push({
+          type: 'material',
+          name: item.material_name,
+          code: '',
+          unit: item.unit || 'szt.',
+          quantity: item.quantity || 1,
+          unit_price: item.unit_price_material,
+          total_price: item.total_material || (item.quantity || 1) * item.unit_price_material,
+        });
+      }
+      const totalPrice = item.total_item || item.total_price || ((item.total_work || 0) + (item.total_material || 0));
+      const unitPrice = item.unit_price || (item.quantity ? totalPrice / item.quantity : 0);
+      return {
+        id: `kosztorys-item-${sIndex}-${iIndex}`,
+        offer_id: '',
+        section_id: `kosztorys-section-${sIndex}`,
+        name: item.task_description || item.work_name || item.installation_element || item.work_code || `Pozycja ${iIndex + 1}`,
+        description: item.installation_element || item.work_code || '',
+        quantity: item.quantity,
+        unit: item.unit,
+        unit_price: unitPrice,
+        total_price: totalPrice,
+        sort_order: iIndex,
+        is_optional: false,
+        created_at: '',
+        updated_at: '',
+        isNew: true,
+        components,
+      };
+    }),
   }));
 
   // Add equipment as separate section
@@ -558,6 +587,7 @@ export async function convertEstimateToOfferData(estimateId: string): Promise<{
         created_at: '',
         updated_at: '',
         isNew: true,
+        components: [],
       })),
     });
   }

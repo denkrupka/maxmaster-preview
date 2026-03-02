@@ -2285,7 +2285,8 @@ export const RequestsPage: React.FC = () => {
                           autoFocus
                           onKeyDown={async e => {
                             if (e.key === 'Enter' && newObjectCategoryOption.trim()) {
-                              const { data } = await supabase.from('kosztorys_object_categories').insert({ name: newObjectCategoryOption.trim(), company_id: currentUser?.company_id }).select().single();
+                              const code = newObjectCategoryOption.trim().toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 50) || `cat_${Date.now()}`;
+                              const { data } = await supabase.from('kosztorys_object_categories').insert({ name: newObjectCategoryOption.trim(), code, company_id: currentUser?.company_id, is_active: true }).select().single();
                               if (data) { setObjectCategories(prev => [...prev, data]); setFormData(prev => ({ ...prev, object_category_id: data.id })); }
                               setNewObjectCategoryOption('');
                               setShowAddObjectCategory(false);
@@ -2293,7 +2294,7 @@ export const RequestsPage: React.FC = () => {
                             if (e.key === 'Escape') setShowAddObjectCategory(false);
                           }}
                         />
-                        <button onClick={async () => { if (newObjectCategoryOption.trim()) { const { data } = await supabase.from('kosztorys_object_categories').insert({ name: newObjectCategoryOption.trim(), company_id: currentUser?.company_id }).select().single(); if (data) { setObjectCategories(prev => [...prev, data]); setFormData(prev => ({ ...prev, object_category_id: data.id })); } } setNewObjectCategoryOption(''); setShowAddObjectCategory(false); }} className="px-2 py-2 bg-blue-600 text-white rounded-lg text-xs hover:bg-blue-700">OK</button>
+                        <button onClick={async () => { if (newObjectCategoryOption.trim()) { const code = newObjectCategoryOption.trim().toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 50) || `cat_${Date.now()}`; const { data } = await supabase.from('kosztorys_object_categories').insert({ name: newObjectCategoryOption.trim(), code, company_id: currentUser?.company_id, is_active: true }).select().single(); if (data) { setObjectCategories(prev => [...prev, data]); setFormData(prev => ({ ...prev, object_category_id: data.id })); } } setNewObjectCategoryOption(''); setShowAddObjectCategory(false); }} className="px-2 py-2 bg-blue-600 text-white rounded-lg text-xs hover:bg-blue-700">OK</button>
                         <button onClick={() => setShowAddObjectCategory(false)} className="px-2 py-2 text-slate-600 border border-slate-200 rounded-lg text-xs hover:bg-slate-50">✕</button>
                       </div>
                     ) : (

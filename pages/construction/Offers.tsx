@@ -7,9 +7,13 @@ import {
   Save, X, GripVertical, Percent, AlertCircle, FileSpreadsheet,
   FolderPlus, Package, Star, UserPlus, Briefcase, MapPin,
   ToggleLeft, ToggleRight, ListChecks, ChevronUp, Wrench, Hammer,
-  Zap, FolderOpen, Printer, MessageSquare, Phone, Globe
+  Zap, FolderOpen, Printer, MessageSquare, Phone, Globe, Store
 } from 'lucide-react';
+import jsPDF from 'jspdf';
+import * as XLSX from 'xlsx';
 import { useAppContext } from '../../context/AppContext';
+import { WholesalerIntegrationModal } from './WholesalerIntegrationModal';
+import { RentalIntegrationModal } from './RentalIntegrationModal';
 import { supabase } from '../../lib/supabase';
 import { fetchCompanyByNip, validateNip, normalizeNip } from '../../lib/gusApi';
 import { searchAddress, OSMAddress, createDebouncedSearch } from '../../lib/osmAutocomplete';
@@ -200,6 +204,10 @@ export const OffersPage: React.FC = () => {
   // Calculation mode & dates
   const [calculationMode, setCalculationMode] = useState<CalculationMode>('markup');
   const [issueDate, setIssueDate] = useState(new Date().toISOString().split('T')[0]);
+  const [objectName, setObjectName] = useState('');
+  const [objectAddress, setObjectAddress] = useState('');
+  const [workStartDate, setWorkStartDate] = useState('');
+  const [workEndDate, setWorkEndDate] = useState('');
 
   // Bulk operations
   const [showBulkBar, setShowBulkBar] = useState(false);
@@ -210,6 +218,7 @@ export const OffersPage: React.FC = () => {
   const [previewTemplate, setPreviewTemplate] = useState<'netto' | 'brutto' | 'rabat' | 'no_prices' | 'full'>('netto');
   const [showLogoInPreview, setShowLogoInPreview] = useState(true);
   const [showSendModal, setShowSendModal] = useState(false);
+  const [showDownloadDropdown, setShowDownloadDropdown] = useState(false);
   const [sendRepresentativeId, setSendRepresentativeId] = useState('');
   const [sendCoverLetter, setSendCoverLetter] = useState('');
   const [sendChannels, setSendChannels] = useState<string[]>(['email']);
@@ -269,6 +278,15 @@ export const OffersPage: React.FC = () => {
   const [kartotekaExpandedCats, setKartotekaExpandedCats] = useState<Set<string>>(new Set());
   const [kartotekaViewMode, setKartotekaViewMode] = useState<'list' | 'grid'>('list');
   const [kartotekaDetailItem, setKartotekaDetailItem] = useState<any | null>(null);
+  const [kartotekaMainTab, setKartotekaMainTab] = useState<'katalog' | 'hurtownie' | 'wynajem'>('katalog');
+  const [showWholesalerConfig, setShowWholesalerConfig] = useState(false);
+  const [showRentalConfig, setShowRentalConfig] = useState(false);
+  const [wholesalerIntegrations, setWholesalerIntegrations] = useState<any[]>([]);
+  const [wholesalerSearchText, setWholesalerSearchText] = useState('');
+  const [wholesalerResults, setWholesalerResults] = useState<any[]>([]);
+  const [wholesalerSearching, setWholesalerSearching] = useState(false);
+  const [wholesalerProvider, setWholesalerProvider] = useState<'tim' | 'onninen'>('tim');
+  const [rentalProvider, setRentalProvider] = useState<'atut' | 'ramirent'>('atut');
 
   // Import from estimate state
   const [selectedEstimateId, setSelectedEstimateId] = useState('');
@@ -961,11 +979,32 @@ export const OffersPage: React.FC = () => {
         });
         setSelectedOffer(offer);
         setIssueDate(offer.created_at ? offer.created_at.split('T')[0] : new Date().toISOString().split('T')[0]);
+        setObjectName(offer.object_name || '');
+        setObjectAddress(offer.object_address || '');
+        setWorkStartDate(offer.work_start_date ? offer.work_start_date.split('T')[0] : '');
+        setWorkEndDate(offer.work_end_date ? offer.work_end_date.split('T')[0] : '');
 
         // Parse print_settings for saved state
         const ps = offer.print_settings || {};
         if (ps.calculation_mode) setCalculationMode(ps.calculation_mode);
         if (ps.issue_date) setIssueDate(ps.issue_date);
+
+        // Restore client data from saved print_settings
+        if (ps.client_data) {
+          const cd = ps.client_data;
+          setOfferClientData(prev => ({
+            ...prev,
+            investment_name: cd.investment_name || prev.investment_name,
+            object_code: cd.object_code || prev.object_code,
+            object_category_id: cd.object_category_id || prev.object_category_id,
+            object_type: cd.object_type || prev.object_type,
+            object_street: cd.object_street || prev.object_street,
+            object_street_number: cd.object_street_number || prev.object_street_number,
+            object_city: cd.object_city || prev.object_city,
+            object_postal_code: cd.object_postal_code || prev.object_postal_code,
+          }));
+          if (cd.representative_id) setSendRepresentativeId(cd.representative_id);
+        }
 
         const componentsByItem = (componentsRes.data || []).reduce((acc: Record<string, OfferComponent[]>, c: any) => {
           if (!acc[c.offer_item_id]) acc[c.offer_item_id] = [];
@@ -1250,9 +1289,30 @@ export const OffersPage: React.FC = () => {
           created_by_id: currentUser.id,
           public_token: publicToken,
           public_url: `/#/offer/${publicToken}`,
+          object_name: objectName || offerClientData.investment_name || null,
+          object_address: objectAddress || [offerClientData.object_street, offerClientData.object_street_number, offerClientData.object_postal_code, offerClientData.object_city].filter(Boolean).join(', ') || null,
+          work_start_date: workStartDate || null,
+          work_end_date: workEndDate || null,
           print_settings: {
             calculation_mode: calculationMode,
-            issue_date: issueDate
+            issue_date: issueDate,
+            client_data: {
+              client_name: offerClientData.client_name,
+              nip: offerClientData.nip,
+              company_street: offerClientData.company_street,
+              company_street_number: offerClientData.company_street_number,
+              company_city: offerClientData.company_city,
+              company_postal_code: offerClientData.company_postal_code,
+              investment_name: offerClientData.investment_name,
+              object_code: offerClientData.object_code,
+              object_category_id: offerClientData.object_category_id,
+              object_type: offerClientData.object_type,
+              object_street: offerClientData.object_street,
+              object_street_number: offerClientData.object_street_number,
+              object_city: offerClientData.object_city,
+              object_postal_code: offerClientData.object_postal_code,
+              representative_id: sendRepresentativeId || null
+            }
           }
         })
         .select()
@@ -1379,9 +1439,30 @@ export const OffersPage: React.FC = () => {
           final_amount: finalAmount,
           notes: offerData.notes,
           internal_notes: offerData.internal_notes,
+          object_name: objectName || null,
+          object_address: objectAddress || null,
+          work_start_date: workStartDate || null,
+          work_end_date: workEndDate || null,
           print_settings: {
             calculation_mode: calculationMode,
-            issue_date: issueDate
+            issue_date: issueDate,
+            client_data: {
+              client_name: offerClientData.client_name,
+              nip: offerClientData.nip,
+              company_street: offerClientData.company_street,
+              company_street_number: offerClientData.company_street_number,
+              company_city: offerClientData.company_city,
+              company_postal_code: offerClientData.company_postal_code,
+              investment_name: offerClientData.investment_name,
+              object_code: offerClientData.object_code,
+              object_category_id: offerClientData.object_category_id,
+              object_type: offerClientData.object_type,
+              object_street: offerClientData.object_street,
+              object_street_number: offerClientData.object_street_number,
+              object_city: offerClientData.object_city,
+              object_postal_code: offerClientData.object_postal_code,
+              representative_id: sendRepresentativeId || null
+            }
           }
         })
         .eq('id', selectedOffer.id);
@@ -1949,6 +2030,13 @@ export const OffersPage: React.FC = () => {
           assigned_user_id: req.assigned_user_id || prev.assigned_user_id,
         }));
 
+        // Pre-fill new offer fields from kosztorys request
+        setObjectName(req.investment_name || '');
+        const objAddr = [req.object_street, req.object_street_number, req.object_postal_code, req.object_city].filter(Boolean).join(', ');
+        setObjectAddress(objAddr || '');
+        if (req.planned_start_date) setWorkStartDate(req.planned_start_date.split('T')[0]);
+        if (req.planned_end_date) setWorkEndDate(req.planned_end_date.split('T')[0]);
+
         // Try to load contacts for the client
         if (req.nip) {
           offerFindAndLoadContacts(req.nip, req.client_name);
@@ -1970,11 +2058,11 @@ export const OffersPage: React.FC = () => {
               ...i,
               isEditing: false,
               isExpanded: false,
-              components: [],
+              components: i.components || [],
               markup_percent: 0,
               cost_price: 0,
-              discount_percent: 0,
-              vat_rate: 23,
+              discount_percent: i.discount_percent || 0,
+              vat_rate: i.vat_rate ?? 23,
               selected: false
             }))
           }));
@@ -2185,6 +2273,35 @@ export const OffersPage: React.FC = () => {
     loadKartoteka();
   }, [showSearchLabourModal, showSearchMaterialModal, showSearchEquipmentModal, currentUser]);
 
+  // Load wholesaler integrations when needed
+  useEffect(() => {
+    if (kartotekaMainTab === 'hurtownie' && currentUser?.company_id && wholesalerIntegrations.length === 0) {
+      supabase.from('wholesaler_integrations').select('*').eq('company_id', currentUser.company_id)
+        .then(res => { if (res.data) setWholesalerIntegrations(res.data); });
+    }
+  }, [kartotekaMainTab, currentUser?.company_id]);
+
+  const handleWholesalerSearch = async (query: string) => {
+    if (!query.trim() || !currentUser) return;
+    setWholesalerSearching(true);
+    try {
+      const proxyName = wholesalerProvider === 'tim' ? 'tim-proxy' : 'oninen-proxy';
+      const { data, error } = await supabase.functions.invoke(proxyName, {
+        body: { action: 'search', query: query.trim(), limit: 50 }
+      });
+      if (data?.products) {
+        setWholesalerResults(data.products);
+      } else {
+        setWholesalerResults([]);
+      }
+    } catch (err) {
+      console.error('Wholesaler search error:', err);
+      setWholesalerResults([]);
+    } finally {
+      setWholesalerSearching(false);
+    }
+  };
+
   const resetOfferForm = () => {
     setOfferData({
       name: '',
@@ -2201,6 +2318,10 @@ export const OffersPage: React.FC = () => {
     setSelectedKosztorysId('');
     setImportedKosztorysName(null);
     resetOfferClientData();
+    setObjectName('');
+    setObjectAddress('');
+    setWorkStartDate('');
+    setWorkEndDate('');
   };
 
   // ============================================
@@ -2351,6 +2472,9 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
       <h2 style="margin:0 0 4px;font-size:18px;">${selectedOffer.name}</h2>
       <p style="margin:0;color:#64748b;font-size:12px;">Data wystawienia oferty: ${formatDate(issueDate)}</p>
       <p style="margin:0;color:#64748b;font-size:12px;">Oferta ważna do: ${formatDate(selectedOffer.valid_until)}</p>
+      ${objectName ? `<p style="margin:4px 0 0;color:#64748b;font-size:12px;">Obiekt: ${objectName}</p>` : ''}
+      ${objectAddress ? `<p style="margin:0;color:#64748b;font-size:12px;">Adres obiektu: ${objectAddress}</p>` : ''}
+      ${workStartDate || workEndDate ? `<p style="margin:0;color:#64748b;font-size:12px;">Termin robót: ${workStartDate ? formatDate(workStartDate) : '?'} — ${workEndDate ? formatDate(workEndDate) : '?'}</p>` : ''}
     </div>
     ${showLogoInPreview && companyLogo ? `<img src="${companyLogo}" alt="" style="max-height:50px;" />` : ''}
   </div>
@@ -2898,8 +3022,8 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
             </div>
             {offerShowAddObjectCategory && (
               <div className="flex gap-1 mt-1">
-                <input type="text" value={offerNewObjectCategoryOption} onChange={e => setOfferNewObjectCategoryOption(e.target.value)} placeholder="Nowy typ obiektu..." className="flex-1 px-3 py-1.5 border border-slate-200 rounded-lg text-sm" autoFocus onKeyDown={async e => { if (e.key === 'Enter' && offerNewObjectCategoryOption.trim()) { const { data } = await supabase.from('kosztorys_object_categories').insert({ name: offerNewObjectCategoryOption.trim(), company_id: currentUser?.company_id }).select().single(); if (data) { setOfferObjectCategories((prev: any) => [...prev, data]); setOfferClientData(prev => ({ ...prev, object_category_id: data.id })); } setOfferNewObjectCategoryOption(''); setOfferShowAddObjectCategory(false); } if (e.key === 'Escape') setOfferShowAddObjectCategory(false); }} />
-                <button onClick={async () => { if (offerNewObjectCategoryOption.trim()) { const { data } = await supabase.from('kosztorys_object_categories').insert({ name: offerNewObjectCategoryOption.trim(), company_id: currentUser?.company_id }).select().single(); if (data) { setOfferObjectCategories((prev: any) => [...prev, data]); setOfferClientData(prev => ({ ...prev, object_category_id: data.id })); } } setOfferNewObjectCategoryOption(''); setOfferShowAddObjectCategory(false); }} className="px-2 py-1.5 bg-blue-600 text-white rounded-lg text-xs">OK</button>
+                <input type="text" value={offerNewObjectCategoryOption} onChange={e => setOfferNewObjectCategoryOption(e.target.value)} placeholder="Nowy typ obiektu..." className="flex-1 px-3 py-1.5 border border-slate-200 rounded-lg text-sm" autoFocus onKeyDown={async e => { if (e.key === 'Enter' && offerNewObjectCategoryOption.trim()) { const code = offerNewObjectCategoryOption.trim().toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 50) || `cat_${Date.now()}`; const { data } = await supabase.from('kosztorys_object_categories').insert({ name: offerNewObjectCategoryOption.trim(), code, company_id: currentUser?.company_id, is_active: true }).select().single(); if (data) { setOfferObjectCategories((prev: any) => [...prev, data]); setOfferClientData(prev => ({ ...prev, object_category_id: data.id })); } setOfferNewObjectCategoryOption(''); setOfferShowAddObjectCategory(false); } if (e.key === 'Escape') setOfferShowAddObjectCategory(false); }} />
+                <button onClick={async () => { if (offerNewObjectCategoryOption.trim()) { const code = offerNewObjectCategoryOption.trim().toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 50) || `cat_${Date.now()}`; const { data } = await supabase.from('kosztorys_object_categories').insert({ name: offerNewObjectCategoryOption.trim(), code, company_id: currentUser?.company_id, is_active: true }).select().single(); if (data) { setOfferObjectCategories((prev: any) => [...prev, data]); setOfferClientData(prev => ({ ...prev, object_category_id: data.id })); } } setOfferNewObjectCategoryOption(''); setOfferShowAddObjectCategory(false); }} className="px-2 py-1.5 bg-blue-600 text-white rounded-lg text-xs">OK</button>
                 <button onClick={() => setOfferShowAddObjectCategory(false)} className="px-2 py-1.5 text-slate-600 border border-slate-200 rounded-lg text-xs">✕</button>
               </div>
             )}
@@ -3971,31 +4095,17 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
           {/* Object info block */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 px-6 py-4 border-b border-slate-200 bg-slate-50/50">
             <div>
-              <p className="text-xs font-medium text-slate-500 mb-1">Obiekt</p>
+              <p className="text-xs font-medium text-slate-500 mb-1">Nazwa obiektu</p>
               {editMode ? (
                 <input
                   type="text"
-                  value={offerClientData.investment_name}
-                  onChange={e => setOfferClientData(prev => ({ ...prev, investment_name: e.target.value }))}
+                  value={objectName}
+                  onChange={e => setObjectName(e.target.value)}
                   className="w-full px-2 py-1 border border-slate-200 rounded text-sm"
                   placeholder="Nazwa obiektu..."
                 />
               ) : (
-                <p className="text-sm font-medium text-slate-900">{offerClientData.investment_name || selectedOffer.notes?.match(/Inwestycja: (.+)/)?.[1] || '-'}</p>
-              )}
-            </div>
-            <div>
-              <p className="text-xs font-medium text-slate-500 mb-1">Kod obiektu</p>
-              {editMode ? (
-                <input
-                  type="text"
-                  value={offerClientData.object_code}
-                  onChange={e => setOfferClientData(prev => ({ ...prev, object_code: e.target.value }))}
-                  className="w-full px-2 py-1 border border-slate-200 rounded text-sm"
-                  placeholder="Kod obiektu..."
-                />
-              ) : (
-                <p className="text-sm font-medium text-slate-900">{offerClientData.object_code || selectedOffer.notes?.match(/Kod obiektu: (.+)/)?.[1] || '-'}</p>
+                <p className="text-sm font-medium text-slate-900">{objectName || '-'}</p>
               )}
             </div>
             <div>
@@ -4003,19 +4113,42 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
               {editMode ? (
                 <input
                   type="text"
-                  value={[offerClientData.object_street, offerClientData.object_street_number, offerClientData.object_postal_code, offerClientData.object_city].filter(Boolean).join(', ')}
-                  onChange={e => {
-                    // Simple: put everything in street
-                    setOfferClientData(prev => ({ ...prev, object_street: e.target.value, object_street_number: '', object_postal_code: '', object_city: '' }));
-                  }}
+                  value={objectAddress}
+                  onChange={e => setObjectAddress(e.target.value)}
                   className="w-full px-2 py-1 border border-slate-200 rounded text-sm"
                   placeholder="Adres obiektu..."
                 />
               ) : (
-                <p className="text-sm font-medium text-slate-900">
-                  {[offerClientData.object_street, offerClientData.object_street_number, offerClientData.object_postal_code, offerClientData.object_city].filter(Boolean).join(', ') || selectedOffer.notes?.match(/Adres obiektu: (.+)/)?.[1] || '-'}
-                </p>
+                <p className="text-sm font-medium text-slate-900">{objectAddress || '-'}</p>
               )}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <p className="text-xs font-medium text-slate-500 mb-1">Rozpoczęcie robót</p>
+                {editMode ? (
+                  <input
+                    type="date"
+                    value={workStartDate}
+                    onChange={e => setWorkStartDate(e.target.value)}
+                    className="w-full px-2 py-1 border border-slate-200 rounded text-sm"
+                  />
+                ) : (
+                  <p className="text-sm font-medium text-slate-900">{workStartDate ? formatDate(workStartDate) : '-'}</p>
+                )}
+              </div>
+              <div>
+                <p className="text-xs font-medium text-slate-500 mb-1">Zakończenie robót</p>
+                {editMode ? (
+                  <input
+                    type="date"
+                    value={workEndDate}
+                    onChange={e => setWorkEndDate(e.target.value)}
+                    className="w-full px-2 py-1 border border-slate-200 rounded text-sm"
+                  />
+                ) : (
+                  <p className="text-sm font-medium text-slate-900">{workEndDate ? formatDate(workEndDate) : '-'}</p>
+                )}
+              </div>
             </div>
           </div>
 
@@ -4277,7 +4410,7 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
         </div>
 
         {/* Sticky bottom summary bar */}
-        <div className="fixed bottom-0 left-64 right-0 bg-white border-t-2 border-slate-300 shadow-lg z-40">
+        <div className="fixed bottom-0 left-0 lg:left-64 right-0 bg-white border-t-2 border-slate-300 shadow-lg z-40">
           <div className="px-6 py-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-6 text-sm">
@@ -4757,25 +4890,101 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                 Zamknij
               </button>
               <div className="flex gap-2">
-                <button
-                  onClick={() => {
-                    const html = generateOfferHTML();
-                    const printWindow = window.open('', '_blank');
-                    if (printWindow) {
-                      printWindow.document.write(html);
-                      printWindow.document.close();
-                      printWindow.focus();
-                      setTimeout(() => {
-                        printWindow.print();
-                      }, 500);
-                    }
-                  }}
-                  className="flex items-center gap-1 px-4 py-2 border border-slate-200 rounded-lg hover:bg-slate-50"
-                  title="Pobierz jako PDF (Drukuj > Zapisz jako PDF)"
-                >
-                  <Download className="w-4 h-4" />
-                  Pobierz PDF
-                </button>
+                {/* Pobierz dropdown */}
+                <div className="relative">
+                  <button
+                    onClick={() => setShowDownloadDropdown(!showDownloadDropdown)}
+                    className="flex items-center gap-1 px-4 py-2 border border-slate-200 rounded-lg hover:bg-slate-50"
+                  >
+                    <Download className="w-4 h-4" />
+                    Pobierz
+                    <ChevronDown className="w-3 h-3" />
+                  </button>
+                  {showDownloadDropdown && (
+                    <div className="absolute bottom-full mb-1 right-0 bg-white border border-slate-200 rounded-lg shadow-lg z-10 min-w-[160px]">
+                      <button
+                        onClick={async () => {
+                          setShowDownloadDropdown(false);
+                          const html = generateOfferHTML();
+                          const container = document.createElement('div');
+                          container.innerHTML = html;
+                          container.style.position = 'absolute';
+                          container.style.left = '-9999px';
+                          container.style.width = '794px';
+                          document.body.appendChild(container);
+                          try {
+                            const pdf = new jsPDF('p', 'mm', 'a4');
+                            await pdf.html(container, {
+                              callback: (doc) => {
+                                doc.save(`${selectedOffer?.number || 'oferta'}.pdf`);
+                              },
+                              x: 0,
+                              y: 0,
+                              width: 210,
+                              windowWidth: 794,
+                              margin: [10, 10, 10, 10]
+                            });
+                          } finally {
+                            document.body.removeChild(container);
+                          }
+                        }}
+                        className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left hover:bg-slate-50 rounded-t-lg"
+                      >
+                        <FileText className="w-4 h-4 text-red-500" />
+                        Pobierz PDF
+                      </button>
+                      <button
+                        onClick={() => {
+                          setShowDownloadDropdown(false);
+                          const allItems = getAllItems(sections);
+                          const wsData: any[][] = [
+                            ['Oferta', selectedOffer?.number || '', '', '', '', ''],
+                            ['Nazwa', selectedOffer?.name || '', '', '', '', ''],
+                            ['Data wystawienia', issueDate, '', '', '', ''],
+                            ['Ważna do', selectedOffer?.valid_until || '', '', '', '', ''],
+                            [],
+                            ['Lp.', 'Sekcja', 'Nazwa', 'Jedn.', 'Ilość', 'Cena jedn.', 'Rabat %', 'VAT %', 'Wartość netto']
+                          ];
+                          let lp = 1;
+                          sections.forEach(sec => {
+                            sec.items.forEach(item => {
+                              const val = item.quantity * item.unit_price;
+                              const disc = val * ((item.discount_percent || 0) / 100);
+                              wsData.push([
+                                lp++,
+                                sec.name || '',
+                                item.name || '',
+                                item.unit || 'szt.',
+                                item.quantity || 0,
+                                item.unit_price || 0,
+                                item.discount_percent || 0,
+                                item.vat_rate ?? 23,
+                                +(val - disc).toFixed(2)
+                              ]);
+                            });
+                          });
+                          wsData.push([]);
+                          wsData.push(['', '', '', '', '', '', '', 'Suma netto:', totals.total.toFixed(2)]);
+                          wsData.push(['', '', '', '', '', '', '', 'VAT:', totals.totalVat.toFixed(2)]);
+                          wsData.push(['', '', '', '', '', '', '', 'Brutto:', totals.totalBrutto.toFixed(2)]);
+
+                          const wb = XLSX.utils.book_new();
+                          const ws = XLSX.utils.aoa_to_sheet(wsData);
+                          ws['!cols'] = [
+                            { wch: 5 }, { wch: 20 }, { wch: 40 }, { wch: 8 },
+                            { wch: 10 }, { wch: 12 }, { wch: 8 }, { wch: 8 }, { wch: 14 }
+                          ];
+                          XLSX.utils.book_append_sheet(wb, ws, 'Oferta');
+                          XLSX.writeFile(wb, `${selectedOffer?.number || 'oferta'}.xlsx`);
+                        }}
+                        className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left hover:bg-slate-50 rounded-b-lg"
+                      >
+                        <FileSpreadsheet className="w-4 h-4 text-green-600" />
+                        Pobierz Excel
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <button
                   onClick={() => {
                     const html = generateOfferHTML();
@@ -5130,16 +5339,29 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
             <div className="px-6 pt-4 pb-0 border-b border-slate-200 flex items-center justify-between">
               <div className="flex items-center gap-1">
                 <button
-                  onClick={() => setKartotekaTab('own')}
-                  className={`px-4 py-2.5 text-sm font-medium border-b-2 transition ${kartotekaTab === 'own' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+                  onClick={() => { setKartotekaMainTab('katalog'); setKartotekaTab('own'); }}
+                  className={`px-4 py-2.5 text-sm font-medium border-b-2 transition ${kartotekaMainTab === 'katalog' && kartotekaTab === 'own' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
                 >
                   Własny katalog
                 </button>
                 <button
-                  onClick={() => setKartotekaTab('system')}
-                  className={`px-4 py-2.5 text-sm font-medium border-b-2 transition ${kartotekaTab === 'system' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+                  onClick={() => { setKartotekaMainTab('katalog'); setKartotekaTab('system'); }}
+                  className={`px-4 py-2.5 text-sm font-medium border-b-2 transition ${kartotekaMainTab === 'katalog' && kartotekaTab === 'system' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
                 >
                   Katalog systemowy
+                </button>
+                <div className="w-px h-5 bg-slate-200 mx-1" />
+                <button
+                  onClick={() => setKartotekaMainTab('hurtownie')}
+                  className={`px-4 py-2.5 text-sm font-medium border-b-2 transition ${kartotekaMainTab === 'hurtownie' ? 'border-orange-500 text-orange-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+                >
+                  Hurtownie
+                </button>
+                <button
+                  onClick={() => setKartotekaMainTab('wynajem')}
+                  className={`px-4 py-2.5 text-sm font-medium border-b-2 transition ${kartotekaMainTab === 'wynajem' ? 'border-green-500 text-green-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+                >
+                  Wynajem sprzętu
                 </button>
               </div>
               <button onClick={closeKartoteka} className="p-1.5 hover:bg-slate-100 rounded-lg">
@@ -5147,8 +5369,165 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
               </button>
             </div>
 
-            {/* Body: sidebar + content */}
+            {/* Body */}
             <div className="flex-1 flex overflow-hidden">
+
+            {/* Wholesaler tab */}
+            {kartotekaMainTab === 'hurtownie' && (
+              <div className="flex-1 flex flex-col overflow-hidden">
+                {/* Provider tabs */}
+                <div className="px-4 py-3 flex items-center gap-3 border-b border-slate-100">
+                  <div className="flex gap-1">
+                    {[
+                      { id: 'tim' as const, name: 'TIM S.A.', color: 'bg-red-600' },
+                      { id: 'onninen' as const, name: 'Onninen', color: 'bg-blue-700' }
+                    ].map(p => (
+                      <button
+                        key={p.id}
+                        onClick={() => { setWholesalerProvider(p.id); setWholesalerResults([]); }}
+                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${wholesalerProvider === p.id ? `${p.color} text-white` : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                      >
+                        {p.name}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex-1 relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input
+                      type="text"
+                      value={wholesalerSearchText}
+                      onChange={e => setWholesalerSearchText(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') handleWholesalerSearch(wholesalerSearchText); }}
+                      placeholder={`Szukaj w ${wholesalerProvider === 'tim' ? 'TIM' : 'Onninen'}...`}
+                      className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg text-sm"
+                    />
+                  </div>
+                  <button
+                    onClick={() => handleWholesalerSearch(wholesalerSearchText)}
+                    disabled={wholesalerSearching}
+                    className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 text-sm font-medium disabled:opacity-50"
+                  >
+                    {wholesalerSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Szukaj'}
+                  </button>
+                  <button
+                    onClick={() => setShowWholesalerConfig(true)}
+                    className="px-3 py-2 border border-slate-200 rounded-lg hover:bg-slate-50 text-sm text-slate-600"
+                    title="Konfiguracja integracji"
+                  >
+                    <Zap className="w-4 h-4" />
+                  </button>
+                </div>
+                {/* Results */}
+                <div className="flex-1 overflow-y-auto">
+                  {wholesalerSearching ? (
+                    <div className="flex items-center justify-center h-40">
+                      <Loader2 className="w-8 h-8 animate-spin text-orange-500" />
+                    </div>
+                  ) : wholesalerResults.length > 0 ? (
+                    <table className="w-full text-sm">
+                      <thead className="bg-slate-50 sticky top-0">
+                        <tr>
+                          <th className="px-4 py-2.5 text-left text-xs font-medium text-slate-500 uppercase">Kod</th>
+                          <th className="px-4 py-2.5 text-left text-xs font-medium text-slate-500 uppercase">Nazwa</th>
+                          <th className="px-4 py-2.5 text-left text-xs font-medium text-slate-500 uppercase">Jedn.</th>
+                          <th className="px-4 py-2.5 text-right text-xs font-medium text-slate-500 uppercase">Cena netto</th>
+                          <th className="px-4 py-2.5 text-right text-xs font-medium text-slate-500 uppercase">Dostępność</th>
+                          <th className="px-4 py-2.5 w-20"></th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {wholesalerResults.map((item: any, idx: number) => (
+                          <tr key={idx} className="hover:bg-orange-50/50 cursor-pointer transition"
+                            onClick={() => handleKartotekaSelect({
+                              name: item.name || item.description,
+                              code: item.code || item.sku || '',
+                              unit: item.unit || 'szt.',
+                              price: item.price_net || item.price || 0
+                            })}
+                          >
+                            <td className="px-4 py-2.5 text-slate-500 font-mono text-xs">{item.code || item.sku || '-'}</td>
+                            <td className="px-4 py-2.5 font-medium">{item.name || item.description}</td>
+                            <td className="px-4 py-2.5 text-slate-500">{item.unit || 'szt.'}</td>
+                            <td className="px-4 py-2.5 text-right font-bold text-orange-600">
+                              {formatCurrency(item.price_net || item.price || 0)}
+                            </td>
+                            <td className="px-4 py-2.5 text-right">
+                              <span className={`text-xs px-2 py-0.5 rounded-full ${item.available !== false ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                {item.available !== false ? 'Dostępny' : 'Niedostępny'}
+                              </span>
+                            </td>
+                            <td className="px-4 py-2.5">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleKartotekaSelect({
+                                  name: item.name || item.description,
+                                  code: item.code || item.sku || '',
+                                  unit: item.unit || 'szt.',
+                                  price: item.price_net || item.price || 0
+                                }); }}
+                                className="px-3 py-1 bg-orange-600 text-white rounded text-xs hover:bg-orange-700"
+                              >
+                                Dodaj
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center h-64 text-slate-400">
+                      <Store className="w-12 h-12 mb-3 text-slate-300" />
+                      <p className="text-sm">Wyszukaj produkty w hurtowni {wholesalerProvider === 'tim' ? 'TIM' : 'Onninen'}</p>
+                      <p className="text-xs mt-1">Wpisz nazwę lub kod produktu i kliknij Szukaj</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Rental tab */}
+            {kartotekaMainTab === 'wynajem' && (
+              <div className="flex-1 flex flex-col overflow-hidden">
+                <div className="px-4 py-3 flex items-center gap-3 border-b border-slate-100">
+                  <div className="flex gap-1">
+                    {[
+                      { id: 'atut' as const, name: 'Atut Rental' },
+                      { id: 'ramirent' as const, name: 'Ramirent' }
+                    ].map(p => (
+                      <button
+                        key={p.id}
+                        onClick={() => setRentalProvider(p.id)}
+                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${rentalProvider === p.id ? 'bg-green-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                      >
+                        {p.name}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex-1 relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input
+                      type="text"
+                      placeholder={`Szukaj sprzętu do wynajmu w ${rentalProvider === 'atut' ? 'Atut' : 'Ramirent'}...`}
+                      className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg text-sm"
+                    />
+                  </div>
+                  <button
+                    onClick={() => setShowRentalConfig(true)}
+                    className="px-3 py-2 border border-slate-200 rounded-lg hover:bg-slate-50 text-sm text-slate-600"
+                    title="Konfiguracja integracji"
+                  >
+                    <Zap className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="flex-1 flex flex-col items-center justify-center text-slate-400">
+                  <Wrench className="w-12 h-12 mb-3 text-slate-300" />
+                  <p className="text-sm">Wyszukaj sprzęt do wynajmu</p>
+                  <p className="text-xs mt-1">Integracja z {rentalProvider === 'atut' ? 'Atut Rental' : 'Ramirent'}</p>
+                </div>
+              </div>
+            )}
+
+            {/* Catalog tab (existing) */}
+            {kartotekaMainTab === 'katalog' && <>
               {/* Category sidebar */}
               <div className="w-64 border-r border-slate-200 overflow-y-auto flex flex-col">
                 <div className="px-4 py-3 flex items-center justify-between">
@@ -5392,7 +5771,34 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                   )}
                 </div>
               </div>
+            </>}
             </div>
+
+            {/* Wholesaler config modal */}
+            <WholesalerIntegrationModal
+              isOpen={showWholesalerConfig}
+              onClose={() => setShowWholesalerConfig(false)}
+              companyId={currentUser?.company_id || ''}
+              integrations={wholesalerIntegrations}
+              onIntegrationChange={() => {
+                if (currentUser?.company_id) {
+                  supabase.from('wholesaler_integrations').select('*').eq('company_id', currentUser.company_id)
+                    .then(res => { if (res.data) setWholesalerIntegrations(res.data); });
+                }
+              }}
+            />
+            <RentalIntegrationModal
+              isOpen={showRentalConfig}
+              onClose={() => setShowRentalConfig(false)}
+              companyId={currentUser?.company_id || ''}
+              integrations={wholesalerIntegrations}
+              onIntegrationChange={() => {
+                if (currentUser?.company_id) {
+                  supabase.from('wholesaler_integrations').select('*').eq('company_id', currentUser.company_id)
+                    .then(res => { if (res.data) setWholesalerIntegrations(res.data); });
+                }
+              }}
+            />
           </div>
         </div>
         );

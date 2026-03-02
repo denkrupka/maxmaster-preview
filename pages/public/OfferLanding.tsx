@@ -19,6 +19,10 @@ interface PublicOffer {
   status: string;
   created_at: string;
   print_settings: any;
+  object_name: string | null;
+  object_address: string | null;
+  work_start_date: string | null;
+  work_end_date: string | null;
   company: {
     id: string;
     name: string;
@@ -345,6 +349,24 @@ export const OfferLandingPage: React.FC = () => {
                   <Clock className="w-4 h-4" />
                   <span>Ważna do: <span className={isExpired ? 'text-red-500 font-medium' : 'font-medium text-slate-700'}>{formatDate(offer.valid_until)}</span></span>
                 </div>
+                {offer.object_name && (
+                  <div className="flex items-center gap-2 justify-end">
+                    <Building2 className="w-4 h-4" />
+                    <span>Obiekt: <span className="font-medium text-slate-700">{offer.object_name}</span></span>
+                  </div>
+                )}
+                {offer.object_address && (
+                  <div className="flex items-center gap-2 justify-end">
+                    <ExternalLink className="w-4 h-4" />
+                    <span>{offer.object_address}</span>
+                  </div>
+                )}
+                {(offer.work_start_date || offer.work_end_date) && (
+                  <div className="flex items-center gap-2 justify-end">
+                    <Calendar className="w-4 h-4" />
+                    <span>Termin: {offer.work_start_date ? formatDate(offer.work_start_date) : '?'} — {offer.work_end_date ? formatDate(offer.work_end_date) : '?'}</span>
+                  </div>
+                )}
               </div>
             </div>
           </div>
