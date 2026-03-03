@@ -2878,6 +2878,7 @@ export const KosztorysEditorPage: React.FC = () => {
           progress: 0,
           color: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'][sIdx % 5],
           is_milestone: false,
+          source: 'estimate',
           sort_order: sortOrder++
         })
         .select()
@@ -2898,7 +2899,7 @@ export const KosztorysEditorPage: React.FC = () => {
         const posEnd = new Date(posStart);
         posEnd.setDate(posEnd.getDate() + duration);
 
-        await supabase
+        const { error: posError } = await supabase
           .from('gantt_tasks')
           .insert({
             project_id: projectId,
@@ -2910,8 +2911,10 @@ export const KosztorysEditorPage: React.FC = () => {
             progress: 0,
             color: sectionTask?.color || '#3b82f6',
             is_milestone: false,
+            source: 'estimate',
             sort_order: sortOrder++
           });
+        if (posError) console.error('Error inserting position task:', posError);
 
         // Move current date forward (positions sequential within section)
         currentDate = new Date(posEnd);
@@ -2933,6 +2936,67 @@ export const KosztorysEditorPage: React.FC = () => {
       }
     }
 
+    // Handle root-level positions (not in any section)
+    if (estimateData.root.positionIds && estimateData.root.positionIds.length > 0) {
+      const rootStart = new Date(currentDate);
+      const { data: rootTask } = await supabase
+        .from('gantt_tasks')
+        .insert({
+          project_id: projectId,
+          title: 'Inne pozycje',
+          start_date: currentDate.toISOString().split('T')[0],
+          end_date: currentDate.toISOString().split('T')[0],
+          duration: 0,
+          progress: 0,
+          color: '#6b7280',
+          is_milestone: false,
+          source: 'estimate',
+          sort_order: sortOrder++
+        })
+        .select()
+        .single();
+
+      let rootEndDate = new Date(currentDate);
+      for (const posId of estimateData.root.positionIds) {
+        const position = estimateData.positions[posId];
+        if (!position) continue;
+        const posResult = calculationResult?.positions[posId];
+        const quantity = posResult?.quantity || 0;
+        const duration = Math.max(1, Math.ceil(quantity / 10));
+        const posStart = new Date(currentDate);
+        const posEnd = new Date(posStart);
+        posEnd.setDate(posEnd.getDate() + duration);
+
+        const { error: rpErr } = await supabase
+          .from('gantt_tasks')
+          .insert({
+            project_id: projectId,
+            parent_id: rootTask?.id || null,
+            title: position.name,
+            start_date: posStart.toISOString().split('T')[0],
+            end_date: posEnd.toISOString().split('T')[0],
+            duration: duration,
+            progress: 0,
+            color: rootTask?.color || '#6b7280',
+            is_milestone: false,
+            source: 'estimate',
+            sort_order: sortOrder++
+          });
+        if (rpErr) console.error('Error inserting root position task:', rpErr);
+
+        currentDate = new Date(posEnd);
+        if (currentDate > rootEndDate) rootEndDate = new Date(currentDate);
+      }
+
+      if (rootTask) {
+        const rootDuration = Math.max(1, Math.round((rootEndDate.getTime() - rootStart.getTime()) / (1000 * 60 * 60 * 24)));
+        await supabase
+          .from('gantt_tasks')
+          .update({ end_date: rootEndDate.toISOString().split('T')[0], duration: rootDuration })
+          .eq('id', rootTask.id);
+      }
+    }
+
     // Add finish milestone
     await supabase
       .from('gantt_tasks')
@@ -2945,6 +3009,7 @@ export const KosztorysEditorPage: React.FC = () => {
         progress: 0,
         color: '#ef4444',
         is_milestone: true,
+        source: 'milestone',
         sort_order: sortOrder++
       });
 
@@ -3008,8 +3073,10 @@ export const KosztorysEditorPage: React.FC = () => {
 
     try {
       // Delete old dependencies and tasks
-      await supabase.from('gantt_dependencies').delete().eq('project_id', existingProjectId);
-      await supabase.from('gantt_tasks').delete().eq('project_id', existingProjectId);
+      const { error: depDelErr } = await supabase.from('gantt_dependencies').delete().eq('project_id', existingProjectId);
+      if (depDelErr) throw depDelErr;
+      const { error: taskDelErr } = await supabase.from('gantt_tasks').delete().eq('project_id', existingProjectId);
+      if (taskDelErr) throw taskDelErr;
 
       // Recreate from current estimate
       await populateGanttFromEstimate(existingProjectId);
