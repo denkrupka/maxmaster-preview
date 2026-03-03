@@ -253,13 +253,29 @@ export const DrawingsPage: React.FC = () => {
   const textInputRef = useRef<HTMLInputElement>(null);
 
   const MAX_PLANS = 500;
+  const notifyTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
 
   // ==================== NOTIFICATIONS ====================
 
   const notify = (msg: string, type: 'success' | 'error' = 'success') => {
+    if (notifyTimeoutRef.current) clearTimeout(notifyTimeoutRef.current);
     setNotification({ msg, type });
-    setTimeout(() => setNotification(null), 3500);
+    notifyTimeoutRef.current = setTimeout(() => setNotification(null), 3500);
   };
+
+  // Cleanup PDF on unmount
+  useEffect(() => {
+    return () => {
+      if (pdfDoc) { try { pdfDoc.destroy(); } catch {} }
+    };
+  }, []);
+
+  // Escape key for fullscreen
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && isFullscreen) setIsFullscreen(false); };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [isFullscreen]);
 
   // ==================== SVG COORDINATE HELPER ====================
 
@@ -307,17 +323,19 @@ export const DrawingsPage: React.FC = () => {
 
   const loadPdf = useCallback(async (url: string) => {
     try {
+      // Destroy previous PDF document to prevent memory leak
+      if (pdfDoc) { try { pdfDoc.destroy(); } catch {} }
       const loadingTask = pdfjsLib.getDocument({ url, cMapUrl: 'https://unpkg.com/pdfjs-dist@4.0.379/cmaps/', cMapPacked: true });
       const pdf = await loadingTask.promise;
       setPdfDoc(pdf);
       setPdfTotalPages(pdf.numPages);
       setPdfPage(1);
-      await renderPdfToCanvas(pdf, 1, zoom);
+      await renderPdfToCanvas(pdf, 1, 100);
     } catch (err) {
       console.error('PDF load error:', err);
       notify('Błąd ładowania PDF', 'error');
     }
-  }, [zoom, renderPdfToCanvas]);
+  }, [renderPdfToCanvas]);
 
   // Re-render PDF on zoom/page change (debounced)
   useEffect(() => {
@@ -338,6 +356,7 @@ export const DrawingsPage: React.FC = () => {
     if (selectedPlan) {
       setEditName(selectedPlan.name);
       setEditParentPlan(selectedPlan.parent_plan_id || '');
+      lastSavedRef.current = { name: selectedPlan.name, parent: selectedPlan.parent_plan_id || '' };
       // Load file
       if (hasValidFile(selectedPlan)) {
         const ft = getFileType(selectedPlan);
@@ -465,11 +484,14 @@ export const DrawingsPage: React.FC = () => {
     const ann = annotations[idx];
     if (!ann) return;
     if (ann.id) {
-      await supabase.from('plan_markups').update({ deleted_at: new Date().toISOString() }).eq('id', ann.id);
+      const { error } = await supabase.from('plan_markups').update({ deleted_at: new Date().toISOString() }).eq('id', ann.id);
+      if (error) { notify('Błąd usuwania oznaczenia: ' + error.message, 'error'); return; }
     }
     setAnnotations(prev => prev.filter((_, i) => i !== idx));
     setSelectedAnnotation(-1);
   };
+
+  const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
 
   // ==================== FILE UPLOAD ====================
 
@@ -524,6 +546,7 @@ export const DrawingsPage: React.FC = () => {
 
   const handleUploadToFolder = async (file: File, folder?: FolderWithPlans | null) => {
     if (!currentUser || !selectedProject) return;
+    if (file.size > MAX_FILE_SIZE) { notify('Plik jest za duży (max 50 MB)', 'error'); return; }
     const tf = folder || selectedFolder;
     if (!tf) { notify('Wybierz folder docelowy', 'error'); return; }
     setUploading(true);
@@ -545,6 +568,7 @@ export const DrawingsPage: React.FC = () => {
 
   const handleUpdatePlanFile = async (file: File) => {
     if (!currentUser || !selectedProject || !selectedPlan) return;
+    if (file.size > MAX_FILE_SIZE) { notify('Plik jest za duży (max 50 MB)', 'error'); return; }
     setUploading(true);
     try {
       const res = await uploadFileToStorage(file, selectedProject.id);
@@ -585,8 +609,12 @@ export const DrawingsPage: React.FC = () => {
     } catch (err: any) { notify('Błąd: ' + err.message, 'error'); }
   };
 
+  const lastSavedRef = useRef<{ name: string; parent: string }>({ name: '', parent: '' });
+
   const handleSaveName = async () => {
     if (!editName.trim() || saving) return;
+    // Skip if nothing changed
+    if (editName.trim() === lastSavedRef.current.name && editParentPlan === lastSavedRef.current.parent) return;
     setSaving(true);
     try {
       if (selectedPlan) {
@@ -598,6 +626,7 @@ export const DrawingsPage: React.FC = () => {
         const { error } = await supabase.from('plan_components').update({ name: editName.trim() }).eq('id', selectedFolder.id);
         if (error) { notify('Błąd: ' + error.message, 'error'); return; }
       }
+      lastSavedRef.current = { name: editName.trim(), parent: editParentPlan };
       await loadPlansData();
     } catch (err: any) { notify('Błąd: ' + err.message, 'error'); }
     finally { setSaving(false); }
@@ -758,8 +787,8 @@ export const DrawingsPage: React.FC = () => {
   const handleWheel = useCallback((e: WheelEvent) => {
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
-      const delta = e.deltaY > 0 ? -15 : 15;
-      setZoom(z => Math.max(25, Math.min(500, z + delta)));
+      const delta = Math.sign(e.deltaY) * -Math.min(Math.abs(e.deltaY) * 0.5, 25);
+      setZoom(z => Math.max(25, Math.min(500, Math.round(z + delta))));
     }
   }, []);
 
@@ -966,6 +995,8 @@ export const DrawingsPage: React.FC = () => {
                 {folder.isExpanded && folder.plans.map(plan => (
                   <div key={plan.id} draggable onDragStart={() => setDraggedPlanId(plan.id)}
                     onDragOver={e => { e.preventDefault(); setDragOverPlanId(plan.id); }}
+                    onDragLeave={() => setDragOverPlanId(null)}
+                    onDragEnd={() => { setDraggedPlanId(null); setDragOverPlanId(null); }}
                     onDrop={() => handlePlanDrop(plan.id)}
                     className={`flex items-center gap-2 px-3 py-2.5 cursor-pointer border-b border-slate-50 transition-colors ${
                       selectedPlan?.id === plan.id ? 'bg-slate-800 text-white'
@@ -1089,7 +1120,7 @@ export const DrawingsPage: React.FC = () => {
                   </div>
                 ) : (
                   <div className="min-h-full flex items-start justify-center p-4">
-                    <div className="relative" style={{ transform: `scale(${zoom / 100})`, transformOrigin: 'top center', transition: 'transform 0.15s ease-out' }}>
+                    <div className="relative" style={{ transform: `scale(${zoom / 100})`, transformOrigin: 'top center' }}>
                       {/* PDF Canvas */}
                       {fileType === 'pdf' && <canvas ref={pdfCanvasRef} className="bg-white shadow-lg" />}
                       {/* Image */}
@@ -1443,45 +1474,38 @@ export const DrawingsPage: React.FC = () => {
         </div>
       )}
 
-      {/* Scale Calibration Modal */}
+      {/* Scale Calibration - floating card (non-blocking so user can click on plan) */}
       {showScaleModal && selectedPlan && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4" onClick={() => { setShowScaleModal(false); setCalibrationMode(false); }}>
-          <div className="bg-white rounded-xl w-full max-w-lg shadow-2xl" onClick={e => e.stopPropagation()}>
-            <div className="p-5 flex justify-between items-center border-b border-slate-100">
-              <h2 className="text-lg font-bold text-slate-800">Skalibruj skalę</h2>
-              <button onClick={() => { setShowScaleModal(false); setCalibrationMode(false); }} className="p-1.5 hover:bg-slate-100 rounded-lg"><X className="w-5 h-5 text-slate-500" /></button>
+        <div className="fixed bottom-20 right-4 z-[60] w-80 bg-white rounded-xl shadow-2xl border border-slate-200" onClick={e => e.stopPropagation()}>
+          <div className="p-4 flex justify-between items-center border-b border-slate-100">
+            <h2 className="text-sm font-bold text-slate-800">Skalibruj skalę</h2>
+            <button onClick={() => { setShowScaleModal(false); setCalibrationMode(false); setCalibrationPoints([]); }} className="p-1 hover:bg-slate-100 rounded-lg"><X className="w-4 h-4 text-slate-500" /></button>
+          </div>
+          <div className="p-4">
+            <p className="text-xs text-slate-500 mb-3">Kliknij dwa punkty na planie, których odległość znasz, a następnie wpisz odległość.</p>
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-xs font-medium text-slate-600">Punkty:</span>
+              {calibrationPoints.length >= 2
+                ? <span className="text-xs text-green-600 font-medium">2/2 zaznaczone</span>
+                : <span className="text-xs text-amber-600">{calibrationPoints.length}/2</span>
+              }
             </div>
-            <div className="p-5">
-              <div className="bg-blue-50 rounded-lg p-4 mb-4">
-                <p className="text-sm text-slate-700">
-                  <strong>Krok 1:</strong> Kliknij dwa punkty na planie (na tle), których odległość znasz.<br />
-                  <strong>Krok 2:</strong> Wprowadź rzeczywistą odległość poniżej.
-                </p>
-              </div>
-              <div className="flex items-center gap-3 mb-4">
-                <span className="text-sm font-medium text-slate-700">Punkty:</span>
-                {calibrationPoints.length >= 2
-                  ? <span className="text-sm text-green-600 font-medium">2 punkty zaznaczone ✓</span>
-                  : <span className="text-sm text-amber-600">{calibrationPoints.length}/2 zaznaczonych</span>
-                }
-              </div>
-              <div className="flex items-center gap-3">
-                <input type="number" value={scaleDistance} onChange={e => setScaleDistance(e.target.value)}
-                  placeholder="Odległość" className="px-3 py-2.5 border border-slate-300 rounded-lg text-sm w-40 focus:ring-2 focus:ring-blue-500" />
-                <select value={scaleUnit} onChange={e => setScaleUnit(e.target.value)}
-                  className="px-3 py-2.5 border border-slate-300 rounded-lg text-sm">
-                  <option value="mm">mm</option><option value="cm">cm</option><option value="m">m</option>
-                </select>
-              </div>
-              {selectedPlan.scale_ratio && (
-                <p className="text-xs text-slate-400 mt-3">Aktualna skala: 1px = {selectedPlan.scale_ratio.toFixed(4)} {scaleUnit}</p>
-              )}
+            <div className="flex items-center gap-2 mb-3">
+              <input type="number" value={scaleDistance} onChange={e => setScaleDistance(e.target.value)}
+                placeholder="Odległość" className="px-2.5 py-2 border border-slate-300 rounded-lg text-sm w-28 focus:ring-2 focus:ring-blue-500" />
+              <select value={scaleUnit} onChange={e => setScaleUnit(e.target.value)}
+                className="px-2.5 py-2 border border-slate-300 rounded-lg text-sm">
+                <option value="mm">mm</option><option value="cm">cm</option><option value="m">m</option>
+              </select>
             </div>
-            <div className="px-5 pb-5 flex justify-end gap-3">
+            {selectedPlan.scale_ratio && (
+              <p className="text-[10px] text-slate-400 mb-3">Aktualna skala: 1px = {selectedPlan.scale_ratio.toFixed(4)} {scaleUnit}</p>
+            )}
+            <div className="flex gap-2">
               <button onClick={handleScaleCalibration} disabled={!scaleDistance || calibrationPoints.length < 2}
-                className="px-6 py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 text-sm disabled:opacity-50">Zapisz</button>
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 text-xs disabled:opacity-50">Zapisz</button>
               <button onClick={() => { setShowScaleModal(false); setCalibrationMode(false); setCalibrationPoints([]); }}
-                className="px-6 py-2.5 border border-slate-300 rounded-lg text-sm text-slate-700 hover:bg-slate-50">Anuluj</button>
+                className="flex-1 px-4 py-2 border border-slate-300 rounded-lg text-xs text-slate-700 hover:bg-slate-50">Anuluj</button>
             </div>
           </div>
         </div>
