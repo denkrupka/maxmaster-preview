@@ -356,9 +356,13 @@ export const GanttPage: React.FC = () => {
     const ends = allTasks.filter(t => t.end_date).map(t => new Date(t.end_date!));
     const minDate = new Date(Math.min(...starts.map(d => d.getTime())));
     const maxDate = ends.length > 0 ? new Date(Math.max(...ends.map(d => d.getTime()))) : new Date(minDate.getTime() + 90 * 86400000);
-    // Pad: start from beginning of week, end at end of week + 2 weeks
-    minDate.setDate(minDate.getDate() - minDate.getDay() - 7);
-    maxDate.setDate(maxDate.getDate() + (6 - maxDate.getDay()) + 21);
+    // Pad: start from Monday of previous week, end at Sunday + 3 weeks
+    const minDay = minDate.getDay(); // 0=Sun..6=Sat
+    const diffToMonday = minDay === 0 ? 6 : minDay - 1; // days back to Monday
+    minDate.setDate(minDate.getDate() - diffToMonday - 7);
+    const maxDay = maxDate.getDay();
+    const diffToSunday = maxDay === 0 ? 0 : 7 - maxDay; // days forward to Sunday
+    maxDate.setDate(maxDate.getDate() + diffToSunday + 21);
     return { start: minDate, end: maxDate };
   }, [allFlatTasks]);
 
@@ -435,10 +439,20 @@ export const GanttPage: React.FC = () => {
     return headers;
   }, [dateRange]);
 
+  // Helper: get Monday of the week for a given date
+  const getMonday = (d: Date): Date => {
+    const result = new Date(d);
+    const day = result.getDay(); // 0=Sun, 1=Mon...6=Sat
+    const diff = day === 0 ? -6 : 1 - day; // shift to Monday
+    result.setDate(result.getDate() + diff);
+    return result;
+  };
+
   // Secondary headers (bottom row) — depends on zoom
   const secondaryHeaders = useMemo(() => {
-    const headers: { label: string; days: number; startOffset: number }[] = [];
+    const headers: { label: string; days: number; startOffset: number; isWeekend?: boolean }[] = [];
     const fmtShort = (d: Date) => `${d.getDate()}.${(d.getMonth() + 1).toString().padStart(2, '0')}`;
+
     if (zoomLevel === 'day') {
       // Each day individually
       let d = new Date(dateRange.start);
@@ -446,32 +460,35 @@ export const GanttPage: React.FC = () => {
         const startOffset = getDaysBetween(dateRange.start, d);
         const dow = d.getDay();
         const dayLabel = DAY_LABELS[dow === 0 ? 6 : dow - 1];
-        headers.push({ label: `${dayLabel} ${d.getDate()}`, days: 1, startOffset });
+        const isWeekend = dow === 0 || dow === 6;
+        headers.push({ label: `${dayLabel} ${d.getDate()}`, days: 1, startOffset, isWeekend });
         d = new Date(d); d.setDate(d.getDate() + 1);
       }
     } else if (zoomLevel === 'week') {
-      // Each week as date range
-      let d = new Date(dateRange.start);
-      while (d < dateRange.end) {
-        const weekStart = new Date(d);
-        const weekEnd = new Date(d); weekEnd.setDate(weekEnd.getDate() + 6);
-        if (weekEnd > dateRange.end) weekEnd.setTime(dateRange.end.getTime());
+      // Monday-aligned weeks showing date range
+      let monday = getMonday(new Date(dateRange.start));
+      if (monday > dateRange.start) { monday.setDate(monday.getDate() - 7); }
+      while (monday < dateRange.end) {
+        const weekStart = new Date(Math.max(monday.getTime(), dateRange.start.getTime()));
+        const sunday = new Date(monday); sunday.setDate(sunday.getDate() + 6);
+        const weekEnd = new Date(Math.min(sunday.getTime(), dateRange.end.getTime()));
         const days = getDaysBetween(weekStart, weekEnd) + 1;
         const startOffset = getDaysBetween(dateRange.start, weekStart);
-        headers.push({ label: `${fmtShort(weekStart)} – ${fmtShort(weekEnd)}`, days, startOffset });
-        d = new Date(weekEnd); d.setDate(d.getDate() + 1);
+        headers.push({ label: `${fmtShort(monday)} – ${fmtShort(sunday)}`, days, startOffset });
+        monday = new Date(monday); monday.setDate(monday.getDate() + 7);
       }
     } else {
-      // Month view — show week start dates
-      let d = new Date(dateRange.start);
-      while (d < dateRange.end) {
-        const weekStart = new Date(d);
-        const weekEnd = new Date(d); weekEnd.setDate(weekEnd.getDate() + 6);
-        if (weekEnd > dateRange.end) weekEnd.setTime(dateRange.end.getTime());
+      // Month view — Monday-aligned weeks, compact labels
+      let monday = getMonday(new Date(dateRange.start));
+      if (monday > dateRange.start) { monday.setDate(monday.getDate() - 7); }
+      while (monday < dateRange.end) {
+        const weekStart = new Date(Math.max(monday.getTime(), dateRange.start.getTime()));
+        const sunday = new Date(monday); sunday.setDate(sunday.getDate() + 6);
+        const weekEnd = new Date(Math.min(sunday.getTime(), dateRange.end.getTime()));
         const days = getDaysBetween(weekStart, weekEnd) + 1;
         const startOffset = getDaysBetween(dateRange.start, weekStart);
-        headers.push({ label: fmtShort(weekStart), days, startOffset });
-        d = new Date(weekEnd); d.setDate(d.getDate() + 1);
+        headers.push({ label: `${fmtShort(monday)}`, days, startOffset });
+        monday = new Date(monday); monday.setDate(monday.getDate() + 7);
       }
     }
     return headers;
@@ -1637,8 +1654,8 @@ export const GanttPage: React.FC = () => {
                       )}
                       <span className={`text-sm truncate ${isParent ? 'font-semibold text-slate-800' : 'text-slate-700'}`}>{title}</span>
                       {/* Deadline warning icon */}
-                      {deadline === 'overdue' && <AlertCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" title="Przekroczony termin!" />}
-                      {deadline === 'due-soon' && <Clock className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" title="Termin wkrótce" />}
+                      {deadline === 'overdue' && <span title="Przekroczony termin!"><AlertCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" /></span>}
+                      {deadline === 'due-soon' && <span title="Termin wkrótce"><Clock className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" /></span>}
                     </div>
                     {/* Assigned user avatar */}
                     <div className="w-8 flex items-center justify-center flex-shrink-0" onClick={e => e.stopPropagation()}>
@@ -1697,9 +1714,9 @@ export const GanttPage: React.FC = () => {
                   {secondaryHeaders.map((h, i) => {
                     const w = h.days * dayWidth;
                     return (
-                      <div key={i} className={`border-r flex items-center justify-center text-[10px] font-medium overflow-hidden ${zoomLevel === 'day' ? 'border-slate-200' : 'border-slate-200'}`}
+                      <div key={i} className={`border-r flex items-center justify-center text-[10px] font-medium overflow-hidden border-slate-200 ${(h as any).isWeekend ? 'bg-slate-100 text-slate-400' : ''}`}
                         style={{ position: 'absolute', left: h.startOffset * dayWidth, width: w, top: 28 }}>
-                        {w > 30 && <span className="text-slate-500 truncate px-0.5">{h.label}</span>}
+                        {w > 20 && <span className={`truncate px-0.5 ${(h as any).isWeekend ? 'text-slate-400' : 'text-slate-600'}`}>{h.label}</span>}
                       </div>
                     );
                   })}
