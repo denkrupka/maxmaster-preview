@@ -709,7 +709,7 @@ export const OfferLandingPage: React.FC = () => {
               })()}
               <div className="flex justify-between text-sm">
                 <span className="text-slate-600">VAT:</span>
-                <span className="font-medium">{formatCurrency(vatAmount)}</span>
+                <span className="font-medium">{formatCurrency(vatAmount + vatOnSurcharges)}</span>
               </div>
               <div className="flex justify-between pt-3 border-t-2 border-blue-200">
                 <span className="text-lg font-bold text-slate-900">Brutto:</span>

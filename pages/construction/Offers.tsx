@@ -1142,18 +1142,18 @@ export const OffersPage: React.FC = () => {
 
         setSections(sectionsList);
 
-        // Populate client data for edit mode
+        // Populate client data for edit mode (only fill name/nip if not already set from print_settings)
         if (offer.client) {
           const c = offer.client as any;
           setOfferClientData(prev => ({
             ...prev,
-            client_name: c.name || '',
-            nip: c.nip || '',
-            company_street: c.street || '',
-            company_street_number: c.building_number || c.street_number || '',
-            company_city: c.city || '',
-            company_postal_code: c.postal_code || '',
-            company_country: c.country || 'Polska'
+            client_name: prev.client_name || c.name || '',
+            nip: prev.nip || c.nip || '',
+            company_street: prev.company_street || c.address_street || c.street || '',
+            company_street_number: prev.company_street_number || c.address_building_number || c.building_number || '',
+            company_city: prev.company_city || c.address_city || c.city || '',
+            company_postal_code: prev.company_postal_code || c.address_postal_code || c.postal_code || '',
+            company_country: prev.company_country || c.country || 'Polska'
           }));
           setOfferClientSelected(true);
         }
@@ -1462,7 +1462,7 @@ export const OffersPage: React.FC = () => {
               .single();
 
             if (newSection && safeItems.length > 0) {
-              await supabase
+              const { data: insertedItems } = await supabase
                 .from('offer_items')
                 .insert(safeItems.map((item, idx) => ({
                   offer_id: newOffer.id,
@@ -1476,7 +1476,34 @@ export const OffersPage: React.FC = () => {
                   vat_rate: item.vat_rate ?? 23,
                   sort_order: item.sort_order ?? idx,
                   is_optional: item.is_optional || false
-                })));
+                })))
+                .select();
+
+              // Save R/M/S components for each item
+              if (insertedItems && insertedItems.length > 0) {
+                const allComponents: any[] = [];
+                insertedItems.forEach((newItem: any, idx: number) => {
+                  const srcItem = safeItems[idx];
+                  if (srcItem?.components && srcItem.components.length > 0) {
+                    srcItem.components.forEach((comp: any, ci: number) => {
+                      allComponents.push({
+                        offer_item_id: newItem.id,
+                        type: comp.type || 'material',
+                        name: comp.name || '',
+                        code: comp.code || '',
+                        unit: comp.unit || 'szt.',
+                        quantity: comp.quantity || 0,
+                        unit_price: comp.unit_price || 0,
+                        total_price: comp.total_price || 0,
+                        sort_order: ci
+                      });
+                    });
+                  }
+                });
+                if (allComponents.length > 0) {
+                  await supabase.from('offer_item_components').insert(allComponents);
+                }
+              }
             }
           } catch (sectionErr) {
             console.warn('Error inserting section/items, skipping:', sectionErr);
@@ -1495,7 +1522,7 @@ export const OffersPage: React.FC = () => {
 
           if (safeItems.length > 0) {
             try {
-              await supabase
+              const { data: insertedItems } = await supabase
                 .from('offer_items')
                 .insert(safeItems.map((item, idx) => ({
                   offer_id: newOffer.id,
@@ -1509,7 +1536,34 @@ export const OffersPage: React.FC = () => {
                   vat_rate: item.vat_rate ?? 23,
                   sort_order: item.sort_order ?? idx,
                   is_optional: item.is_optional || false
-                })));
+                })))
+                .select();
+
+              // Save R/M/S components
+              if (insertedItems && insertedItems.length > 0) {
+                const allComponents: any[] = [];
+                insertedItems.forEach((newItem: any, idx: number) => {
+                  const srcItem = safeItems[idx];
+                  if (srcItem?.components && srcItem.components.length > 0) {
+                    srcItem.components.forEach((comp: any, ci: number) => {
+                      allComponents.push({
+                        offer_item_id: newItem.id,
+                        type: comp.type || 'material',
+                        name: comp.name || '',
+                        code: comp.code || '',
+                        unit: comp.unit || 'szt.',
+                        quantity: comp.quantity || 0,
+                        unit_price: comp.unit_price || 0,
+                        total_price: comp.total_price || 0,
+                        sort_order: ci
+                      });
+                    });
+                  }
+                });
+                if (allComponents.length > 0) {
+                  await supabase.from('offer_item_components').insert(allComponents);
+                }
+              }
             } catch (itemErr) {
               console.warn('Error inserting unsectioned items, skipping:', itemErr);
             }
@@ -4218,10 +4272,10 @@ tr{page-break-inside:avoid;page-break-after:auto;}
 
           {/* Client search block (edit mode) */}
           {editMode && (
-            <div className="p-6 border-b border-slate-200 space-y-4">
+            <div className="p-6 border-b border-slate-200 space-y-4 bg-blue-50/30">
               <h3 className="font-semibold text-slate-900 flex items-center gap-2">
-                <Building2 className="w-5 h-5 text-slate-400" />
-                Dane klienta
+                <Building2 className="w-5 h-5 text-blue-500" />
+                Zamawiający
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {/* NIP + GUS */}
@@ -4341,27 +4395,39 @@ tr{page-break-inside:avoid;page-break-after:auto;}
               </div>
 
               {/* Representative block — show when client is selected */}
-              {offerClientSelected && offerClientContacts.length > 0 && (
+              {offerClientSelected && (
                 <div className="pt-3 border-t border-slate-200">
-                  <p className="text-xs font-medium text-slate-500 mb-2">Przedstawiciel</p>
-                  <div className="flex flex-wrap gap-2">
-                    {offerClientContacts.map((contact: any) => (
-                      <button
-                        key={contact.id}
-                        onClick={() => setSendRepresentativeId(contact.id)}
-                        className={`px-3 py-1.5 rounded-lg text-sm border transition ${
-                          sendRepresentativeId === contact.id
-                            ? 'border-blue-500 bg-blue-50 text-blue-700'
-                            : 'border-slate-200 hover:bg-slate-50'
-                        }`}
-                      >
-                        {contact.first_name} {contact.last_name}
-                        <span className="text-xs text-slate-400 ml-1">
-                          {contact.email && `• ${contact.email}`}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                    <User className="w-3.5 h-3.5" />
+                    Przedstawiciel klienta
+                  </p>
+                  {offerClientContacts.length > 0 ? (
+                    <div className="flex flex-wrap gap-2">
+                      {offerClientContacts.map((contact: any) => (
+                        <button
+                          key={contact.id}
+                          onClick={() => setSendRepresentativeId(contact.id)}
+                          className={`px-3 py-2 rounded-lg text-sm border transition flex items-center gap-2 ${
+                            sendRepresentativeId === contact.id
+                              ? 'border-blue-500 bg-blue-50 text-blue-700 shadow-sm'
+                              : 'border-slate-200 hover:bg-slate-50'
+                          }`}
+                        >
+                          <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${
+                            sendRepresentativeId === contact.id ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-600'
+                          }`}>
+                            {(contact.first_name?.[0] || '').toUpperCase()}{(contact.last_name?.[0] || '').toUpperCase()}
+                          </div>
+                          <div className="text-left">
+                            <p className="font-medium leading-tight">{contact.first_name} {contact.last_name}</p>
+                            {contact.email && <p className="text-[11px] text-slate-400">{contact.email}</p>}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-400 italic">Brak przedstawicieli — dodaj w ustawieniach klienta</p>
+                  )}
                 </div>
               )}
             </div>
@@ -4522,83 +4588,95 @@ tr{page-break-inside:avoid;page-break-after:auto;}
 
           {/* Warunki istotne block */}
           <div className="px-6 py-4 border-b border-slate-200">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-slate-700">Warunki istotne</h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+                <ListChecks className="w-4 h-4 text-slate-400" />
+                Warunki istotne
+              </h3>
               {(() => {
                 const ptRule = paymentTermRules.find(r => String(r.value) === paymentTerm);
                 const wrRule = warrantyRules.find(r => String(r.value) === warrantyPeriod);
                 const ifRule = invoiceFreqRules.find(r => String(r.value) === invoiceFrequency);
                 const totalSurcharge = (paymentTermApply ? (ptRule?.surcharge || 0) : 0) + (warrantyApply ? (wrRule?.surcharge || 0) : 0) + (invoiceFreqApply ? (ifRule?.surcharge || 0) : 0);
                 return totalSurcharge !== 0 ? (
-                  <span className={`text-xs font-medium px-2 py-0.5 rounded ${totalSurcharge > 0 ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'}`}>
+                  <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${totalSurcharge > 0 ? 'bg-red-50 text-red-600 border border-red-100' : 'bg-green-50 text-green-600 border border-green-100'}`}>
                     {totalSurcharge > 0 ? '+' : ''}{totalSurcharge}% {totalSurcharge > 0 ? 'narzut' : 'rabat'}
                   </span>
                 ) : null;
               })()}
             </div>
-            <div className="space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {/* Payment term */}
-              <div className="flex items-center gap-3">
-                <div className="flex-1">
-                  <p className="text-xs font-medium text-slate-500 mb-1">Termin płatności (dni)</p>
-                  {editMode ? (
-                    <select value={paymentTerm} onChange={e => setPaymentTerm(e.target.value)} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm">
-                      <option value="">— Wybierz —</option>
-                      {(paymentTermRules.length > 0 ? paymentTermRules.map(r => r.value) : paymentTermOptions).map(v => {
-                        const rule = paymentTermRules.find(r => r.value === v);
-                        return <option key={v} value={String(v)}>{v} dni{rule && rule.surcharge !== 0 ? ` (${rule.surcharge > 0 ? '+' : ''}${rule.surcharge}%)` : ''}</option>;
-                      })}
-                    </select>
-                  ) : (
-                    <p className="text-sm font-medium text-slate-900">{paymentTerm ? `${paymentTerm} dni` : '-'}</p>
+              <div className="p-3 bg-slate-50 rounded-lg border border-slate-100">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Termin płatności</p>
+                  {paymentTerm && (() => { const r = paymentTermRules.find(r => String(r.value) === paymentTerm); return r && r.surcharge !== 0; })() && (
+                    <label className="flex items-center gap-1.5 cursor-pointer" title={paymentTermApply ? 'Uwzględniony w kalkulacji' : 'Tylko informacyjnie'}>
+                      <input type="checkbox" checked={paymentTermApply} onChange={e => setPaymentTermApply(e.target.checked)} className="w-3.5 h-3.5 text-blue-600 rounded" disabled={!editMode} />
+                      <span className={`text-[10px] font-medium ${paymentTermApply ? 'text-blue-600' : 'text-slate-400'}`}>Uwzgl.</span>
+                    </label>
                   )}
                 </div>
-                {paymentTerm && (() => { const r = paymentTermRules.find(r => String(r.value) === paymentTerm); return r && r.surcharge !== 0; })() && (
-                  <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer whitespace-nowrap pt-4">
-                    <input type="checkbox" checked={paymentTermApply} onChange={e => setPaymentTermApply(e.target.checked)} className="w-3.5 h-3.5 text-blue-600 rounded" disabled={!editMode} />
-                    Uwzględnij
-                  </label>
+                {editMode ? (
+                  <select value={paymentTerm} onChange={e => setPaymentTerm(e.target.value)} className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-200 focus:border-blue-400">
+                    <option value="">— Wybierz —</option>
+                    {(paymentTermRules.length > 0 ? paymentTermRules.map(r => r.value) : paymentTermOptions).map(v => {
+                      const rule = paymentTermRules.find(r => r.value === v);
+                      return <option key={v} value={String(v)}>{v} dni{rule && rule.surcharge !== 0 ? ` (${rule.surcharge > 0 ? '+' : ''}${rule.surcharge}%)` : ''}</option>;
+                    })}
+                  </select>
+                ) : (
+                  <p className="text-sm font-medium text-slate-900">{paymentTerm ? `${paymentTerm} dni` : '-'}</p>
                 )}
-                <div className="flex-1">
-                  <p className="text-xs font-medium text-slate-500 mb-1">Wystawienie faktur (co ile dni)</p>
-                  {editMode ? (
-                    <select value={invoiceFrequency} onChange={e => setInvoiceFrequency(e.target.value)} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm">
-                      <option value="">— Wybierz —</option>
-                      {(invoiceFreqRules.length > 0 ? invoiceFreqRules.map(r => r.value) : invoiceFreqOptions).map(v => {
-                        const rule = invoiceFreqRules.find(r => r.value === v);
-                        return <option key={v} value={String(v)}>co {v} dni{rule && rule.surcharge !== 0 ? ` (${rule.surcharge > 0 ? '+' : ''}${rule.surcharge}%)` : ''}</option>;
-                      })}
-                    </select>
-                  ) : (
-                    <p className="text-sm font-medium text-slate-900">{invoiceFrequency ? `co ${invoiceFrequency} dni` : '-'}</p>
+                {paymentTerm && (() => { const r = paymentTermRules.find(r => String(r.value) === paymentTerm); return r && r.surcharge !== 0 ? <p className={`text-xs mt-1.5 ${paymentTermApply ? (r.surcharge > 0 ? 'text-red-500' : 'text-green-600') : 'text-slate-400 italic'}`}>{r.surcharge > 0 ? 'Narzut' : 'Rabat'}: {r.surcharge > 0 ? '+' : ''}{r.surcharge}%{!paymentTermApply ? ' (informacyjnie)' : ''}</p> : null; })()}
+              </div>
+              {/* Invoice frequency */}
+              <div className="p-3 bg-slate-50 rounded-lg border border-slate-100">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Fakturowanie</p>
+                  {invoiceFrequency && (() => { const r = invoiceFreqRules.find(r => String(r.value) === invoiceFrequency); return r && r.surcharge !== 0; })() && (
+                    <label className="flex items-center gap-1.5 cursor-pointer" title={invoiceFreqApply ? 'Uwzględniony w kalkulacji' : 'Tylko informacyjnie'}>
+                      <input type="checkbox" checked={invoiceFreqApply} onChange={e => setInvoiceFreqApply(e.target.checked)} className="w-3.5 h-3.5 text-blue-600 rounded" disabled={!editMode} />
+                      <span className={`text-[10px] font-medium ${invoiceFreqApply ? 'text-blue-600' : 'text-slate-400'}`}>Uwzgl.</span>
+                    </label>
                   )}
                 </div>
-                {invoiceFrequency && (() => { const r = invoiceFreqRules.find(r => String(r.value) === invoiceFrequency); return r && r.surcharge !== 0; })() && (
-                  <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer whitespace-nowrap pt-4">
-                    <input type="checkbox" checked={invoiceFreqApply} onChange={e => setInvoiceFreqApply(e.target.checked)} className="w-3.5 h-3.5 text-blue-600 rounded" disabled={!editMode} />
-                    Uwzględnij
-                  </label>
+                {editMode ? (
+                  <select value={invoiceFrequency} onChange={e => setInvoiceFrequency(e.target.value)} className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-200 focus:border-blue-400">
+                    <option value="">— Wybierz —</option>
+                    {(invoiceFreqRules.length > 0 ? invoiceFreqRules.map(r => r.value) : invoiceFreqOptions).map(v => {
+                      const rule = invoiceFreqRules.find(r => r.value === v);
+                      return <option key={v} value={String(v)}>co {v} dni{rule && rule.surcharge !== 0 ? ` (${rule.surcharge > 0 ? '+' : ''}${rule.surcharge}%)` : ''}</option>;
+                    })}
+                  </select>
+                ) : (
+                  <p className="text-sm font-medium text-slate-900">{invoiceFrequency ? `co ${invoiceFrequency} dni` : '-'}</p>
                 )}
-                <div className="flex-1">
-                  <p className="text-xs font-medium text-slate-500 mb-1">Okres gwarancyjny (miesięcy)</p>
-                  {editMode ? (
-                    <select value={warrantyPeriod} onChange={e => setWarrantyPeriod(e.target.value)} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm">
-                      <option value="">— Wybierz —</option>
-                      {(warrantyRules.length > 0 ? warrantyRules.map(r => r.value) : warrantyOptions).map(v => {
-                        const rule = warrantyRules.find(r => r.value === v);
-                        return <option key={v} value={String(v)}>{v} mies.{rule && rule.surcharge !== 0 ? ` (${rule.surcharge > 0 ? '+' : ''}${rule.surcharge}%)` : ''}</option>;
-                      })}
-                    </select>
-                  ) : (
-                    <p className="text-sm font-medium text-slate-900">{warrantyPeriod ? `${warrantyPeriod} mies.` : '-'}</p>
+                {invoiceFrequency && (() => { const r = invoiceFreqRules.find(r => String(r.value) === invoiceFrequency); return r && r.surcharge !== 0 ? <p className={`text-xs mt-1.5 ${invoiceFreqApply ? (r.surcharge > 0 ? 'text-red-500' : 'text-green-600') : 'text-slate-400 italic'}`}>{r.surcharge > 0 ? 'Narzut' : 'Rabat'}: {r.surcharge > 0 ? '+' : ''}{r.surcharge}%{!invoiceFreqApply ? ' (informacyjnie)' : ''}</p> : null; })()}
+              </div>
+              {/* Warranty */}
+              <div className="p-3 bg-slate-50 rounded-lg border border-slate-100">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Gwarancja</p>
+                  {warrantyPeriod && (() => { const r = warrantyRules.find(r => String(r.value) === warrantyPeriod); return r && r.surcharge !== 0; })() && (
+                    <label className="flex items-center gap-1.5 cursor-pointer" title={warrantyApply ? 'Uwzględniony w kalkulacji' : 'Tylko informacyjnie'}>
+                      <input type="checkbox" checked={warrantyApply} onChange={e => setWarrantyApply(e.target.checked)} className="w-3.5 h-3.5 text-blue-600 rounded" disabled={!editMode} />
+                      <span className={`text-[10px] font-medium ${warrantyApply ? 'text-blue-600' : 'text-slate-400'}`}>Uwzgl.</span>
+                    </label>
                   )}
                 </div>
-                {warrantyPeriod && (() => { const r = warrantyRules.find(r => String(r.value) === warrantyPeriod); return r && r.surcharge !== 0; })() && (
-                  <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer whitespace-nowrap pt-4">
-                    <input type="checkbox" checked={warrantyApply} onChange={e => setWarrantyApply(e.target.checked)} className="w-3.5 h-3.5 text-blue-600 rounded" disabled={!editMode} />
-                    Uwzględnij
-                  </label>
+                {editMode ? (
+                  <select value={warrantyPeriod} onChange={e => setWarrantyPeriod(e.target.value)} className="w-full px-2.5 py-2 border border-slate-200 rounded-lg text-sm bg-white focus:ring-2 focus:ring-blue-200 focus:border-blue-400">
+                    <option value="">— Wybierz —</option>
+                    {(warrantyRules.length > 0 ? warrantyRules.map(r => r.value) : warrantyOptions).map(v => {
+                      const rule = warrantyRules.find(r => r.value === v);
+                      return <option key={v} value={String(v)}>{v} mies.{rule && rule.surcharge !== 0 ? ` (${rule.surcharge > 0 ? '+' : ''}${rule.surcharge}%)` : ''}</option>;
+                    })}
+                  </select>
+                ) : (
+                  <p className="text-sm font-medium text-slate-900">{warrantyPeriod ? `${warrantyPeriod} mies.` : '-'}</p>
                 )}
+                {warrantyPeriod && (() => { const r = warrantyRules.find(r => String(r.value) === warrantyPeriod); return r && r.surcharge !== 0 ? <p className={`text-xs mt-1.5 ${warrantyApply ? (r.surcharge > 0 ? 'text-red-500' : 'text-green-600') : 'text-slate-400 italic'}`}>{r.surcharge > 0 ? 'Narzut' : 'Rabat'}: {r.surcharge > 0 ? '+' : ''}{r.surcharge}%{!warrantyApply ? ' (informacyjnie)' : ''}</p> : null; })()}
               </div>
             </div>
           </div>
@@ -4715,7 +4793,10 @@ tr{page-break-inside:avoid;page-break-after:auto;}
 
           {/* Koszty powiązane */}
           <div className="p-6 border-b border-slate-200">
-            <h2 className="text-lg font-semibold text-slate-900 mb-4">Koszty powiązane</h2>
+            <h2 className="text-lg font-semibold text-slate-900 mb-4 flex items-center gap-2">
+              <Briefcase className="w-5 h-5 text-slate-400" />
+              Koszty powiązane
+            </h2>
             <div className="space-y-2">
               {relatedCosts.map(cost => {
                 const resolvedValue = cost.mode === 'percent' ? totals.nettoAfterDiscount * (cost.value / 100) : cost.value;
@@ -4805,8 +4886,11 @@ tr{page-break-inside:avoid;page-break-after:auto;}
 
           {/* Financial summary */}
           <div className="p-6 border-b border-slate-200">
-            <h2 className="text-lg font-semibold text-slate-900 mb-4">Podsumowanie finansowe</h2>
-            <div className="bg-slate-50 rounded-lg p-5 space-y-2">
+            <h2 className="text-lg font-semibold text-slate-900 mb-4 flex items-center gap-2">
+              <DollarSign className="w-5 h-5 text-blue-500" />
+              Podsumowanie finansowe
+            </h2>
+            <div className="bg-gradient-to-r from-slate-50 to-blue-50/30 rounded-xl p-5 space-y-2 border border-slate-100">
               <div className="flex justify-between">
                 <span className="text-slate-600">Suma pozycji netto:</span>
                 <span className="font-medium">{formatCurrency(totals.total)}</span>
@@ -4981,53 +5065,55 @@ tr{page-break-inside:avoid;page-break-after:auto;}
         </div>
 
         {/* Sticky bottom summary bar */}
-        <div className="fixed bottom-0 left-0 lg:left-64 right-0 bg-white border-t-2 border-slate-300 shadow-lg z-40">
-          <div className="px-6 py-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-6 text-sm">
-                <div>
-                  <span className="text-slate-500">Koszty:</span>
-                  <span className="ml-1 font-medium text-slate-700">{formatCurrency(totals.totalCost)}</span>
-                </div>
-                <div className="h-4 w-px bg-slate-300" />
-                <div>
-                  <span className="text-slate-500">Suma netto:</span>
+        <div className="fixed bottom-0 left-0 lg:left-64 right-0 bg-white border-t-2 border-blue-200 shadow-[0_-4px_12px_rgba(0,0,0,0.08)] z-40">
+          <div className="px-4 lg:px-6 py-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-3 lg:gap-5 text-xs lg:text-sm overflow-x-auto">
+                <div className="whitespace-nowrap">
+                  <span className="text-slate-400 hidden lg:inline">Netto:</span>
+                  <span className="text-slate-400 lg:hidden">N:</span>
                   <span className="ml-1 font-bold text-blue-600">{formatCurrency(totals.total)}</span>
                 </div>
-                <div className="h-4 w-px bg-slate-300" />
-                <div>
-                  <span className="text-slate-500">Rabat:</span>
-                  <span className="ml-1 font-medium text-red-600">
-                    {totals.discountPercent > 0 ? `${totals.discountPercent.toFixed(1)}% (${formatCurrency(totals.totalDiscount)})` : '-'}
-                  </span>
-                </div>
-                {totals.surchargePercent !== 0 && (
+                <div className="h-4 w-px bg-slate-200 shrink-0" />
+                {totals.totalDiscount > 0 && (
                   <>
-                    <div className="h-4 w-px bg-slate-300" />
-                    <div>
-                      <span className="text-slate-500">Warunki istotne:</span>
-                      <span className={`ml-1 font-medium ${totals.surchargePercent > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                        {totals.surchargePercent > 0 ? '+' : ''}{totals.surchargePercent.toFixed(1)}% ({formatCurrency(totals.surchargeAmount)})
-                      </span>
+                    <div className="whitespace-nowrap">
+                      <span className="text-slate-400 hidden lg:inline">Rabat:</span>
+                      <span className="text-slate-400 lg:hidden">R:</span>
+                      <span className="ml-1 font-medium text-red-500">-{formatCurrency(totals.totalDiscount)}</span>
                     </div>
+                    <div className="h-4 w-px bg-slate-200 shrink-0" />
                   </>
                 )}
-                <div className="h-4 w-px bg-slate-300" />
-                <div>
-                  <span className="text-slate-500">Netto po rabacie:</span>
+                {totals.surchargePercent !== 0 && (
+                  <>
+                    <div className="whitespace-nowrap">
+                      <span className="text-slate-400 hidden lg:inline">Warunki:</span>
+                      <span className="text-slate-400 lg:hidden">W:</span>
+                      <span className={`ml-1 font-medium ${totals.surchargePercent > 0 ? 'text-red-500' : 'text-green-600'}`}>
+                        {totals.surchargePercent > 0 ? '+' : ''}{totals.surchargePercent.toFixed(1)}%
+                      </span>
+                    </div>
+                    <div className="h-4 w-px bg-slate-200 shrink-0" />
+                  </>
+                )}
+                <div className="whitespace-nowrap">
+                  <span className="text-slate-400 hidden lg:inline">Netto po rab.:</span>
+                  <span className="text-slate-400 lg:hidden">NR:</span>
                   <span className="ml-1 font-bold text-blue-700">{formatCurrency(totals.nettoAfterSurcharges)}</span>
                 </div>
-                <div className="h-4 w-px bg-slate-300" />
-                <div>
-                  <span className="text-slate-500">Zysk netto:</span>
+                <div className="h-4 w-px bg-slate-200 shrink-0" />
+                <div className="whitespace-nowrap">
+                  <span className="text-slate-400 hidden lg:inline">Zysk:</span>
+                  <span className="text-slate-400 lg:hidden">Z:</span>
                   <span className={`ml-1 font-bold ${totals.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                     {formatCurrency(totals.profit)}
                   </span>
                 </div>
               </div>
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-medium text-slate-700">{formatCurrency(totals.totalBrutto)}</span>
-                <span className="text-xs text-slate-500">brutto</span>
+              <div className="flex items-center gap-1.5 bg-blue-600 text-white px-3 py-1.5 rounded-lg shrink-0">
+                <span className="text-sm font-bold">{formatCurrency(totals.totalBrutto)}</span>
+                <span className="text-[10px] opacity-75">brutto</span>
               </div>
             </div>
           </div>
