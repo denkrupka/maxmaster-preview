@@ -1639,12 +1639,18 @@ export interface GanttTask {
   source: GanttTaskSource;
   source_id?: string | null;
   assigned_to_id?: string | null;
+  supervisor_id?: string | null;
+  approver_id?: string | null;
+  notes?: string | null;
+  priority?: 'low' | 'normal' | 'high' | 'critical';
   created_at: string;
   updated_at: string;
   // Relations
   estimate_task?: EstimateTask | null;
   ticket?: any;
   assigned_to?: any;
+  supervisor?: any;
+  approver?: any;
 }
 
 export interface GanttDependency {

@@ -564,3 +564,124 @@ describe('formatDatePL', () => {
     expect(result).not.toBe('–');
   });
 });
+
+// =====================================================
+// Additional edge case tests
+// =====================================================
+describe('autoSchedule — complex dependency chains', () => {
+  const MON_FRI = [true, true, true, true, true, false, false];
+
+  it('schedules chain A->B->C correctly with FS', () => {
+    const tasks = [
+      makeTask({ id: 'a', title: 'A', duration: 3, start_date: '2026-03-02' }),
+      makeTask({ id: 'b', title: 'B', duration: 2 }),
+      makeTask({ id: 'c', title: 'C', duration: 1 }),
+    ];
+    const deps: GanttDepRecord[] = [
+      { id: 'd1', predecessor_id: 'a', successor_id: 'b', dependency_type: 'FS', lag: 0 },
+      { id: 'd2', predecessor_id: 'b', successor_id: 'c', dependency_type: 'FS', lag: 0 },
+    ];
+    const tree = buildTaskTree(tasks);
+    const result = autoSchedule(tree, deps, MON_FRI, '2026-03-02');
+    // A: Mon 2 Mar -> Wed 4 Mar
+    expect(result.get('a')?.start_date).toBe('2026-03-02');
+    // B: Thu 5 Mar -> Fri 6 Mar
+    expect(result.get('b')?.start_date).toBe('2026-03-05');
+    // C: Mon 9 Mar (skip weekend)
+    expect(result.get('c')?.start_date).toBe('2026-03-09');
+  });
+
+  it('schedules with SS dependency', () => {
+    const tasks = [
+      makeTask({ id: 'a', title: 'A', duration: 5, start_date: '2026-03-02' }),
+      makeTask({ id: 'b', title: 'B', duration: 2 }),
+    ];
+    const deps: GanttDepRecord[] = [
+      { id: 'd1', predecessor_id: 'a', successor_id: 'b', dependency_type: 'SS', lag: 0 },
+    ];
+    const tree = buildTaskTree(tasks);
+    const result = autoSchedule(tree, deps, MON_FRI, '2026-03-02');
+    // SS: B starts when A starts
+    expect(result.get('b')?.start_date).toBe('2026-03-02');
+  });
+
+  it('handles lag days in dependency', () => {
+    const tasks = [
+      makeTask({ id: 'a', title: 'A', duration: 1, start_date: '2026-03-02' }),
+      makeTask({ id: 'b', title: 'B', duration: 1 }),
+    ];
+    const deps: GanttDepRecord[] = [
+      { id: 'd1', predecessor_id: 'a', successor_id: 'b', dependency_type: 'FS', lag: 2 },
+    ];
+    const tree = buildTaskTree(tasks);
+    const result = autoSchedule(tree, deps, MON_FRI, '2026-03-02');
+    // A ends 2 Mar, then +1 day = 3 Mar, then +2 lag working days = 5 Mar
+    expect(result.get('b')?.start_date).toBe('2026-03-05');
+  });
+});
+
+describe('validateDependency — edge cases', () => {
+  it('allows valid dependency', () => {
+    const deps: GanttDepRecord[] = [];
+    const result = validateDependency(deps, 'a', 'b');
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects empty predecessor', () => {
+    const result = validateDependency([], '', 'b');
+    expect(result.valid).toBe(false);
+  });
+
+  it('rejects empty successor', () => {
+    const result = validateDependency([], 'a', '');
+    expect(result.valid).toBe(false);
+  });
+
+  it('detects three-node cycle', () => {
+    const deps: GanttDepRecord[] = [
+      { id: 'd1', predecessor_id: 'a', successor_id: 'b', dependency_type: 'FS', lag: 0 },
+      { id: 'd2', predecessor_id: 'b', successor_id: 'c', dependency_type: 'FS', lag: 0 },
+    ];
+    // Adding c->a would complete the cycle
+    const result = validateDependency(deps, 'c', 'a');
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain('cykl');
+  });
+});
+
+describe('recalcParents — nested hierarchy', () => {
+  it('recalculates multi-level parent chain', () => {
+    const tasks = [
+      makeTask({ id: 'root', title: 'Root', is_auto: true }),
+      makeTask({ id: 'mid', title: 'Mid', parent_id: 'root', is_auto: true }),
+      makeTask({ id: 'leaf1', title: 'Leaf1', parent_id: 'mid', start_date: '2026-03-02', end_date: '2026-03-05', duration: 3, progress: 50 }),
+      makeTask({ id: 'leaf2', title: 'Leaf2', parent_id: 'mid', start_date: '2026-03-10', end_date: '2026-03-15', duration: 5, progress: 80 }),
+    ];
+    const tree = buildTaskTree(tasks);
+    const result = recalcParents(tree);
+    // Mid should have start=03-02, end=03-15
+    const mid = result[0].children![0];
+    expect(mid.start_date).toBe('2026-03-02');
+    expect(mid.end_date).toBe('2026-03-15');
+    // Root should inherit same dates
+    expect(result[0].start_date).toBe('2026-03-02');
+    expect(result[0].end_date).toBe('2026-03-15');
+  });
+});
+
+describe('workingDaysFromMask / maskFromWorkingDays roundtrip', () => {
+  it('handles all days working', () => {
+    const allDays = [true, true, true, true, true, true, true];
+    const mask = maskFromWorkingDays(allDays);
+    const result = workingDaysFromMask(mask);
+    expect(result).toEqual(allDays);
+  });
+
+  it('handles no days working', () => {
+    const noDays = [false, false, false, false, false, false, false];
+    const mask = maskFromWorkingDays(noDays);
+    expect(mask).toBe(0);
+    const result = workingDaysFromMask(mask);
+    expect(result).toEqual(noDays);
+  });
+});

@@ -201,7 +201,8 @@ export const GanttPage: React.FC = () => {
     title: '', parent_id: '', planning_mode: 'auto' as 'auto' | 'manual',
     duration: 0, start_date: '', end_date: '', progress: 0,
     has_custom_progress: false, is_milestone: false, color: '#3b82f6',
-    assigned_to_id: ''
+    assigned_to_id: '', supervisor_id: '', approver_id: '',
+    notes: '', priority: 'normal' as 'low' | 'normal' | 'high' | 'critical'
   });
 
   // Dependency form
@@ -222,6 +223,12 @@ export const GanttPage: React.FC = () => {
   const dragRef = useRef<typeof dragState>(null);
   const [dragPreview, setDragPreview] = useState<{ taskId: string; left: number; width: number } | null>(null);
 
+  // Drag-to-connect dependency state
+  const [connectDrag, setConnectDrag] = useState<{
+    fromTaskId: string; fromSide: 'start' | 'end'; startX: number; startY: number; currentX: number; currentY: number;
+  } | null>(null);
+  const connectDragRef = useRef<typeof connectDrag>(null);
+
   // Splitter
   const [leftPanelWidth, setLeftPanelWidth] = useState(680);
   const splitterRef = useRef<boolean>(false);
@@ -230,6 +237,8 @@ export const GanttPage: React.FC = () => {
   const chartRef = useRef<HTMLDivElement>(null);
   const autoSelectDone = useRef(false);
   const settingsRef = useRef<HTMLDivElement>(null);
+  const [chartScrollLeft, setChartScrollLeft] = useState(0);
+  const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
 
   // Auto-dismiss notifications
   useEffect(() => {
@@ -247,6 +256,15 @@ export const GanttPage: React.FC = () => {
     if (!showCriticalPath || dependencies.length === 0) return new Set<string>();
     return findCriticalPath(tasks as GanttTaskNode[], dependencies as GanttDepRecord[]);
   }, [showCriticalPath, tasks, dependencies]);
+
+  // Track chart scroll for smart Today button
+  useEffect(() => {
+    const el = chartRef.current;
+    if (!el) return;
+    const handler = () => setChartScrollLeft(el.scrollLeft);
+    el.addEventListener('scroll', handler, { passive: true });
+    return () => el.removeEventListener('scroll', handler);
+  }, [selectedProject, loading]);
 
   // Close settings menu on outside click
   useEffect(() => {
@@ -291,7 +309,7 @@ export const GanttPage: React.FC = () => {
     setLoading(true);
     try {
       const [tasksRes, depsRes, wdRes] = await Promise.all([
-        supabase.from('gantt_tasks').select('*, assigned_to:users(*)').eq('project_id', selectedProject.id).order('sort_order'),
+        supabase.from('gantt_tasks').select('*, assigned_to:users!gantt_tasks_assigned_to_id_fkey(*), supervisor:users!gantt_tasks_supervisor_id_fkey(*), approver:users!gantt_tasks_approver_id_fkey(*)').eq('project_id', selectedProject.id).order('sort_order'),
         supabase.from('gantt_dependencies').select('*').eq('project_id', selectedProject.id),
         supabase.from('project_working_days').select('*').eq('project_id', selectedProject.id).maybeSingle()
       ]);
@@ -366,6 +384,28 @@ export const GanttPage: React.FC = () => {
   const isParentTask = (task: GanttTaskWithChildren) => task.children && task.children.length > 0;
   const formatDuration = fmtDuration;
 
+  // Deadline status helper
+  const getDeadlineStatus = (task: GanttTaskWithChildren): 'overdue' | 'due-soon' | 'ok' | null => {
+    if (!task.end_date || task.progress >= 100) return null;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const end = new Date(task.end_date); end.setHours(0, 0, 0, 0);
+    const daysLeft = Math.ceil((end.getTime() - today.getTime()) / 86400000);
+    if (daysLeft < 0) return 'overdue';
+    if (daysLeft <= 3) return 'due-soon';
+    return 'ok';
+  };
+
+  const getUserInitials = (user: any): string => {
+    if (!user) return '';
+    const f = (user.first_name || '')[0] || '';
+    const l = (user.last_name || '')[0] || '';
+    return (f + l).toUpperCase();
+  };
+
+  const PRIORITY_COLORS: Record<string, string> = {
+    low: '#94a3b8', normal: '#3b82f6', high: '#f59e0b', critical: '#ef4444'
+  };
+
   const ROW_HEIGHT = 40;
   const dayWidth = zoomLevel === 'day' ? 40 : zoomLevel === 'week' ? 20 : 6;
   const totalDays = getDaysBetween(dateRange.start, dateRange.end);
@@ -379,9 +419,9 @@ export const GanttPage: React.FC = () => {
     return { left: startDays * dayWidth, width: Math.max(duration * dayWidth, dayWidth) };
   };
 
-  // Month headers for timeline
-  const monthHeaders = useMemo(() => {
-    const months: { label: string; days: number; startOffset: number }[] = [];
+  // Primary headers (top row) — always months
+  const primaryHeaders = useMemo(() => {
+    const headers: { label: string; days: number; startOffset: number }[] = [];
     let d = new Date(dateRange.start);
     while (d < dateRange.end) {
       const monthStart = new Date(d);
@@ -389,31 +429,53 @@ export const GanttPage: React.FC = () => {
       const effEnd = monthEnd > dateRange.end ? dateRange.end : monthEnd;
       const days = getDaysBetween(monthStart, effEnd) + 1;
       const startOffset = getDaysBetween(dateRange.start, monthStart);
-      months.push({ label: `${(d.getMonth() + 1).toString().padStart(2, '0')}.${d.getFullYear()}`, days, startOffset });
+      headers.push({ label: `${POLISH_MONTHS[d.getMonth()]} ${d.getFullYear()}`, days, startOffset });
       d = new Date(d.getFullYear(), d.getMonth() + 1, 1);
     }
-    return months;
+    return headers;
   }, [dateRange]);
 
-  // Week headers
-  const weekHeaders = useMemo(() => {
-    const weeks: { weekNum: number; days: number; startOffset: number }[] = [];
-    let d = new Date(dateRange.start);
-    while (d < dateRange.end) {
-      const weekStart = new Date(d);
-      const weekEnd = new Date(d);
-      weekEnd.setDate(weekEnd.getDate() + (6 - weekEnd.getDay()));
-      if (weekEnd > dateRange.end) weekEnd.setTime(dateRange.end.getTime());
-      const days = getDaysBetween(weekStart, weekEnd) + 1;
-      const startOffset = getDaysBetween(dateRange.start, weekStart);
-      const onejan = new Date(weekStart.getFullYear(), 0, 1);
-      const weekNum = Math.ceil(((weekStart.getTime() - onejan.getTime()) / 86400000 + onejan.getDay() + 1) / 7);
-      weeks.push({ weekNum, days: Math.min(days, getDaysBetween(weekStart, dateRange.end) + 1), startOffset });
-      d = new Date(weekEnd);
-      d.setDate(d.getDate() + 1);
+  // Secondary headers (bottom row) — depends on zoom
+  const secondaryHeaders = useMemo(() => {
+    const headers: { label: string; days: number; startOffset: number }[] = [];
+    const fmtShort = (d: Date) => `${d.getDate()}.${(d.getMonth() + 1).toString().padStart(2, '0')}`;
+    if (zoomLevel === 'day') {
+      // Each day individually
+      let d = new Date(dateRange.start);
+      while (d < dateRange.end) {
+        const startOffset = getDaysBetween(dateRange.start, d);
+        const dow = d.getDay();
+        const dayLabel = DAY_LABELS[dow === 0 ? 6 : dow - 1];
+        headers.push({ label: `${dayLabel} ${d.getDate()}`, days: 1, startOffset });
+        d = new Date(d); d.setDate(d.getDate() + 1);
+      }
+    } else if (zoomLevel === 'week') {
+      // Each week as date range
+      let d = new Date(dateRange.start);
+      while (d < dateRange.end) {
+        const weekStart = new Date(d);
+        const weekEnd = new Date(d); weekEnd.setDate(weekEnd.getDate() + 6);
+        if (weekEnd > dateRange.end) weekEnd.setTime(dateRange.end.getTime());
+        const days = getDaysBetween(weekStart, weekEnd) + 1;
+        const startOffset = getDaysBetween(dateRange.start, weekStart);
+        headers.push({ label: `${fmtShort(weekStart)} – ${fmtShort(weekEnd)}`, days, startOffset });
+        d = new Date(weekEnd); d.setDate(d.getDate() + 1);
+      }
+    } else {
+      // Month view — show week start dates
+      let d = new Date(dateRange.start);
+      while (d < dateRange.end) {
+        const weekStart = new Date(d);
+        const weekEnd = new Date(d); weekEnd.setDate(weekEnd.getDate() + 6);
+        if (weekEnd > dateRange.end) weekEnd.setTime(dateRange.end.getTime());
+        const days = getDaysBetween(weekStart, weekEnd) + 1;
+        const startOffset = getDaysBetween(dateRange.start, weekStart);
+        headers.push({ label: fmtShort(weekStart), days, startOffset });
+        d = new Date(weekEnd); d.setDate(d.getDate() + 1);
+      }
     }
-    return weeks;
-  }, [dateRange]);
+    return headers;
+  }, [dateRange, zoomLevel]);
 
   const scrollToToday = () => {
     if (!chartRef.current) return;
@@ -431,7 +493,9 @@ export const GanttPage: React.FC = () => {
     setPhaseForm({
       title: '', parent_id: parentId || '', planning_mode: 'auto',
       duration: 0, start_date: startDate, end_date: '', progress: 0,
-      has_custom_progress: false, is_milestone: false, color: '#3b82f6', assigned_to_id: ''
+      has_custom_progress: false, is_milestone: false, color: '#3b82f6',
+      assigned_to_id: '', supervisor_id: '', approver_id: '',
+      notes: '', priority: 'normal'
     });
     setShowPhaseModal(true);
   };
@@ -448,7 +512,11 @@ export const GanttPage: React.FC = () => {
       has_custom_progress: task.has_custom_progress || false,
       is_milestone: task.is_milestone || false,
       color: task.color || '#3b82f6',
-      assigned_to_id: task.assigned_to_id || ''
+      assigned_to_id: task.assigned_to_id || '',
+      supervisor_id: task.supervisor_id || '',
+      approver_id: task.approver_id || '',
+      notes: task.notes || '',
+      priority: task.priority || 'normal'
     });
     setShowPhaseModal(true);
   };
@@ -480,6 +548,10 @@ export const GanttPage: React.FC = () => {
         is_milestone: phaseForm.is_milestone,
         color: phaseForm.color,
         assigned_to_id: phaseForm.assigned_to_id || null,
+        supervisor_id: phaseForm.supervisor_id || null,
+        approver_id: phaseForm.approver_id || null,
+        notes: phaseForm.notes || null,
+        priority: phaseForm.priority || 'normal',
         source: 'manual' as const,
         sort_order: editingPhase ? editingPhase.sort_order : allFlatTasks.length
       };
@@ -826,6 +898,77 @@ export const GanttPage: React.FC = () => {
         if (task?.parent_id) await recalcAndSaveParent(task.parent_id);
         await loadGanttData();
       } catch (err: any) { showError('Błąd aktualizacji: ' + (err?.message || err)); }
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
+
+  // ========== DRAG-TO-CONNECT DEPENDENCY ==========
+  const handleConnectStart = (e: React.MouseEvent, taskId: string, side: 'start' | 'end') => {
+    e.preventDefault();
+    e.stopPropagation();
+    const chartEl = chartRef.current;
+    if (!chartEl) return;
+    const rect = chartEl.getBoundingClientRect();
+    const state = {
+      fromTaskId: taskId, fromSide: side,
+      startX: e.clientX - rect.left + chartEl.scrollLeft,
+      startY: e.clientY - rect.top + chartEl.scrollTop,
+      currentX: e.clientX - rect.left + chartEl.scrollLeft,
+      currentY: e.clientY - rect.top + chartEl.scrollTop
+    };
+    connectDragRef.current = state;
+    setConnectDrag(state);
+
+    const onMove = (ev: MouseEvent) => {
+      const cd = connectDragRef.current;
+      if (!cd || !chartEl) return;
+      const r = chartEl.getBoundingClientRect();
+      const updated = { ...cd, currentX: ev.clientX - r.left + chartEl.scrollLeft, currentY: ev.clientY - r.top + chartEl.scrollTop };
+      connectDragRef.current = updated;
+      setConnectDrag(updated);
+    };
+
+    const onUp = async (ev: MouseEvent) => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      const cd = connectDragRef.current;
+      connectDragRef.current = null;
+      setConnectDrag(null);
+      if (!cd || !chartEl || !selectedProject) return;
+      // Find which task row the mouse landed on
+      const r = chartEl.getBoundingClientRect();
+      const relY = ev.clientY - r.top + chartEl.scrollTop - 56; // minus header height
+      const rowIdx = Math.floor(relY / ROW_HEIGHT);
+      if (rowIdx < 0 || rowIdx >= filteredFlatTasks.length) return;
+      const targetTask = filteredFlatTasks[rowIdx];
+      if (targetTask.id === cd.fromTaskId) return;
+      // Determine relX to decide which side
+      const relX = ev.clientX - r.left + chartEl.scrollLeft;
+      const targetPos = getTaskPosition(targetTask);
+      const targetMid = targetPos.left + targetPos.width / 2;
+      const toSide: 'start' | 'end' = relX < targetMid ? 'start' : 'end';
+      // Map sides to dependency type
+      let depType: GanttDependencyType = 'FS';
+      if (cd.fromSide === 'end' && toSide === 'start') depType = 'FS';
+      else if (cd.fromSide === 'start' && toSide === 'start') depType = 'SS';
+      else if (cd.fromSide === 'end' && toSide === 'end') depType = 'FF';
+      else if (cd.fromSide === 'start' && toSide === 'end') depType = 'SF';
+      // Validate
+      const validation = validateDependency(dependencies as GanttDepRecord[], cd.fromTaskId, targetTask.id);
+      if (!validation.valid) { showError(validation.error!); return; }
+      // Create dependency
+      try {
+        const { error } = await supabase.from('gantt_dependencies').insert({
+          project_id: selectedProject.id,
+          predecessor_id: cd.fromTaskId, successor_id: targetTask.id,
+          dependency_type: depType, lag: 0
+        });
+        if (error) throw error;
+        showSuccess(`Zależność ${GANTT_DEPENDENCY_SHORT_LABELS[depType]} utworzona.`);
+        await loadGanttData();
+      } catch (err: any) { showError('Błąd tworzenia zależności: ' + (err?.message || err)); }
     };
 
     document.addEventListener('mousemove', onMove);
@@ -1436,16 +1579,17 @@ export const GanttPage: React.FC = () => {
           {/* LEFT PANEL: task table */}
           <div className="flex-shrink-0 border-r border-slate-300 bg-white overflow-auto" style={{ width: leftPanelWidth }}>
             {/* Table header */}
-            <div className="sticky top-0 z-20 bg-slate-100 border-b border-slate-300 flex items-center text-xs font-semibold text-slate-500 uppercase" style={{ height: 56 }}>
-              <div className="w-14 text-center shrink-0 px-2">SPP</div>
+            <div className="sticky top-0 z-20 bg-slate-100 border-b border-slate-300 flex items-center text-[10px] font-semibold text-slate-500 uppercase tracking-wide" style={{ height: 56 }}>
+              <div className="w-14 text-center shrink-0 px-1">SPP</div>
               <div className="flex-1 px-2 min-w-[120px]">Nazwa</div>
-              <div className="w-24 px-1 text-center">Czas trw.</div>
+              <div className="w-8 text-center" title="Przypisany"><Users className="w-3 h-3 mx-auto text-slate-400" /></div>
+              <div className="w-20 px-1 text-center">Czas</div>
               <div className="w-24 px-1 text-center">Rozpocz.</div>
               <div className="w-24 px-1 text-center">Zakończ.</div>
               <div className="w-20 px-1 text-center">Postęp</div>
-              <div className="w-10 flex items-center justify-center">
+              <div className="w-8 flex items-center justify-center">
                 <button onClick={() => setShowSettingsMenu(!showSettingsMenu)} className="p-1 hover:bg-slate-200 rounded">
-                  <Settings className="w-3.5 h-3.5 text-slate-400" />
+                  <Settings className="w-3 h-3 text-slate-400" />
                 </button>
               </div>
             </div>
@@ -1459,30 +1603,57 @@ export const GanttPage: React.FC = () => {
                 </button>
               </div>
             ) : (
-              filteredFlatTasks.map(task => {
+              filteredFlatTasks.map((task, rowIdx) => {
                 const title = getTaskTitle(task);
                 const isParent = isParentTask(task);
                 const progress = task.progress || 0;
+                const deadline = getDeadlineStatus(task);
+                const isHovered = hoveredRowId === task.id;
                 return (
-                  <div key={task.id} className="flex items-center border-b border-slate-100 group hover:bg-blue-50/30 cursor-pointer"
-                    style={{ height: ROW_HEIGHT }} onClick={() => openEditPhase(task)}>
-                    <div className="w-14 text-center text-xs text-slate-500 shrink-0 font-medium px-2">{task.wbs}</div>
-                    <div className="flex-1 flex items-center gap-1.5 px-2 min-w-[120px]" style={{ paddingLeft: `${8 + (task.level || 0) * 20}px` }}>
+                  <div key={task.id}
+                    className={`flex items-center border-b cursor-pointer group transition-colors ${isHovered ? 'bg-blue-50' : rowIdx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} ${deadline === 'overdue' ? 'border-l-2 border-l-red-400' : deadline === 'due-soon' ? 'border-l-2 border-l-amber-400' : ''} border-b-slate-100 hover:bg-blue-50`}
+                    style={{ height: ROW_HEIGHT }}
+                    onClick={() => openEditPhase(task)}
+                    onMouseEnter={() => setHoveredRowId(task.id)}
+                    onMouseLeave={() => setHoveredRowId(null)}>
+                    {/* Priority dot + WBS */}
+                    <div className="w-14 flex items-center justify-center shrink-0 px-1 gap-1">
+                      {task.priority && task.priority !== 'normal' && (
+                        <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: PRIORITY_COLORS[task.priority] }} />
+                      )}
+                      <span className="text-xs text-slate-500 font-medium">{task.wbs}</span>
+                    </div>
+                    {/* Name */}
+                    <div className="flex-1 flex items-center gap-1.5 px-2 min-w-[120px]" style={{ paddingLeft: `${8 + (task.level || 0) * 18}px` }}>
                       {isParent ? (
                         <button onClick={(e) => { e.stopPropagation(); toggleTaskExpand(task.id); }}
-                          className="w-5 h-5 rounded flex items-center justify-center flex-shrink-0 bg-blue-600 text-white hover:bg-blue-700">
+                          className="w-5 h-5 rounded flex items-center justify-center flex-shrink-0 bg-blue-600 text-white hover:bg-blue-700 transition-colors">
                           {task.isExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
                         </button>
+                      ) : task.is_milestone ? (
+                        <Milestone className="w-4 h-4 text-amber-500 flex-shrink-0" />
                       ) : (
-                        <span className="w-5 h-5 rounded flex items-center justify-center flex-shrink-0 bg-slate-400 text-white">
-                          <ChevronRight className="w-3 h-3" />
-                        </span>
+                        <div className="w-1.5 h-1.5 rounded-full flex-shrink-0 ml-1.5" style={{ backgroundColor: task.color || '#93c5fd' }} />
                       )}
                       <span className={`text-sm truncate ${isParent ? 'font-semibold text-slate-800' : 'text-slate-700'}`}>{title}</span>
+                      {/* Deadline warning icon */}
+                      {deadline === 'overdue' && <AlertCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" title="Przekroczony termin!" />}
+                      {deadline === 'due-soon' && <Clock className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" title="Termin wkrótce" />}
                     </div>
-                    <div className="w-24 px-1 text-center text-xs text-slate-500">{task.duration ? `${task.duration} d.` : '–'}</div>
+                    {/* Assigned user avatar */}
+                    <div className="w-8 flex items-center justify-center flex-shrink-0" onClick={e => e.stopPropagation()}>
+                      {task.assigned_to && (
+                        <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-[9px] font-bold"
+                          title={`${task.assigned_to.first_name || ''} ${task.assigned_to.last_name || ''}`}>
+                          {getUserInitials(task.assigned_to)}
+                        </div>
+                      )}
+                    </div>
+                    <div className="w-20 px-1 text-center text-xs text-slate-500">{task.duration ? `${task.duration} d.` : '–'}</div>
                     <div className="w-24 px-1 text-center text-xs text-slate-500">{task.start_date ? new Date(task.start_date).toLocaleDateString('pl-PL') : '–'}</div>
-                    <div className="w-24 px-1 text-center text-xs text-slate-500">{task.end_date ? new Date(task.end_date).toLocaleDateString('pl-PL') : '–'}</div>
+                    <div className={`w-24 px-1 text-center text-xs ${deadline === 'overdue' ? 'text-red-600 font-medium' : deadline === 'due-soon' ? 'text-amber-600' : 'text-slate-500'}`}>
+                      {task.end_date ? new Date(task.end_date).toLocaleDateString('pl-PL') : '–'}
+                    </div>
                     <div className="w-20 px-1" onClick={e => e.stopPropagation()}>
                       <div className="flex items-center gap-1">
                         <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
@@ -1492,8 +1663,8 @@ export const GanttPage: React.FC = () => {
                         <span className="text-[10px] text-slate-400 w-7 text-right">{progress}%</span>
                       </div>
                     </div>
-                    <div className="w-10 flex items-center justify-center" onClick={e => e.stopPropagation()}>
-                      <button onClick={(e) => handleContextMenu(e, task)} className="p-1 hover:bg-slate-200 rounded opacity-0 group-hover:opacity-100">
+                    <div className="w-8 flex items-center justify-center" onClick={e => e.stopPropagation()}>
+                      <button onClick={(e) => handleContextMenu(e, task)} className="p-1 hover:bg-slate-200 rounded opacity-0 group-hover:opacity-100 transition-opacity">
                         <MoreVertical className="w-3.5 h-3.5 text-slate-400" />
                       </button>
                     </div>
@@ -1512,39 +1683,60 @@ export const GanttPage: React.FC = () => {
             <div style={{ width: chartWidth, minHeight: '100%' }} className="relative">
               {/* Timeline header */}
               <div className="sticky top-0 z-10" style={{ height: 56 }}>
-                {/* Row 1: months */}
+                {/* Row 1: months / primary */}
                 <div className="flex h-7 bg-slate-100 border-b border-slate-200">
-                  {monthHeaders.map((m, i) => (
+                  {primaryHeaders.map((m, i) => (
                     <div key={i} className="border-r border-slate-200 flex items-center justify-center text-xs font-semibold overflow-hidden"
                       style={{ position: 'absolute', left: m.startOffset * dayWidth, width: m.days * dayWidth }}>
-                      <span className="text-blue-600">{m.label}</span>
+                      <span className="text-slate-700 capitalize">{m.label}</span>
                     </div>
                   ))}
                 </div>
-                {/* Row 2: weeks */}
+                {/* Row 2: dates / secondary */}
                 <div className="flex h-7 bg-slate-50 border-b border-slate-300" style={{ marginTop: 0 }}>
-                  {weekHeaders.map((w, i) => (
-                    <div key={i} className="border-r border-slate-200 flex items-center justify-center text-[10px] font-medium text-slate-500 overflow-hidden"
-                      style={{ position: 'absolute', left: w.startOffset * dayWidth, width: w.days * dayWidth, top: 28 }}>
-                      {w.days * dayWidth > 40 && <span>Tydz. {w.weekNum}</span>}
-                    </div>
-                  ))}
+                  {secondaryHeaders.map((h, i) => {
+                    const w = h.days * dayWidth;
+                    return (
+                      <div key={i} className={`border-r flex items-center justify-center text-[10px] font-medium overflow-hidden ${zoomLevel === 'day' ? 'border-slate-200' : 'border-slate-200'}`}
+                        style={{ position: 'absolute', left: h.startOffset * dayWidth, width: w, top: 28 }}>
+                        {w > 30 && <span className="text-slate-500 truncate px-0.5">{h.label}</span>}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
-              {/* Today button */}
-              <button onClick={scrollToToday}
-                className="fixed z-30 right-6 bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium shadow-lg hover:bg-blue-700 flex items-center gap-1.5"
-                style={{ top: 160 }}>
-                <ArrowLeft className="w-3 h-3" /> Dzisiaj
-              </button>
+              {/* Smart Today button — only shows when today is scrolled out of view */}
+              {(() => {
+                const today = new Date();
+                if (today < dateRange.start || today > dateRange.end) return null;
+                const todayOffset = getDaysBetween(dateRange.start, today) * dayWidth;
+                const cr = chartRef.current;
+                const scrollLeft = chartScrollLeft;
+                const viewWidth = cr?.clientWidth || 800;
+                const todayVisible = todayOffset >= scrollLeft && todayOffset <= scrollLeft + viewWidth;
+                if (todayVisible) return null;
+                const isLeft = todayOffset < scrollLeft;
+                return (
+                  <button onClick={scrollToToday}
+                    className={`sticky z-30 ${isLeft ? 'left-2' : 'left-[calc(100%-100px)]'} top-16 bg-red-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium shadow-lg hover:bg-red-600 flex items-center gap-1.5 transition-all`}>
+                    {isLeft ? <ArrowLeft className="w-3 h-3" /> : null}
+                    Dzisiaj
+                    {!isLeft ? <ArrowRight className="w-3 h-3" /> : null}
+                  </button>
+                );
+              })()}
 
               {/* Today line */}
               {(() => {
                 const today = new Date();
                 if (today >= dateRange.start && today <= dateRange.end) {
                   const daysFromStart = getDaysBetween(dateRange.start, today);
-                  return <div className="absolute z-20 pointer-events-none" style={{ left: daysFromStart * dayWidth, top: 0, bottom: 0, width: 2, background: 'rgba(239,68,68,0.6)' }} />;
+                  return (
+                    <div className="absolute z-20 pointer-events-none" style={{ left: daysFromStart * dayWidth - 1, top: 0, bottom: 0, width: 2, background: '#ef4444' }}>
+                      <div className="absolute -top-0 -left-1.5 w-4 h-4 bg-red-500 rounded-full border-2 border-white shadow" style={{ top: 48 }} />
+                    </div>
+                  );
                 }
                 return null;
               })()}
@@ -1555,7 +1747,11 @@ export const GanttPage: React.FC = () => {
                 const isParent = isParentTask(task);
                 const title = getTaskTitle(task);
                 return (
-                  <div key={task.id} className="relative border-b border-slate-50" style={{ height: ROW_HEIGHT }}>
+                  <div key={task.id}
+                    className={`relative border-b transition-colors ${hoveredRowId === task.id ? 'bg-blue-50/40' : rowIdx % 2 === 0 ? '' : 'bg-slate-50/30'} border-slate-50`}
+                    style={{ height: ROW_HEIGHT }}
+                    onMouseEnter={() => setHoveredRowId(task.id)}
+                    onMouseLeave={() => setHoveredRowId(null)}>
                     {/* Weekend shading */}
                     {zoomLevel !== 'month' && Array.from({ length: totalDays }).map((_, i) => {
                       const date = new Date(dateRange.start); date.setDate(date.getDate() + i);
@@ -1599,6 +1795,11 @@ export const GanttPage: React.FC = () => {
                             {/* Resize handle (right edge) */}
                             <div className="absolute right-0 top-0 bottom-0 w-2 cursor-e-resize opacity-0 group-hover/bar:opacity-100 bg-white/30 hover:bg-white/60"
                               onMouseDown={(e) => { e.stopPropagation(); handleBarMouseDown(e, task, 'resize-end'); }} />
+                            {/* Connection dots for drag-to-connect */}
+                            <div className="absolute -left-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full border-2 border-blue-500 bg-white opacity-0 group-hover/bar:opacity-100 cursor-crosshair z-20 hover:bg-blue-100 hover:scale-125 transition-all"
+                              onMouseDown={(e) => { e.stopPropagation(); handleConnectStart(e, task.id, 'start'); }} />
+                            <div className="absolute -right-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full border-2 border-blue-500 bg-white opacity-0 group-hover/bar:opacity-100 cursor-crosshair z-20 hover:bg-blue-100 hover:scale-125 transition-all"
+                              onMouseDown={(e) => { e.stopPropagation(); handleConnectStart(e, task.id, 'end'); }} />
                           </div>
                         )}
                         {/* Label next to bar */}
@@ -1614,42 +1815,54 @@ export const GanttPage: React.FC = () => {
                 );
               })}
 
-              {/* Dependency arrows (SVG) */}
-              {showDependencies && dependencies.length > 0 && (
-                <svg className="absolute top-14 left-0 w-full h-full pointer-events-none z-15" style={{ overflow: 'visible' }}>
-                  <defs>
-                    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-                      <polygon points="0 0, 8 3, 0 6" fill="#64748b" />
-                    </marker>
-                  </defs>
-                  {dependencies.map(dep => {
-                    const predIdx = filteredFlatTasks.findIndex(t => t.id === dep.predecessor_id);
-                    const succIdx = filteredFlatTasks.findIndex(t => t.id === dep.successor_id);
-                    if (predIdx < 0 || succIdx < 0) return null;
-                    const pred = filteredFlatTasks[predIdx];
-                    const succ = filteredFlatTasks[succIdx];
-                    const predPos = getTaskPosition(pred);
-                    const succPos = getTaskPosition(succ);
-                    // FS: end of pred -> start of succ
-                    let x1 = predPos.left + predPos.width;
-                    let y1 = predIdx * ROW_HEIGHT + ROW_HEIGHT / 2;
-                    let x2 = succPos.left;
-                    let y2 = succIdx * ROW_HEIGHT + ROW_HEIGHT / 2;
-
-                    if (dep.dependency_type === 'SS') { x1 = predPos.left; }
-                    else if (dep.dependency_type === 'FF') { x2 = succPos.left + succPos.width; }
-                    else if (dep.dependency_type === 'SF') { x1 = predPos.left; x2 = succPos.left + succPos.width; }
-
-                    const midX = x1 + (x2 - x1) / 2;
-                    return (
-                      <g key={dep.id}>
-                        <path d={`M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`}
-                          fill="none" stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="4 3" markerEnd="url(#arrowhead)" />
-                      </g>
-                    );
-                  })}
-                </svg>
-              )}
+              {/* Dependency arrows + drag-to-connect line (SVG) */}
+              <svg className="absolute top-14 left-0 w-full h-full pointer-events-none" style={{ overflow: 'visible', zIndex: 15 }}>
+                <defs>
+                  <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                    <polygon points="0 0, 8 3, 0 6" fill="#475569" />
+                  </marker>
+                  <marker id="arrowhead-blue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                    <polygon points="0 0, 8 3, 0 6" fill="#3b82f6" />
+                  </marker>
+                </defs>
+                {/* Existing dependencies */}
+                {showDependencies && dependencies.map(dep => {
+                  const predIdx = filteredFlatTasks.findIndex(t => t.id === dep.predecessor_id);
+                  const succIdx = filteredFlatTasks.findIndex(t => t.id === dep.successor_id);
+                  if (predIdx < 0 || succIdx < 0) return null;
+                  const pred = filteredFlatTasks[predIdx];
+                  const succ = filteredFlatTasks[succIdx];
+                  const predPos = getTaskPosition(pred);
+                  const succPos = getTaskPosition(succ);
+                  let x1 = predPos.left + predPos.width;
+                  let y1 = predIdx * ROW_HEIGHT + ROW_HEIGHT / 2;
+                  let x2 = succPos.left;
+                  let y2 = succIdx * ROW_HEIGHT + ROW_HEIGHT / 2;
+                  if (dep.dependency_type === 'SS') { x1 = predPos.left; x2 = succPos.left; }
+                  else if (dep.dependency_type === 'FF') { x1 = predPos.left + predPos.width; x2 = succPos.left + succPos.width; }
+                  else if (dep.dependency_type === 'SF') { x1 = predPos.left; x2 = succPos.left + succPos.width; }
+                  // L-shaped routing for cleaner lines
+                  const gapX = 12;
+                  const exitX = dep.dependency_type === 'FS' || dep.dependency_type === 'FF' ? x1 + gapX : x1 - gapX;
+                  const enterX = dep.dependency_type === 'FS' || dep.dependency_type === 'SS' ? x2 - gapX : x2 + gapX;
+                  const path = y1 === y2
+                    ? `M ${x1} ${y1} L ${x2} ${y2}`
+                    : `M ${x1} ${y1} L ${exitX} ${y1} L ${exitX} ${y2} L ${x2} ${y2}`;
+                  return (
+                    <g key={dep.id} className="cursor-pointer" style={{ pointerEvents: 'auto' }} onClick={() => openEditDep(dep)}>
+                      <path d={path} fill="none" stroke="transparent" strokeWidth="12" />
+                      <path d={path} fill="none" stroke="#475569" strokeWidth="1.5" markerEnd="url(#arrowhead)" />
+                      <circle cx={x1} cy={y1} r="3" fill="#475569" />
+                    </g>
+                  );
+                })}
+                {/* Drag-to-connect preview line */}
+                {connectDrag && (
+                  <line x1={connectDrag.startX} y1={connectDrag.startY - 56}
+                    x2={connectDrag.currentX} y2={connectDrag.currentY - 56}
+                    stroke="#3b82f6" strokeWidth="2" strokeDasharray="6 3" markerEnd="url(#arrowhead-blue)" />
+                )}
+              </svg>
             </div>
           </div>
         </div>
@@ -1737,6 +1950,64 @@ export const GanttPage: React.FC = () => {
                     <span className="text-sm font-medium text-slate-700 w-10 text-right">{phaseForm.progress}%</span>
                   </div>
                 )}
+              </div>
+
+              {/* Priority */}
+              <div className="bg-slate-50 rounded-lg p-4">
+                <label className="block text-sm font-bold text-slate-800 mb-2">Priorytet</label>
+                <div className="flex gap-2">
+                  {([
+                    { val: 'low' as const, label: 'Niski', color: 'bg-slate-100 text-slate-600 border-slate-200' },
+                    { val: 'normal' as const, label: 'Normalny', color: 'bg-blue-50 text-blue-700 border-blue-200' },
+                    { val: 'high' as const, label: 'Wysoki', color: 'bg-amber-50 text-amber-700 border-amber-200' },
+                    { val: 'critical' as const, label: 'Krytyczny', color: 'bg-red-50 text-red-700 border-red-200' },
+                  ]).map(p => (
+                    <button key={p.val} type="button"
+                      onClick={() => setPhaseForm({ ...phaseForm, priority: p.val })}
+                      className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-all ${phaseForm.priority === p.val ? p.color + ' ring-2 ring-offset-1 ring-current' : 'bg-white text-slate-400 border-slate-200 hover:border-slate-300'}`}>
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Roles: Responsible / Supervisor / Approver */}
+              <div className="bg-slate-50 rounded-lg p-4 space-y-3">
+                <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                  <Users className="w-4 h-4" /> Osoby odpowiedzialne
+                </h4>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Odpowiedzialny (wykonawca)</label>
+                  <select value={phaseForm.assigned_to_id} onChange={e => setPhaseForm({ ...phaseForm, assigned_to_id: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm">
+                    <option value="">Nie przypisano</option>
+                    {users.map(u => <option key={u.id} value={u.id}>{u.first_name} {u.last_name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Nadzorujący (starszy)</label>
+                  <select value={phaseForm.supervisor_id} onChange={e => setPhaseForm({ ...phaseForm, supervisor_id: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm">
+                    <option value="">Nie przypisano</option>
+                    {users.map(u => <option key={u.id} value={u.id}>{u.first_name} {u.last_name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Zatwierdzający (odbiór)</label>
+                  <select value={phaseForm.approver_id} onChange={e => setPhaseForm({ ...phaseForm, approver_id: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm">
+                    <option value="">Nie przypisano</option>
+                    {users.map(u => <option key={u.id} value={u.id}>{u.first_name} {u.last_name}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div>
+                <label className="block text-sm font-bold text-slate-800 mb-1.5">Notatki</label>
+                <textarea value={phaseForm.notes} onChange={e => setPhaseForm({ ...phaseForm, notes: e.target.value })}
+                  placeholder="Dodatkowe uwagi..." rows={2}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm resize-none" />
               </div>
             </div>
             <div className="p-5 border-t border-slate-200 flex items-center justify-between">
