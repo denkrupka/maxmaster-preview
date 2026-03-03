@@ -57,6 +57,16 @@ interface PublicOffer {
       vat_rate: number;
       sort_order: number;
       is_optional: boolean;
+      components?: {
+        id: string;
+        type: 'labor' | 'material' | 'equipment';
+        name: string;
+        code: string;
+        unit: string;
+        quantity: number;
+        unit_price: number;
+        total_price: number;
+      }[];
     }[];
   }[];
 }
@@ -133,6 +143,23 @@ export const OfferLandingPage: React.FC = () => {
         offerData.company = companyData;
       }
 
+      // Fallback: use company_data from print_settings if company query failed (RLS)
+      if (!offerData.company && offerData.print_settings?.company_data) {
+        const cd = offerData.print_settings.company_data;
+        offerData.company = {
+          id: offerData.company_id || '',
+          name: cd.name || '',
+          logo_url: cd.logo_url || null,
+          nip: cd.nip || null,
+          phone: cd.phone || null,
+          email: cd.email || null,
+          street: cd.street || null,
+          building_number: cd.building_number || null,
+          city: cd.city || null,
+          postal_code: cd.postal_code || null,
+        };
+      }
+
       // Track view
       await supabase
         .from('offers')
@@ -142,7 +169,7 @@ export const OfferLandingPage: React.FC = () => {
         })
         .eq('id', offerData.id);
 
-      // Load sections and items
+      // Load sections, items, components and client
       const [sectionsRes, itemsRes, clientRes] = await Promise.all([
         supabase
           .from('offer_sections')
@@ -159,13 +186,34 @@ export const OfferLandingPage: React.FC = () => {
           : Promise.resolve({ data: null })
       ]);
 
+      // Load components for items (R/M/S)
+      const itemIds = (itemsRes.data || []).map((i: any) => i.id);
+      let componentsMap: Record<string, any[]> = {};
+      if (itemIds.length > 0) {
+        const { data: comps } = await supabase
+          .from('offer_item_components')
+          .select('*')
+          .in('offer_item_id', itemIds)
+          .order('sort_order');
+        (comps || []).forEach((c: any) => {
+          if (!componentsMap[c.offer_item_id]) componentsMap[c.offer_item_id] = [];
+          componentsMap[c.offer_item_id].push(c);
+        });
+      }
+
       const sections = (sectionsRes.data || []).map(s => ({
         ...s,
-        items: (itemsRes.data || []).filter((i: any) => i.section_id === s.id)
+        items: (itemsRes.data || []).filter((i: any) => i.section_id === s.id).map((i: any) => ({
+          ...i,
+          components: componentsMap[i.id] || []
+        }))
       }));
 
       // Add unsectioned items
-      const unsectionedItems = (itemsRes.data || []).filter((i: any) => !i.section_id);
+      const unsectionedItems = (itemsRes.data || []).filter((i: any) => !i.section_id).map((i: any) => ({
+        ...i,
+        components: componentsMap[i.id] || []
+      }));
       if (unsectionedItems.length > 0) {
         sections.unshift({
           id: 'unsectioned',
@@ -308,13 +356,30 @@ export const OfferLandingPage: React.FC = () => {
       return si + itemTotal * ((i.discount_percent || 0) / 100);
     }, 0), 0);
   const nettoAfterDiscount = totalNetto - totalDiscount;
+
+  // Calculate surcharges from warunki (respecting apply flags)
+  const warunki = offer.print_settings?.warunki;
+  const surchargePercent = (() => {
+    if (!warunki) return 0;
+    const ptRule = (warunki.payment_term_rules || []).find((r: any) => String(r.value) === String(warunki.payment_term));
+    const wrRule = (warunki.warranty_rules || []).find((r: any) => String(r.value) === String(warunki.warranty_period));
+    const ifRule = (warunki.invoice_freq_rules || []).find((r: any) => String(r.value) === String(warunki.invoice_frequency));
+    return (warunki.payment_term_apply !== false ? (ptRule?.surcharge || 0) : 0) +
+      (warunki.warranty_apply !== false ? (wrRule?.surcharge || 0) : 0) +
+      (warunki.invoice_freq_apply !== false ? (ifRule?.surcharge || 0) : 0);
+  })();
+  const surchargeAmount = nettoAfterDiscount * (surchargePercent / 100);
+  const nettoAfterSurcharges = nettoAfterDiscount + surchargeAmount;
+
   const vatAmount = offer.sections.reduce((sum, s) =>
     sum + s.items.reduce((si, i) => {
       const itemTotal = i.quantity * i.unit_price;
       const itemDiscount = itemTotal * ((i.discount_percent || 0) / 100);
       return si + (itemTotal - itemDiscount) * ((i.vat_rate ?? 23) / 100);
     }, 0), 0);
-  const brutto = nettoAfterDiscount + vatAmount;
+  // VAT should be based on nettoAfterSurcharges for proper total
+  const vatOnSurcharges = surchargeAmount * 0.23;
+  const brutto = nettoAfterSurcharges + vatAmount + vatOnSurcharges;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50">
@@ -478,8 +543,10 @@ export const OfferLandingPage: React.FC = () => {
                     {section.items.map((item, idx) => {
                       const itemTotal = item.quantity * item.unit_price;
                       const itemDiscount = itemTotal * ((item.discount_percent || 0) / 100);
+                      const showRMS = offer.print_settings?.show_components_in_print && item.components && item.components.length > 0;
                       return (
-                        <tr key={item.id} className="border-t border-slate-50 hover:bg-slate-50/50">
+                        <React.Fragment key={item.id}>
+                        <tr className="border-t border-slate-50 hover:bg-slate-50/50">
                           <td className="py-3 pr-4 text-sm text-slate-400">{idx + 1}</td>
                           <td className="py-3 pr-4">
                             <p className="text-sm font-medium text-slate-900">{item.name}</p>
@@ -496,6 +563,21 @@ export const OfferLandingPage: React.FC = () => {
                             {formatCurrency(itemTotal - itemDiscount)}
                           </td>
                         </tr>
+                        {showRMS && item.components!.map((comp, ci) => (
+                          <tr key={`comp-${ci}`} className="bg-slate-50/50 border-t border-slate-50">
+                            <td className="py-1 pr-4"></td>
+                            <td className="py-1 pr-4" colSpan={2}>
+                              <span className={`inline-block w-4 h-4 rounded text-[9px] font-bold text-white text-center leading-4 mr-1.5 ${comp.type === 'labor' ? 'bg-blue-500' : comp.type === 'material' ? 'bg-amber-500' : 'bg-emerald-500'}`}>
+                                {comp.type === 'labor' ? 'R' : comp.type === 'material' ? 'M' : 'S'}
+                              </span>
+                              <span className="text-xs text-slate-500">{comp.name}{comp.code ? ` [${comp.code}]` : ''}</span>
+                            </td>
+                            <td className="py-1 pr-4 text-xs text-right text-slate-400">{comp.quantity}</td>
+                            <td className="py-1 pr-4 text-xs text-right text-slate-400">{formatCurrency(comp.unit_price)}</td>
+                            <td className="py-1 text-xs text-right text-slate-400">{formatCurrency(comp.total_price)}</td>
+                          </tr>
+                        ))}
+                        </React.Fragment>
                       );
                     })}
                   </tbody>
@@ -518,7 +600,7 @@ export const OfferLandingPage: React.FC = () => {
                     <div>
                       <p className="text-xs text-slate-500 mb-1">Termin płatności</p>
                       <p className="text-sm font-medium text-slate-900">{payment_term} dni
-                        {(() => { const r = (payment_term_rules || []).find((r: any) => String(r.value) === String(payment_term)); return r && r.surcharge !== 0 ? <span className={`ml-1 text-xs ${r.surcharge > 0 ? 'text-red-500' : 'text-green-600'}`}>({r.surcharge > 0 ? '+' : ''}{r.surcharge}%)</span> : null; })()}
+                        {(() => { const r = (payment_term_rules || []).find((r: any) => String(r.value) === String(payment_term)); const applied = warunki.payment_term_apply !== false; return r && r.surcharge !== 0 ? <span className={`ml-1 text-xs ${applied ? (r.surcharge > 0 ? 'text-red-500' : 'text-green-600') : 'text-slate-400'}`}>({r.surcharge > 0 ? '+' : ''}{r.surcharge}%{!applied ? ' - nie uwzgl.' : ''})</span> : null; })()}
                       </p>
                     </div>
                   )}
@@ -526,7 +608,7 @@ export const OfferLandingPage: React.FC = () => {
                     <div>
                       <p className="text-xs text-slate-500 mb-1">Wystawienie faktur</p>
                       <p className="text-sm font-medium text-slate-900">co {invoice_frequency} dni
-                        {(() => { const r = (invoice_freq_rules || []).find((r: any) => String(r.value) === String(invoice_frequency)); return r && r.surcharge !== 0 ? <span className={`ml-1 text-xs ${r.surcharge > 0 ? 'text-red-500' : 'text-green-600'}`}>({r.surcharge > 0 ? '+' : ''}{r.surcharge}%)</span> : null; })()}
+                        {(() => { const r = (invoice_freq_rules || []).find((r: any) => String(r.value) === String(invoice_frequency)); const applied = warunki.invoice_freq_apply !== false; return r && r.surcharge !== 0 ? <span className={`ml-1 text-xs ${applied ? (r.surcharge > 0 ? 'text-red-500' : 'text-green-600') : 'text-slate-400'}`}>({r.surcharge > 0 ? '+' : ''}{r.surcharge}%{!applied ? ' - nie uwzgl.' : ''})</span> : null; })()}
                       </p>
                     </div>
                   )}
@@ -534,7 +616,7 @@ export const OfferLandingPage: React.FC = () => {
                     <div>
                       <p className="text-xs text-slate-500 mb-1">Okres gwarancyjny</p>
                       <p className="text-sm font-medium text-slate-900">{warranty_period} miesięcy
-                        {(() => { const r = (warranty_rules || []).find((r: any) => String(r.value) === String(warranty_period)); return r && r.surcharge !== 0 ? <span className={`ml-1 text-xs ${r.surcharge > 0 ? 'text-red-500' : 'text-green-600'}`}>({r.surcharge > 0 ? '+' : ''}{r.surcharge}%)</span> : null; })()}
+                        {(() => { const r = (warranty_rules || []).find((r: any) => String(r.value) === String(warranty_period)); const applied = warunki.warranty_apply !== false; return r && r.surcharge !== 0 ? <span className={`ml-1 text-xs ${applied ? (r.surcharge > 0 ? 'text-red-500' : 'text-green-600') : 'text-slate-400'}`}>({r.surcharge > 0 ? '+' : ''}{r.surcharge}%{!applied ? ' - nie uwzgl.' : ''})</span> : null; })()}
                       </p>
                     </div>
                   )}
@@ -599,21 +681,30 @@ export const OfferLandingPage: React.FC = () => {
                   <span className="font-medium">{formatCurrency(nettoAfterDiscount)}</span>
                 </div>
               )}
-              {/* Surcharges from warunki */}
+              {/* Surcharges from warunki (respecting apply flags) */}
               {(() => {
                 const warunki = offer.print_settings?.warunki;
                 if (!warunki) return null;
                 const ptRule = (warunki.payment_term_rules || []).find((r: any) => String(r.value) === String(warunki.payment_term));
                 const wrRule = (warunki.warranty_rules || []).find((r: any) => String(r.value) === String(warunki.warranty_period));
                 const ifRule = (warunki.invoice_freq_rules || []).find((r: any) => String(r.value) === String(warunki.invoice_frequency));
-                const totalSurcharge = (ptRule?.surcharge || 0) + (wrRule?.surcharge || 0) + (ifRule?.surcharge || 0);
+                const totalSurcharge =
+                  (warunki.payment_term_apply !== false ? (ptRule?.surcharge || 0) : 0) +
+                  (warunki.warranty_apply !== false ? (wrRule?.surcharge || 0) : 0) +
+                  (warunki.invoice_freq_apply !== false ? (ifRule?.surcharge || 0) : 0);
                 if (totalSurcharge === 0) return null;
                 const surchargeVal = nettoAfterDiscount * (totalSurcharge / 100);
                 return (
-                  <div className={`flex justify-between text-sm ${totalSurcharge > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                    <span>{totalSurcharge > 0 ? 'Narzut' : 'Rabat'} ({totalSurcharge > 0 ? '+' : ''}{totalSurcharge}%):</span>
-                    <span>{totalSurcharge > 0 ? '+' : ''}{formatCurrency(surchargeVal)}</span>
-                  </div>
+                  <>
+                    <div className={`flex justify-between text-sm ${totalSurcharge > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                      <span>Warunki istotne ({totalSurcharge > 0 ? '+' : ''}{totalSurcharge}%):</span>
+                      <span>{totalSurcharge > 0 ? '+' : ''}{formatCurrency(surchargeVal)}</span>
+                    </div>
+                    <div className="flex justify-between text-sm font-semibold">
+                      <span className="text-slate-600">Netto po rabacie:</span>
+                      <span>{formatCurrency(nettoAfterDiscount + surchargeVal)}</span>
+                    </div>
+                  </>
                 );
               })()}
               <div className="flex justify-between text-sm">

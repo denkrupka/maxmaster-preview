@@ -220,6 +220,10 @@ export const OffersPage: React.FC = () => {
   const [paymentTerm, setPaymentTerm] = useState('');
   const [invoiceFrequency, setInvoiceFrequency] = useState('');
   const [warrantyPeriod, setWarrantyPeriod] = useState('');
+  // "Uwzględnij" flags — when true, surcharge is applied to totals; when false, informational only
+  const [paymentTermApply, setPaymentTermApply] = useState(true);
+  const [invoiceFreqApply, setInvoiceFreqApply] = useState(true);
+  const [warrantyApply, setWarrantyApply] = useState(true);
 
   // Koszty powiązane
   interface RelatedCost {
@@ -1039,6 +1043,9 @@ export const OffersPage: React.FC = () => {
           setPaymentTerm(ps.warunki.payment_term || '');
           setInvoiceFrequency(ps.warunki.invoice_frequency || '');
           setWarrantyPeriod(ps.warunki.warranty_period || '');
+          if (ps.warunki.payment_term_apply !== undefined) setPaymentTermApply(ps.warunki.payment_term_apply);
+          if (ps.warunki.invoice_freq_apply !== undefined) setInvoiceFreqApply(ps.warunki.invoice_freq_apply);
+          if (ps.warunki.warranty_apply !== undefined) setWarrantyApply(ps.warunki.warranty_apply);
           if (ps.warunki.payment_term_options) setPaymentTermOptions(ps.warunki.payment_term_options);
           if (ps.warunki.invoice_freq_options) setInvoiceFreqOptions(ps.warunki.invoice_freq_options);
           if (ps.warunki.warranty_options) setWarrantyOptions(ps.warunki.warranty_options);
@@ -1215,11 +1222,11 @@ export const OffersPage: React.FC = () => {
     }, 0);
     const nettoAfterDiscount = totalNetto - totalDiscount;
 
-    // Surcharges from warunki istotne
+    // Surcharges from warunki istotne (only applied if uwzglednij is checked)
     const ptRule = paymentTermRules.find(r => String(r.value) === paymentTerm);
     const wrRule = warrantyRules.find(r => String(r.value) === warrantyPeriod);
     const ifRule = invoiceFreqRules.find(r => String(r.value) === invoiceFrequency);
-    const surchargePercent = (ptRule?.surcharge || 0) + (wrRule?.surcharge || 0) + (ifRule?.surcharge || 0);
+    const surchargePercent = (paymentTermApply ? (ptRule?.surcharge || 0) : 0) + (warrantyApply ? (wrRule?.surcharge || 0) : 0) + (invoiceFreqApply ? (ifRule?.surcharge || 0) : 0);
     const surchargeAmount = nettoAfterDiscount * (surchargePercent / 100);
     const nettoAfterSurcharges = nettoAfterDiscount + surchargeAmount;
 
@@ -1254,7 +1261,7 @@ export const OffersPage: React.FC = () => {
       discountFixed: offerData.discount_amount,
       final: Math.max(0, nettoAfterSurcharges)
     };
-  }, [sections, offerData.discount_amount, getAllItems, paymentTerm, warrantyPeriod, invoiceFrequency, paymentTermRules, warrantyRules, invoiceFreqRules, relatedCosts]);
+  }, [sections, offerData.discount_amount, getAllItems, paymentTerm, warrantyPeriod, invoiceFrequency, paymentTermRules, warrantyRules, invoiceFreqRules, relatedCosts, paymentTermApply, invoiceFreqApply, warrantyApply]);
 
   const totals = useMemo(() => calculateTotals(), [calculateTotals]);
 
@@ -1399,12 +1406,26 @@ export const OffersPage: React.FC = () => {
               payment_term: paymentTerm,
               invoice_frequency: invoiceFrequency,
               warranty_period: warrantyPeriod,
+              payment_term_apply: paymentTermApply,
+              invoice_freq_apply: invoiceFreqApply,
+              warranty_apply: warrantyApply,
               payment_term_options: paymentTermOptions,
               invoice_freq_options: invoiceFreqOptions,
               warranty_options: warrantyOptions,
               payment_term_rules: paymentTermRules,
               warranty_rules: warrantyRules,
               invoice_freq_rules: invoiceFreqRules
+            },
+            company_data: {
+              name: state.currentCompany?.name || '',
+              nip: (state.currentCompany as any)?.nip || (state.currentCompany as any)?.tax_id || '',
+              street: (state.currentCompany as any)?.street || '',
+              building_number: (state.currentCompany as any)?.building_number || '',
+              city: (state.currentCompany as any)?.city || '',
+              postal_code: (state.currentCompany as any)?.postal_code || '',
+              phone: (state.currentCompany as any)?.phone || (state.currentCompany as any)?.contact_phone || '',
+              email: (state.currentCompany as any)?.email || (state.currentCompany as any)?.contact_email || '',
+              logo_url: (state.currentCompany as any)?.logo_url || ''
             },
             related_costs: relatedCosts,
             show_components_in_print: showComponentsInPrint
@@ -1567,12 +1588,26 @@ export const OffersPage: React.FC = () => {
               payment_term: paymentTerm,
               invoice_frequency: invoiceFrequency,
               warranty_period: warrantyPeriod,
+              payment_term_apply: paymentTermApply,
+              invoice_freq_apply: invoiceFreqApply,
+              warranty_apply: warrantyApply,
               payment_term_options: paymentTermOptions,
               invoice_freq_options: invoiceFreqOptions,
               warranty_options: warrantyOptions,
               payment_term_rules: paymentTermRules,
               warranty_rules: warrantyRules,
               invoice_freq_rules: invoiceFreqRules
+            },
+            company_data: {
+              name: state.currentCompany?.name || '',
+              nip: (state.currentCompany as any)?.nip || (state.currentCompany as any)?.tax_id || '',
+              street: (state.currentCompany as any)?.street || '',
+              building_number: (state.currentCompany as any)?.building_number || '',
+              city: (state.currentCompany as any)?.city || '',
+              postal_code: (state.currentCompany as any)?.postal_code || '',
+              phone: (state.currentCompany as any)?.phone || (state.currentCompany as any)?.contact_phone || '',
+              email: (state.currentCompany as any)?.email || (state.currentCompany as any)?.contact_email || '',
+              logo_url: (state.currentCompany as any)?.logo_url || ''
             },
             related_costs: relatedCosts,
             show_components_in_print: showComponentsInPrint
@@ -2528,6 +2563,7 @@ export const OffersPage: React.FC = () => {
     const isBrutto = previewTemplate === 'brutto';
     const priceLabel = isBrutto ? 'brutto' : 'netto';
 
+    const colCount = previewTemplate === 'no_prices' ? 2 : (previewTemplate === 'full' ? 6 : (previewTemplate === 'rabat' ? 5 : 4));
     const renderSectionHTML = (sec: LocalOfferSection, depth: number = 0): string => {
       let html = '';
       if (sec.items.length > 0 && previewTemplate !== 'no_prices') {
@@ -2556,6 +2592,21 @@ export const OffersPage: React.FC = () => {
             <td style="padding:10px 8px;text-align:right;font-weight:500;">${fmtCur(displayVal)}</td>
             ${previewTemplate === 'full' ? `<td style="padding:10px 8px;text-align:right;color:#64748b;">${item.vat_rate ?? 23}%</td>` : ''}
           </tr>`;
+          // R/M/S components
+          if (showComponentsInPrint && item.components && item.components.length > 0) {
+            item.components.forEach(comp => {
+              const typeColor = comp.type === 'labor' ? '#3b82f6' : comp.type === 'material' ? '#f59e0b' : '#10b981';
+              const typeLabel = comp.type === 'labor' ? 'R' : comp.type === 'material' ? 'M' : 'S';
+              html += `<tr style="background:#f8fafc;border-bottom:1px solid #f1f5f9;">
+                <td style="padding:4px 8px 4px 24px;font-size:11px;color:#64748b;"><span style="display:inline-block;width:16px;height:16px;border-radius:3px;background:${typeColor};color:white;text-align:center;font-size:9px;line-height:16px;font-weight:600;margin-right:6px;">${typeLabel}</span>${comp.name}${comp.code ? ` <span style="color:#94a3b8;">[${comp.code}]</span>` : ''}</td>
+                <td style="padding:4px 8px;text-align:right;font-size:11px;color:#94a3b8;">${comp.quantity}</td>
+                <td style="padding:4px 8px;text-align:right;font-size:11px;color:#94a3b8;">${fmtCur(comp.unit_price)}</td>
+                ${previewTemplate === 'rabat' || previewTemplate === 'full' ? `<td style="padding:4px 8px;"></td>` : ''}
+                <td style="padding:4px 8px;text-align:right;font-size:11px;color:#94a3b8;">${fmtCur(comp.total_price)}</td>
+                ${previewTemplate === 'full' ? `<td style="padding:4px 8px;"></td>` : ''}
+              </tr>`;
+            });
+          }
         });
         html += '</tbody></table>';
       } else if (sec.items.length > 0) {
@@ -2586,10 +2637,12 @@ export const OffersPage: React.FC = () => {
       } else {
         totalsSectionHTML = `
           <div style="margin-top:24px;padding-top:12px;border-top:2px solid #2c3e50;">
+            <h3 style="font-size:14px;font-weight:600;margin:0 0 8px;color:#2c3e50;">Podsumowanie</h3>
             <table style="width:300px;margin-left:auto;font-size:13px;">
               <tr><td style="padding:3px 0;">Suma netto:</td><td style="padding:3px 0;text-align:right;font-weight:500;">${fmtCur(totals.total)} zł</td></tr>
               ${totals.totalDiscount > 0 && previewTemplate !== 'netto' ? `<tr style="color:#dc2626;"><td style="padding:3px 0;">Rabat:</td><td style="padding:3px 0;text-align:right;">-${fmtCur(totals.totalDiscount)} zł</td></tr>` : ''}
-              ${previewTemplate === 'full' ? `<tr><td style="padding:3px 0;">Netto po rabacie:</td><td style="padding:3px 0;text-align:right;font-weight:500;">${fmtCur(totals.nettoAfterDiscount)} zł</td></tr>` : ''}
+              ${totals.surchargePercent !== 0 ? `<tr style="color:${totals.surchargePercent > 0 ? '#dc2626' : '#16a34a'};"><td style="padding:3px 0;">Warunki istotne (${totals.surchargePercent > 0 ? '+' : ''}${totals.surchargePercent}%):</td><td style="padding:3px 0;text-align:right;">${totals.surchargePercent > 0 ? '+' : ''}${fmtCur(totals.surchargeAmount)} zł</td></tr>` : ''}
+              ${previewTemplate === 'full' || totals.surchargePercent !== 0 ? `<tr><td style="padding:3px 0;font-weight:600;">Netto po rabacie:</td><td style="padding:3px 0;text-align:right;font-weight:600;">${fmtCur(totals.nettoAfterSurcharges)} zł</td></tr>` : ''}
               <tr><td style="padding:3px 0;">VAT:</td><td style="padding:3px 0;text-align:right;">${fmtCur(totals.totalVat)} zł</td></tr>
               <tr style="font-weight:bold;font-size:15px;border-top:1px solid #cbd5e1;"><td style="padding:6px 0;">Brutto:</td><td style="padding:6px 0;text-align:right;">${fmtCur(totals.totalBrutto)} zł</td></tr>
             </table>
@@ -2602,11 +2655,16 @@ export const OffersPage: React.FC = () => {
 <head><meta charset="UTF-8"><title>Oferta ${selectedOffer.number}</title>
 <style>
 body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e293b;font-size:13px;}
-@media print{body{padding:15px 20px;}}
+@media print{
+  body{padding:10mm 15mm 15mm 15mm;}
+  @page{margin:10mm 15mm 15mm 15mm;size:A4;}
+}
 .header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px;}
 .info-table{width:100%;border-collapse:collapse;margin-bottom:24px;}
 .info-table td{padding:10px 12px;vertical-align:top;border:1px solid #e2e8f0;}
 .info-table .label{background:#2c3e50;color:white;font-weight:600;text-align:center;padding:8px;}
+table{page-break-inside:auto;}
+tr{page-break-inside:avoid;page-break-after:auto;}
 </style></head>
 <body>
   <div class="header">
@@ -2647,10 +2705,9 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
   </table>
 
   ${sections.map(sec => renderSectionHTML(sec)).join('')}
-  ${totalsSectionHTML}
 
   ${(() => {
-    // Warunki istotne block
+    // Warunki istotne block (before totals)
     const hasWarunki = paymentTerm || invoiceFrequency || warrantyPeriod;
     let warunkiHTML = '';
     if (hasWarunki) {
@@ -2659,15 +2716,15 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
         <table style="width:100%;font-size:12px;border-collapse:collapse;">`;
       if (paymentTerm) {
         const ptRule = paymentTermRules.find(r => String(r.value) === paymentTerm);
-        warunkiHTML += `<tr><td style="padding:4px 0;color:#64748b;width:200px;">Termin płatności:</td><td style="padding:4px 0;font-weight:500;">${paymentTerm} dni${ptRule && ptRule.surcharge !== 0 ? ` <span style="color:${ptRule.surcharge > 0 ? '#dc2626' : '#16a34a'};font-size:11px;">(${ptRule.surcharge > 0 ? '+' : ''}${ptRule.surcharge}%)</span>` : ''}</td></tr>`;
+        warunkiHTML += `<tr><td style="padding:4px 0;color:#64748b;width:200px;">Termin płatności:</td><td style="padding:4px 0;font-weight:500;">${paymentTerm} dni${ptRule && ptRule.surcharge !== 0 ? ` <span style="color:${paymentTermApply ? (ptRule.surcharge > 0 ? '#dc2626' : '#16a34a') : '#94a3b8'};font-size:11px;">(${ptRule.surcharge > 0 ? '+' : ''}${ptRule.surcharge}%${!paymentTermApply ? ' - nie uwzgl.' : ''})</span>` : ''}</td></tr>`;
       }
       if (invoiceFrequency) {
         const ifRule = invoiceFreqRules.find(r => String(r.value) === invoiceFrequency);
-        warunkiHTML += `<tr><td style="padding:4px 0;color:#64748b;">Wystawienie faktur:</td><td style="padding:4px 0;font-weight:500;">co ${invoiceFrequency} dni${ifRule && ifRule.surcharge !== 0 ? ` <span style="color:${ifRule.surcharge > 0 ? '#dc2626' : '#16a34a'};font-size:11px;">(${ifRule.surcharge > 0 ? '+' : ''}${ifRule.surcharge}%)</span>` : ''}</td></tr>`;
+        warunkiHTML += `<tr><td style="padding:4px 0;color:#64748b;">Wystawienie faktur:</td><td style="padding:4px 0;font-weight:500;">co ${invoiceFrequency} dni${ifRule && ifRule.surcharge !== 0 ? ` <span style="color:${invoiceFreqApply ? (ifRule.surcharge > 0 ? '#dc2626' : '#16a34a') : '#94a3b8'};font-size:11px;">(${ifRule.surcharge > 0 ? '+' : ''}${ifRule.surcharge}%${!invoiceFreqApply ? ' - nie uwzgl.' : ''})</span>` : ''}</td></tr>`;
       }
       if (warrantyPeriod) {
         const wrRule = warrantyRules.find(r => String(r.value) === warrantyPeriod);
-        warunkiHTML += `<tr><td style="padding:4px 0;color:#64748b;">Okres gwarancyjny:</td><td style="padding:4px 0;font-weight:500;">${warrantyPeriod} miesięcy${wrRule && wrRule.surcharge !== 0 ? ` <span style="color:${wrRule.surcharge > 0 ? '#dc2626' : '#16a34a'};font-size:11px;">(${wrRule.surcharge > 0 ? '+' : ''}${wrRule.surcharge}%)</span>` : ''}</td></tr>`;
+        warunkiHTML += `<tr><td style="padding:4px 0;color:#64748b;">Okres gwarancyjny:</td><td style="padding:4px 0;font-weight:500;">${warrantyPeriod} miesięcy${wrRule && wrRule.surcharge !== 0 ? ` <span style="color:${warrantyApply ? (wrRule.surcharge > 0 ? '#dc2626' : '#16a34a') : '#94a3b8'};font-size:11px;">(${wrRule.surcharge > 0 ? '+' : ''}${wrRule.surcharge}%${!warrantyApply ? ' - nie uwzgl.' : ''})</span>` : ''}</td></tr>`;
       }
       warunkiHTML += `</table></div>`;
     }
@@ -2696,6 +2753,8 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
     }
     return warunkiHTML + kosztyHTML;
   })()}
+
+  ${totalsSectionHTML}
 
   ${selectedOffer.notes ? `<div style="margin-top:24px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:4px;font-size:12px;"><strong>Uwagi:</strong><br/><span style="white-space:pre-wrap;">${selectedOffer.notes}</span></div>` : ''}
 </body></html>`;
@@ -4469,7 +4528,7 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                 const ptRule = paymentTermRules.find(r => String(r.value) === paymentTerm);
                 const wrRule = warrantyRules.find(r => String(r.value) === warrantyPeriod);
                 const ifRule = invoiceFreqRules.find(r => String(r.value) === invoiceFrequency);
-                const totalSurcharge = (ptRule?.surcharge || 0) + (wrRule?.surcharge || 0) + (ifRule?.surcharge || 0);
+                const totalSurcharge = (paymentTermApply ? (ptRule?.surcharge || 0) : 0) + (warrantyApply ? (wrRule?.surcharge || 0) : 0) + (invoiceFreqApply ? (ifRule?.surcharge || 0) : 0);
                 return totalSurcharge !== 0 ? (
                   <span className={`text-xs font-medium px-2 py-0.5 rounded ${totalSurcharge > 0 ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'}`}>
                     {totalSurcharge > 0 ? '+' : ''}{totalSurcharge}% {totalSurcharge > 0 ? 'narzut' : 'rabat'}
@@ -4477,59 +4536,68 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                 ) : null;
               })()}
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <p className="text-xs font-medium text-slate-500 mb-1">Termin płatności (dni)</p>
-                {editMode ? (
-                  <select
-                    value={paymentTerm}
-                    onChange={e => setPaymentTerm(e.target.value)}
-                    className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"
-                  >
-                    <option value="">— Wybierz —</option>
-                    {(paymentTermRules.length > 0 ? paymentTermRules.map(r => r.value) : paymentTermOptions).map(v => {
-                      const rule = paymentTermRules.find(r => r.value === v);
-                      return <option key={v} value={String(v)}>{v} dni{rule && rule.surcharge !== 0 ? ` (${rule.surcharge > 0 ? '+' : ''}${rule.surcharge}%)` : ''}</option>;
-                    })}
-                  </select>
-                ) : (
-                  <p className="text-sm font-medium text-slate-900">{paymentTerm ? `${paymentTerm} dni` : '-'}</p>
+            <div className="space-y-3">
+              {/* Payment term */}
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <p className="text-xs font-medium text-slate-500 mb-1">Termin płatności (dni)</p>
+                  {editMode ? (
+                    <select value={paymentTerm} onChange={e => setPaymentTerm(e.target.value)} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm">
+                      <option value="">— Wybierz —</option>
+                      {(paymentTermRules.length > 0 ? paymentTermRules.map(r => r.value) : paymentTermOptions).map(v => {
+                        const rule = paymentTermRules.find(r => r.value === v);
+                        return <option key={v} value={String(v)}>{v} dni{rule && rule.surcharge !== 0 ? ` (${rule.surcharge > 0 ? '+' : ''}${rule.surcharge}%)` : ''}</option>;
+                      })}
+                    </select>
+                  ) : (
+                    <p className="text-sm font-medium text-slate-900">{paymentTerm ? `${paymentTerm} dni` : '-'}</p>
+                  )}
+                </div>
+                {paymentTerm && (() => { const r = paymentTermRules.find(r => String(r.value) === paymentTerm); return r && r.surcharge !== 0; })() && (
+                  <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer whitespace-nowrap pt-4">
+                    <input type="checkbox" checked={paymentTermApply} onChange={e => setPaymentTermApply(e.target.checked)} className="w-3.5 h-3.5 text-blue-600 rounded" disabled={!editMode} />
+                    Uwzględnij
+                  </label>
                 )}
-              </div>
-              <div>
-                <p className="text-xs font-medium text-slate-500 mb-1">Wystawienie faktur (co ile dni)</p>
-                {editMode ? (
-                  <select
-                    value={invoiceFrequency}
-                    onChange={e => setInvoiceFrequency(e.target.value)}
-                    className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"
-                  >
-                    <option value="">— Wybierz —</option>
-                    {(invoiceFreqRules.length > 0 ? invoiceFreqRules.map(r => r.value) : invoiceFreqOptions).map(v => {
-                      const rule = invoiceFreqRules.find(r => r.value === v);
-                      return <option key={v} value={String(v)}>co {v} dni{rule && rule.surcharge !== 0 ? ` (${rule.surcharge > 0 ? '+' : ''}${rule.surcharge}%)` : ''}</option>;
-                    })}
-                  </select>
-                ) : (
-                  <p className="text-sm font-medium text-slate-900">{invoiceFrequency ? `co ${invoiceFrequency} dni` : '-'}</p>
+                <div className="flex-1">
+                  <p className="text-xs font-medium text-slate-500 mb-1">Wystawienie faktur (co ile dni)</p>
+                  {editMode ? (
+                    <select value={invoiceFrequency} onChange={e => setInvoiceFrequency(e.target.value)} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm">
+                      <option value="">— Wybierz —</option>
+                      {(invoiceFreqRules.length > 0 ? invoiceFreqRules.map(r => r.value) : invoiceFreqOptions).map(v => {
+                        const rule = invoiceFreqRules.find(r => r.value === v);
+                        return <option key={v} value={String(v)}>co {v} dni{rule && rule.surcharge !== 0 ? ` (${rule.surcharge > 0 ? '+' : ''}${rule.surcharge}%)` : ''}</option>;
+                      })}
+                    </select>
+                  ) : (
+                    <p className="text-sm font-medium text-slate-900">{invoiceFrequency ? `co ${invoiceFrequency} dni` : '-'}</p>
+                  )}
+                </div>
+                {invoiceFrequency && (() => { const r = invoiceFreqRules.find(r => String(r.value) === invoiceFrequency); return r && r.surcharge !== 0; })() && (
+                  <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer whitespace-nowrap pt-4">
+                    <input type="checkbox" checked={invoiceFreqApply} onChange={e => setInvoiceFreqApply(e.target.checked)} className="w-3.5 h-3.5 text-blue-600 rounded" disabled={!editMode} />
+                    Uwzględnij
+                  </label>
                 )}
-              </div>
-              <div>
-                <p className="text-xs font-medium text-slate-500 mb-1">Okres gwarancyjny (miesięcy)</p>
-                {editMode ? (
-                  <select
-                    value={warrantyPeriod}
-                    onChange={e => setWarrantyPeriod(e.target.value)}
-                    className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"
-                  >
-                    <option value="">— Wybierz —</option>
-                    {(warrantyRules.length > 0 ? warrantyRules.map(r => r.value) : warrantyOptions).map(v => {
-                      const rule = warrantyRules.find(r => r.value === v);
-                      return <option key={v} value={String(v)}>{v} mies.{rule && rule.surcharge !== 0 ? ` (${rule.surcharge > 0 ? '+' : ''}${rule.surcharge}%)` : ''}</option>;
-                    })}
-                  </select>
-                ) : (
-                  <p className="text-sm font-medium text-slate-900">{warrantyPeriod ? `${warrantyPeriod} mies.` : '-'}</p>
+                <div className="flex-1">
+                  <p className="text-xs font-medium text-slate-500 mb-1">Okres gwarancyjny (miesięcy)</p>
+                  {editMode ? (
+                    <select value={warrantyPeriod} onChange={e => setWarrantyPeriod(e.target.value)} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm">
+                      <option value="">— Wybierz —</option>
+                      {(warrantyRules.length > 0 ? warrantyRules.map(r => r.value) : warrantyOptions).map(v => {
+                        const rule = warrantyRules.find(r => r.value === v);
+                        return <option key={v} value={String(v)}>{v} mies.{rule && rule.surcharge !== 0 ? ` (${rule.surcharge > 0 ? '+' : ''}${rule.surcharge}%)` : ''}</option>;
+                      })}
+                    </select>
+                  ) : (
+                    <p className="text-sm font-medium text-slate-900">{warrantyPeriod ? `${warrantyPeriod} mies.` : '-'}</p>
+                  )}
+                </div>
+                {warrantyPeriod && (() => { const r = warrantyRules.find(r => String(r.value) === warrantyPeriod); return r && r.surcharge !== 0; })() && (
+                  <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer whitespace-nowrap pt-4">
+                    <input type="checkbox" checked={warrantyApply} onChange={e => setWarrantyApply(e.target.checked)} className="w-3.5 h-3.5 text-blue-600 rounded" disabled={!editMode} />
+                    Uwzględnij
+                  </label>
                 )}
               </div>
             </div>
@@ -4765,9 +4833,9 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                 const wrRule = warrantyRules.find(r => String(r.value) === warrantyPeriod);
                 const ifRule = invoiceFreqRules.find(r => String(r.value) === invoiceFrequency);
                 const surcharges: { label: string; pct: number; val: number }[] = [];
-                if (ptRule && ptRule.surcharge !== 0) surcharges.push({ label: `Termin płatności (${paymentTerm} dni)`, pct: ptRule.surcharge, val: totals.nettoAfterDiscount * (ptRule.surcharge / 100) });
-                if (wrRule && wrRule.surcharge !== 0) surcharges.push({ label: `Gwarancja (${warrantyPeriod} mies.)`, pct: wrRule.surcharge, val: totals.nettoAfterDiscount * (wrRule.surcharge / 100) });
-                if (ifRule && ifRule.surcharge !== 0) surcharges.push({ label: `Fakturowanie (co ${invoiceFrequency} dni)`, pct: ifRule.surcharge, val: totals.nettoAfterDiscount * (ifRule.surcharge / 100) });
+                if (ptRule && ptRule.surcharge !== 0 && paymentTermApply) surcharges.push({ label: `Termin płatności (${paymentTerm} dni)`, pct: ptRule.surcharge, val: totals.nettoAfterDiscount * (ptRule.surcharge / 100) });
+                if (wrRule && wrRule.surcharge !== 0 && warrantyApply) surcharges.push({ label: `Gwarancja (${warrantyPeriod} mies.)`, pct: wrRule.surcharge, val: totals.nettoAfterDiscount * (wrRule.surcharge / 100) });
+                if (ifRule && ifRule.surcharge !== 0 && invoiceFreqApply) surcharges.push({ label: `Fakturowanie (co ${invoiceFrequency} dni)`, pct: ifRule.surcharge, val: totals.nettoAfterDiscount * (ifRule.surcharge / 100) });
                 return surcharges.length > 0 ? (
                   <>
                     {surcharges.map((s, i) => (
@@ -4777,7 +4845,7 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                       </div>
                     ))}
                     <div className="flex justify-between font-semibold">
-                      <span className="text-slate-700">Netto po dopłatach:</span>
+                      <span className="text-slate-700">Netto po rabacie:</span>
                       <span className="text-blue-700">{formatCurrency(totals.nettoAfterSurcharges)}</span>
                     </div>
                   </>
@@ -4937,7 +5005,7 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                   <>
                     <div className="h-4 w-px bg-slate-300" />
                     <div>
-                      <span className="text-slate-500">{totals.surchargePercent > 0 ? 'Narzut' : 'Rabat'} warunki:</span>
+                      <span className="text-slate-500">Warunki istotne:</span>
                       <span className={`ml-1 font-medium ${totals.surchargePercent > 0 ? 'text-red-600' : 'text-green-600'}`}>
                         {totals.surchargePercent > 0 ? '+' : ''}{totals.surchargePercent.toFixed(1)}% ({formatCurrency(totals.surchargeAmount)})
                       </span>
@@ -4946,7 +5014,7 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                 )}
                 <div className="h-4 w-px bg-slate-300" />
                 <div>
-                  <span className="text-slate-500">Netto po dopłatach:</span>
+                  <span className="text-slate-500">Netto po rabacie:</span>
                   <span className="ml-1 font-bold text-blue-700">{formatCurrency(totals.nettoAfterSurcharges)}</span>
                 </div>
                 <div className="h-4 w-px bg-slate-300" />
@@ -5500,13 +5568,38 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                   </div>
                 </div>
 
-                {/* Client info */}
-                {(selectedOffer as any).client && (
-                  <div className="mb-6 p-4 bg-slate-50 rounded-lg">
-                    <p className="font-medium text-slate-900">{(selectedOffer as any).client.name}</p>
-                    {(selectedOffer as any).client.nip && <p className="text-sm text-slate-500">NIP: {(selectedOffer as any).client.nip}</p>}
+                {/* Zamawiający / Wykonawca */}
+                <div className="grid grid-cols-2 gap-4 mb-6">
+                  <div className="p-4 bg-slate-50 rounded-lg">
+                    <p className="text-xs font-semibold text-slate-400 uppercase mb-1">Zamawiający</p>
+                    {(() => {
+                      const cd = selectedOffer.print_settings?.client_data || {};
+                      const cn = cd.client_name || (selectedOffer as any).client?.name || offerClientData.client_name || '';
+                      return cn ? (
+                        <div className="text-sm text-slate-700 space-y-0.5">
+                          <p className="font-semibold text-slate-900">{cn}</p>
+                          {(cd.nip || (selectedOffer as any).client?.nip) && <p>NIP: {cd.nip || (selectedOffer as any).client?.nip}</p>}
+                          {(cd.company_street || cd.company_city) && <p>{[cd.company_street, cd.company_street_number, cd.company_postal_code, cd.company_city].filter(Boolean).join(', ')}</p>}
+                          {cd.representative_name && <p className="mt-1">Przedstawiciel: {cd.representative_name}</p>}
+                          {cd.representative_email && <p>email: {cd.representative_email}</p>}
+                          {cd.representative_phone && <p>tel. {cd.representative_phone}</p>}
+                        </div>
+                      ) : <p className="text-sm text-slate-400 italic">Brak danych</p>;
+                    })()}
                   </div>
-                )}
+                  <div className="p-4 bg-slate-50 rounded-lg">
+                    <p className="text-xs font-semibold text-slate-400 uppercase mb-1">Wykonawca</p>
+                    {state.currentCompany ? (
+                      <div className="text-sm text-slate-700 space-y-0.5">
+                        <p className="font-semibold text-slate-900">{state.currentCompany.name}</p>
+                        {((state.currentCompany as any)?.nip || (state.currentCompany as any)?.tax_id) && <p>NIP: {(state.currentCompany as any)?.nip || (state.currentCompany as any)?.tax_id}</p>}
+                        {((state.currentCompany as any)?.street || (state.currentCompany as any)?.city) && <p>{[(state.currentCompany as any)?.street, (state.currentCompany as any)?.building_number, (state.currentCompany as any)?.postal_code, (state.currentCompany as any)?.city].filter(Boolean).join(', ')}</p>}
+                        {((state.currentCompany as any)?.phone || (state.currentCompany as any)?.contact_phone) && <p>tel. {(state.currentCompany as any)?.phone || (state.currentCompany as any)?.contact_phone}</p>}
+                        {((state.currentCompany as any)?.email || (state.currentCompany as any)?.contact_email) && <p>email: {(state.currentCompany as any)?.email || (state.currentCompany as any)?.contact_email}</p>}
+                      </div>
+                    ) : <p className="text-sm text-slate-400 italic">Brak danych</p>}
+                  </div>
+                </div>
 
                 {/* Sections preview (recursive) */}
                 {(() => {
@@ -5538,7 +5631,8 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                               const val = item.quantity * item.unit_price;
                               const disc = val * ((item.discount_percent || 0) / 100);
                               return (
-                                <tr key={item.id} className="border-b border-slate-100">
+                                <React.Fragment key={item.id}>
+                                <tr className="border-b border-slate-100">
                                   <td className="py-2 pr-4 text-slate-500">{idx + 1}</td>
                                   <td className="py-2 pr-4">
                                     <span>{item.name}</span>
@@ -5570,6 +5664,28 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                                     </>
                                   )}
                                 </tr>
+                                {showComponentsInPrint && item.components && item.components.length > 0 && item.components.map((comp, ci) => (
+                                  <tr key={`comp-${ci}`} className="bg-slate-50/50">
+                                    <td className="py-1 pr-4"></td>
+                                    <td className="py-1 pr-4">
+                                      <span className={`inline-block w-4 h-4 rounded text-[9px] font-bold text-white text-center leading-4 mr-1.5 ${comp.type === 'labor' ? 'bg-blue-500' : comp.type === 'material' ? 'bg-amber-500' : 'bg-emerald-500'}`}>
+                                        {comp.type === 'labor' ? 'R' : comp.type === 'material' ? 'M' : 'S'}
+                                      </span>
+                                      <span className="text-xs text-slate-500">{comp.name}{comp.code ? ` [${comp.code}]` : ''}</span>
+                                    </td>
+                                    <td className="py-1 pr-4 text-center text-xs text-slate-400">{comp.unit}</td>
+                                    <td className="py-1 pr-4 text-right text-xs text-slate-400">{comp.quantity}</td>
+                                    {previewTemplate !== 'no_prices' && (
+                                      <>
+                                        <td className="py-1 pr-4 text-right text-xs text-slate-400">{formatCurrency(comp.unit_price)}</td>
+                                        {(previewTemplate === 'rabat' || previewTemplate === 'full') && <td className="py-1 pr-4"></td>}
+                                        <td className="py-1 pr-4 text-right text-xs text-slate-400">{formatCurrency(comp.total_price)}</td>
+                                        {previewTemplate === 'full' && <td className="py-1"></td>}
+                                      </>
+                                    )}
+                                  </tr>
+                                ))}
+                                </React.Fragment>
                               );
                             })}
                           </tbody>
@@ -5581,9 +5697,47 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                   return sections.map(sec => renderPreviewSection(sec));
                 })()}
 
+                {/* Warunki istotne in preview */}
+                {(paymentTerm || invoiceFrequency || warrantyPeriod) && (
+                  <div className="mt-6 p-4 bg-slate-50 rounded-lg">
+                    <h4 className="text-xs font-semibold text-slate-400 uppercase mb-2">Warunki istotne</h4>
+                    <div className="grid grid-cols-3 gap-3 text-sm">
+                      {paymentTerm && <div><span className="text-slate-500">Termin płatności:</span> <span className="font-medium">{paymentTerm} dni</span>
+                        {(() => { const r = paymentTermRules.find(r => String(r.value) === paymentTerm); return r && r.surcharge !== 0 ? <span className={`ml-1 text-xs ${paymentTermApply ? (r.surcharge > 0 ? 'text-red-500' : 'text-green-600') : 'text-slate-400'}`}>({r.surcharge > 0 ? '+' : ''}{r.surcharge}%{!paymentTermApply ? ' - nie uwzględniony' : ''})</span> : null; })()}
+                      </div>}
+                      {invoiceFrequency && <div><span className="text-slate-500">Wystawienie faktur:</span> <span className="font-medium">co {invoiceFrequency} dni</span>
+                        {(() => { const r = invoiceFreqRules.find(r => String(r.value) === invoiceFrequency); return r && r.surcharge !== 0 ? <span className={`ml-1 text-xs ${invoiceFreqApply ? (r.surcharge > 0 ? 'text-red-500' : 'text-green-600') : 'text-slate-400'}`}>({r.surcharge > 0 ? '+' : ''}{r.surcharge}%{!invoiceFreqApply ? ' - nie uwzględniony' : ''})</span> : null; })()}
+                      </div>}
+                      {warrantyPeriod && <div><span className="text-slate-500">Okres gwarancyjny:</span> <span className="font-medium">{warrantyPeriod} mies.</span>
+                        {(() => { const r = warrantyRules.find(r => String(r.value) === warrantyPeriod); return r && r.surcharge !== 0 ? <span className={`ml-1 text-xs ${warrantyApply ? (r.surcharge > 0 ? 'text-red-500' : 'text-green-600') : 'text-slate-400'}`}>({r.surcharge > 0 ? '+' : ''}{r.surcharge}%{!warrantyApply ? ' - nie uwzględniony' : ''})</span> : null; })()}
+                      </div>}
+                    </div>
+                  </div>
+                )}
+                {/* Koszty powiązane in preview */}
+                {relatedCosts.some(c => c.value > 0) && (
+                  <div className="mt-3 p-4 bg-slate-50 rounded-lg">
+                    <h4 className="text-xs font-semibold text-slate-400 uppercase mb-2">Koszty powiązane</h4>
+                    <div className="space-y-1 text-sm">
+                      {relatedCosts.filter(c => c.value > 0 && c.show_on_offer).map(c => (
+                        <div key={c.id} className="flex justify-between">
+                          <span className="text-slate-600">{c.name}{c.mode === 'percent' ? ` (${c.value}%)` : ''}{c.frequency === 'monthly' ? ' (mies.)' : ''}</span>
+                          <span className="font-medium">{formatCurrency(c.mode === 'percent' ? totals.nettoAfterDiscount * (c.value / 100) : c.value)}</span>
+                        </div>
+                      ))}
+                      {relatedCosts.filter(c => c.value > 0 && !c.show_on_offer).reduce((s, c) => s + (c.mode === 'percent' ? totals.nettoAfterDiscount * (c.value / 100) : c.value), 0) > 0 && (
+                        <div className="flex justify-between">
+                          <span className="text-slate-600">Koszty powiązane</span>
+                          <span className="font-medium">{formatCurrency(relatedCosts.filter(c => c.value > 0 && !c.show_on_offer).reduce((s, c) => s + (c.mode === 'percent' ? totals.nettoAfterDiscount * (c.value / 100) : c.value), 0))}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {/* Preview totals */}
                 {previewTemplate !== 'no_prices' && (
                   <div className="mt-8 pt-4 border-t-2 border-slate-300 space-y-2">
+                    <h4 className="text-sm font-semibold text-slate-700">Podsumowanie</h4>
                     {previewTemplate === 'brutto' ? (
                       <div className="flex justify-between text-lg font-bold">
                         <span>Suma brutto:</span>
@@ -5601,10 +5755,16 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                             <span>-{formatCurrency(totals.totalDiscount)}</span>
                           </div>
                         )}
-                        {previewTemplate === 'full' && (
-                          <div className="flex justify-between">
+                        {totals.surchargePercent !== 0 && (
+                          <div className={`flex justify-between ${totals.surchargePercent > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                            <span>Warunki istotne ({totals.surchargePercent > 0 ? '+' : ''}{totals.surchargePercent}%):</span>
+                            <span>{totals.surchargePercent > 0 ? '+' : ''}{formatCurrency(totals.surchargeAmount)}</span>
+                          </div>
+                        )}
+                        {(previewTemplate === 'full' || totals.surchargePercent !== 0) && (
+                          <div className="flex justify-between font-semibold">
                             <span>Netto po rabacie:</span>
-                            <span className="font-medium">{formatCurrency(totals.nettoAfterDiscount)}</span>
+                            <span>{formatCurrency(totals.nettoAfterSurcharges)}</span>
                           </div>
                         )}
                         <div className="flex justify-between">
