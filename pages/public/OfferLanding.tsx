@@ -407,8 +407,9 @@ export const OfferLandingPage: React.FC = () => {
           </div>
 
           {/* Zamawiający / Wykonawca */}
-          {(offer.client || offer.company) && (
-            <div className="px-8 py-6 border-b border-slate-100">
+          <div className="px-8 py-6 border-b border-slate-100">
+          {(offer.client || offer.company || offer.print_settings?.client_data) && (
+            <div>
               <div className="grid grid-cols-2 gap-8">
                 <div>
                   <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Zamawiający</h4>
@@ -453,6 +454,7 @@ export const OfferLandingPage: React.FC = () => {
               </div>
             </div>
           )}
+          </div>
 
           {/* Sections & Items */}
           <div className="p-8">
@@ -502,6 +504,82 @@ export const OfferLandingPage: React.FC = () => {
             ))}
           </div>
 
+          {/* Warunki istotne */}
+          {(() => {
+            const warunki = offer.print_settings?.warunki;
+            if (!warunki) return null;
+            const { payment_term, invoice_frequency, warranty_period, payment_term_rules, warranty_rules, invoice_freq_rules } = warunki;
+            if (!payment_term && !invoice_frequency && !warranty_period) return null;
+            return (
+              <div className="px-8 py-6 border-t border-slate-100">
+                <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">Warunki istotne</h3>
+                <div className="grid grid-cols-3 gap-4">
+                  {payment_term && (
+                    <div>
+                      <p className="text-xs text-slate-500 mb-1">Termin płatności</p>
+                      <p className="text-sm font-medium text-slate-900">{payment_term} dni
+                        {(() => { const r = (payment_term_rules || []).find((r: any) => String(r.value) === String(payment_term)); return r && r.surcharge !== 0 ? <span className={`ml-1 text-xs ${r.surcharge > 0 ? 'text-red-500' : 'text-green-600'}`}>({r.surcharge > 0 ? '+' : ''}{r.surcharge}%)</span> : null; })()}
+                      </p>
+                    </div>
+                  )}
+                  {invoice_frequency && (
+                    <div>
+                      <p className="text-xs text-slate-500 mb-1">Wystawienie faktur</p>
+                      <p className="text-sm font-medium text-slate-900">co {invoice_frequency} dni
+                        {(() => { const r = (invoice_freq_rules || []).find((r: any) => String(r.value) === String(invoice_frequency)); return r && r.surcharge !== 0 ? <span className={`ml-1 text-xs ${r.surcharge > 0 ? 'text-red-500' : 'text-green-600'}`}>({r.surcharge > 0 ? '+' : ''}{r.surcharge}%)</span> : null; })()}
+                      </p>
+                    </div>
+                  )}
+                  {warranty_period && (
+                    <div>
+                      <p className="text-xs text-slate-500 mb-1">Okres gwarancyjny</p>
+                      <p className="text-sm font-medium text-slate-900">{warranty_period} miesięcy
+                        {(() => { const r = (warranty_rules || []).find((r: any) => String(r.value) === String(warranty_period)); return r && r.surcharge !== 0 ? <span className={`ml-1 text-xs ${r.surcharge > 0 ? 'text-red-500' : 'text-green-600'}`}>({r.surcharge > 0 ? '+' : ''}{r.surcharge}%)</span> : null; })()}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Koszty powiązane */}
+          {(() => {
+            const costs: any[] = offer.print_settings?.related_costs || [];
+            const visibleCosts = costs.filter((c: any) => c.value > 0);
+            if (visibleCosts.length === 0) return null;
+            const shownCosts = visibleCosts.filter((c: any) => c.show_on_offer);
+            const hiddenCosts = visibleCosts.filter((c: any) => !c.show_on_offer);
+            const hiddenTotal = hiddenCosts.reduce((s: number, c: any) => s + (c.mode === 'percent' ? nettoAfterDiscount * (c.value / 100) : c.value), 0);
+            const allTotal = visibleCosts.reduce((s: number, c: any) => s + (c.mode === 'percent' ? nettoAfterDiscount * (c.value / 100) : c.value), 0);
+            return (
+              <div className="px-8 py-6 border-t border-slate-100">
+                <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">Koszty powiązane</h3>
+                <div className="space-y-1.5">
+                  {shownCosts.map((c: any) => {
+                    const val = c.mode === 'percent' ? nettoAfterDiscount * (c.value / 100) : c.value;
+                    return (
+                      <div key={c.id} className="flex justify-between text-sm">
+                        <span className="text-slate-600">{c.name}{c.mode === 'percent' ? ` (${c.value}%)` : ''}{c.frequency === 'monthly' ? ' (mies.)' : ''}</span>
+                        <span className="font-medium">{formatCurrency(val)}</span>
+                      </div>
+                    );
+                  })}
+                  {hiddenTotal > 0 && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-600">Koszty powiązane</span>
+                      <span className="font-medium">{formatCurrency(hiddenTotal)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-sm pt-1.5 border-t border-slate-200 font-semibold">
+                    <span className="text-slate-700">Suma kosztów powiązanych:</span>
+                    <span>{formatCurrency(allTotal)}</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Totals */}
           <div className="p-8 bg-gradient-to-r from-slate-50 to-blue-50/30 border-t border-slate-100">
             <div className="max-w-xs ml-auto space-y-2">
@@ -521,6 +599,23 @@ export const OfferLandingPage: React.FC = () => {
                   <span className="font-medium">{formatCurrency(nettoAfterDiscount)}</span>
                 </div>
               )}
+              {/* Surcharges from warunki */}
+              {(() => {
+                const warunki = offer.print_settings?.warunki;
+                if (!warunki) return null;
+                const ptRule = (warunki.payment_term_rules || []).find((r: any) => String(r.value) === String(warunki.payment_term));
+                const wrRule = (warunki.warranty_rules || []).find((r: any) => String(r.value) === String(warunki.warranty_period));
+                const ifRule = (warunki.invoice_freq_rules || []).find((r: any) => String(r.value) === String(warunki.invoice_frequency));
+                const totalSurcharge = (ptRule?.surcharge || 0) + (wrRule?.surcharge || 0) + (ifRule?.surcharge || 0);
+                if (totalSurcharge === 0) return null;
+                const surchargeVal = nettoAfterDiscount * (totalSurcharge / 100);
+                return (
+                  <div className={`flex justify-between text-sm ${totalSurcharge > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                    <span>{totalSurcharge > 0 ? 'Narzut' : 'Rabat'} ({totalSurcharge > 0 ? '+' : ''}{totalSurcharge}%):</span>
+                    <span>{totalSurcharge > 0 ? '+' : ''}{formatCurrency(surchargeVal)}</span>
+                  </div>
+                );
+              })()}
               <div className="flex justify-between text-sm">
                 <span className="text-slate-600">VAT:</span>
                 <span className="font-medium">{formatCurrency(vatAmount)}</span>

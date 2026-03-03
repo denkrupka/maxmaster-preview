@@ -519,16 +519,16 @@ export async function convertEstimateToOfferData(estimateId: string): Promise<{
       const factors = pos.factors || { labor: 1, material: 1, equipment: 1, waste: 0 };
 
       // Extract labor, material, equipment resources from position
-      if (pos.resources) {
+      if (pos.resources && pos.resources.length > 0) {
         pos.resources.forEach((res: any) => {
-          const qty = res.norma || 1;
+          const qty = res.norm?.value || res.norma || res.factor || 1;
           const price = res.unitPrice?.value || 0;
           if (res.type === 'labor' || res.type === 'R') {
             laborTotal += qty * price;
             components.push({
               type: 'labor',
               name: res.name || 'Robocizna',
-              code: res.code || '',
+              code: res.index || res.originIndex?.index || res.code || '',
               unit: res.unit?.label || 'r-g',
               quantity: qty,
               unit_price: price,
@@ -539,7 +539,7 @@ export async function convertEstimateToOfferData(estimateId: string): Promise<{
             components.push({
               type: 'material',
               name: res.name || 'Materiał',
-              code: res.code || '',
+              code: res.index || res.originIndex?.index || res.code || '',
               unit: res.unit?.label || 'szt.',
               quantity: qty,
               unit_price: price,
@@ -550,7 +550,7 @@ export async function convertEstimateToOfferData(estimateId: string): Promise<{
             components.push({
               type: 'equipment',
               name: res.name || 'Sprzęt',
-              code: res.code || '',
+              code: res.index || res.originIndex?.index || res.code || '',
               unit: res.unit?.label || 'mg',
               quantity: qty,
               unit_price: price,
@@ -566,7 +566,10 @@ export async function convertEstimateToOfferData(estimateId: string): Promise<{
       equipmentTotal *= factors.equipment;
 
       // Calculate overheads (Kp, Z, Kz) and add as components
-      const allOverheads = [...sectionOverheads, ...rootOverheads]
+      // Collect from position level, section level, then root level (position overrides section overrides root)
+      const posOverheads = pos.overheads || [];
+      const mergedOverheads = posOverheads.length > 0 ? posOverheads : [...sectionOverheads, ...rootOverheads];
+      const allOverheads = mergedOverheads
         .sort((a: any, b: any) => (a.order || 0) - (b.order || 0));
       let kpValue = 0;
       allOverheads.forEach((oh: any) => {

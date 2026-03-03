@@ -1214,7 +1214,19 @@ export const OffersPage: React.FC = () => {
       return sum + itemTotal * ((i.discount_percent || 0) / 100);
     }, 0);
     const nettoAfterDiscount = totalNetto - totalDiscount;
-    const profit = nettoAfterDiscount - totalCost;
+
+    // Surcharges from warunki istotne
+    const ptRule = paymentTermRules.find(r => String(r.value) === paymentTerm);
+    const wrRule = warrantyRules.find(r => String(r.value) === warrantyPeriod);
+    const ifRule = invoiceFreqRules.find(r => String(r.value) === invoiceFrequency);
+    const surchargePercent = (ptRule?.surcharge || 0) + (wrRule?.surcharge || 0) + (ifRule?.surcharge || 0);
+    const surchargeAmount = nettoAfterDiscount * (surchargePercent / 100);
+    const nettoAfterSurcharges = nettoAfterDiscount + surchargeAmount;
+
+    // Related costs
+    const relatedCostsTotal = relatedCosts.reduce((s, c) => s + (c.mode === 'percent' ? nettoAfterDiscount * (c.value / 100) : c.value), 0);
+
+    const profit = nettoAfterSurcharges - totalCost;
     const discountPercent = totalNetto > 0 ? (totalDiscount / totalNetto) * 100 : 0;
     // VAT calculation (per-item rates or default 23%)
     const totalVat = allItems.reduce((sum, i) => {
@@ -1223,21 +1235,26 @@ export const OffersPage: React.FC = () => {
       const netItem = itemTotal - itemDiscount;
       return sum + netItem * ((i.vat_rate ?? 23) / 100);
     }, 0);
-    const totalBrutto = nettoAfterDiscount + totalVat;
+    const vatOnSurcharges = surchargeAmount * 0.23; // default VAT on surcharges
+    const totalBrutto = nettoAfterSurcharges + totalVat + vatOnSurcharges;
     return {
       total: totalNetto,
       totalCost,
       totalDiscount,
       discountPercent,
       nettoAfterDiscount,
+      surchargePercent,
+      surchargeAmount,
+      nettoAfterSurcharges,
+      relatedCostsTotal,
       profit,
-      totalVat,
+      totalVat: totalVat + vatOnSurcharges,
       totalBrutto,
       discountPct: totalDiscount,
       discountFixed: offerData.discount_amount,
-      final: Math.max(0, nettoAfterDiscount)
+      final: Math.max(0, nettoAfterSurcharges)
     };
-  }, [sections, offerData.discount_amount, getAllItems]);
+  }, [sections, offerData.discount_amount, getAllItems, paymentTerm, warrantyPeriod, invoiceFrequency, paymentTermRules, warrantyRules, invoiceFreqRules, relatedCosts]);
 
   const totals = useMemo(() => calculateTotals(), [calculateTotals]);
 
@@ -2387,7 +2404,7 @@ export const OffersPage: React.FC = () => {
   useEffect(() => {
     if ((showSearchMaterialModal || showSearchEquipmentModal) && currentUser?.company_id && wholesalerIntegrations.length === 0) {
       supabase.from('wholesaler_integrations').select('*').eq('company_id', currentUser.company_id)
-        .then(res => { if (res.data) setWholesalerIntegrations(res.data); });
+        .then(res => { if (res.data) setWholesalerIntegrations(res.data.filter((w: any) => !w.wholesaler_name?.toLowerCase().includes('speckable') && !w.wholesaler_id?.toLowerCase?.().includes('speckable'))); });
     }
   }, [showSearchMaterialModal, showSearchEquipmentModal, currentUser?.company_id]);
 
@@ -2483,21 +2500,21 @@ export const OffersPage: React.FC = () => {
     const company = state.currentCompany as any;
     const companyName = company?.name || '';
     const companyLogo = company?.logo_url || '';
-    const companyNip = company?.nip || '';
-    const companyAddress = [company?.street, company?.building_number].filter(Boolean).join(' ');
-    const companyCity = [company?.postal_code, company?.city].filter(Boolean).join(' ');
-    const companyPhone = company?.phone || '';
-    const companyEmail = company?.email || '';
+    const companyNip = company?.nip || company?.tax_id || '';
+    const companyAddress = [company?.street, company?.building_number].filter(Boolean).join(' ') || company?.address_street || '';
+    const companyCity = [company?.postal_code || company?.address_postal_code, company?.city || company?.address_city].filter(Boolean).join(' ');
+    const companyPhone = company?.phone || company?.contact_phone || '';
+    const companyEmail = company?.email || company?.contact_email || '';
     const client = (selectedOffer as any).client;
     const ps = selectedOffer.print_settings || {};
     const cd = ps.client_data || {};
-    const clientName = client?.name || cd.client_name || offerClientData.client_name || '';
-    const clientNip = client?.nip || cd.nip || offerClientData.nip || '';
-    const clientStreet = cd.company_street || offerClientData.company_street || client?.address_street || '';
+    const clientName = cd.client_name || client?.name || offerClientData.client_name || '';
+    const clientNip = cd.nip || client?.nip || offerClientData.nip || '';
+    const clientStreet = cd.company_street || offerClientData.company_street || '';
     const clientStreetNum = cd.company_street_number || offerClientData.company_street_number || '';
-    const clientPostal = cd.company_postal_code || offerClientData.company_postal_code || client?.address_postal_code || '';
-    const clientCity = cd.company_city || offerClientData.company_city || client?.address_city || '';
-    const clientFullAddress = [clientStreet, clientStreetNum, clientPostal, clientCity].filter(Boolean).join(', ');
+    const clientPostal = cd.company_postal_code || offerClientData.company_postal_code || '';
+    const clientCity = cd.company_city || offerClientData.company_city || '';
+    const clientFullAddress = [clientStreet, clientStreetNum, clientPostal, clientCity].filter(Boolean).join(', ') || client?.legal_address || '';
     // Find representative - try by ID, fallback to first contact, fallback to saved data
     const repId = cd.representative_id || sendRepresentativeId;
     const representative = repId
@@ -2631,6 +2648,55 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
 
   ${sections.map(sec => renderSectionHTML(sec)).join('')}
   ${totalsSectionHTML}
+
+  ${(() => {
+    // Warunki istotne block
+    const hasWarunki = paymentTerm || invoiceFrequency || warrantyPeriod;
+    let warunkiHTML = '';
+    if (hasWarunki) {
+      warunkiHTML = `<div style="margin-top:20px;padding:12px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:4px;">
+        <h3 style="font-size:13px;font-weight:600;margin:0 0 8px;color:#2c3e50;">Warunki istotne</h3>
+        <table style="width:100%;font-size:12px;border-collapse:collapse;">`;
+      if (paymentTerm) {
+        const ptRule = paymentTermRules.find(r => String(r.value) === paymentTerm);
+        warunkiHTML += `<tr><td style="padding:4px 0;color:#64748b;width:200px;">Termin płatności:</td><td style="padding:4px 0;font-weight:500;">${paymentTerm} dni${ptRule && ptRule.surcharge !== 0 ? ` <span style="color:${ptRule.surcharge > 0 ? '#dc2626' : '#16a34a'};font-size:11px;">(${ptRule.surcharge > 0 ? '+' : ''}${ptRule.surcharge}%)</span>` : ''}</td></tr>`;
+      }
+      if (invoiceFrequency) {
+        const ifRule = invoiceFreqRules.find(r => String(r.value) === invoiceFrequency);
+        warunkiHTML += `<tr><td style="padding:4px 0;color:#64748b;">Wystawienie faktur:</td><td style="padding:4px 0;font-weight:500;">co ${invoiceFrequency} dni${ifRule && ifRule.surcharge !== 0 ? ` <span style="color:${ifRule.surcharge > 0 ? '#dc2626' : '#16a34a'};font-size:11px;">(${ifRule.surcharge > 0 ? '+' : ''}${ifRule.surcharge}%)</span>` : ''}</td></tr>`;
+      }
+      if (warrantyPeriod) {
+        const wrRule = warrantyRules.find(r => String(r.value) === warrantyPeriod);
+        warunkiHTML += `<tr><td style="padding:4px 0;color:#64748b;">Okres gwarancyjny:</td><td style="padding:4px 0;font-weight:500;">${warrantyPeriod} miesięcy${wrRule && wrRule.surcharge !== 0 ? ` <span style="color:${wrRule.surcharge > 0 ? '#dc2626' : '#16a34a'};font-size:11px;">(${wrRule.surcharge > 0 ? '+' : ''}${wrRule.surcharge}%)</span>` : ''}</td></tr>`;
+      }
+      warunkiHTML += `</table></div>`;
+    }
+
+    // Koszty powiązane block
+    const visibleCosts = relatedCosts.filter(c => c.value > 0);
+    let kosztyHTML = '';
+    if (visibleCosts.length > 0) {
+      const shownCosts = visibleCosts.filter(c => c.show_on_offer);
+      const hiddenCosts = visibleCosts.filter(c => !c.show_on_offer);
+      const hiddenTotal = hiddenCosts.reduce((s, c) => s + (c.mode === 'percent' ? totals.nettoAfterDiscount * (c.value / 100) : c.value), 0);
+
+      kosztyHTML = `<div style="margin-top:16px;padding:12px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:4px;">
+        <h3 style="font-size:13px;font-weight:600;margin:0 0 8px;color:#2c3e50;">Koszty powiązane</h3>
+        <table style="width:100%;font-size:12px;border-collapse:collapse;">`;
+      shownCosts.forEach(c => {
+        const val = c.mode === 'percent' ? totals.nettoAfterDiscount * (c.value / 100) : c.value;
+        kosztyHTML += `<tr><td style="padding:3px 0;color:#475569;">${c.name}${c.mode === 'percent' ? ` (${c.value}%)` : ''}${c.frequency === 'monthly' ? ' (mies.)' : ''}</td><td style="padding:3px 0;text-align:right;font-weight:500;">${fmtCur(val)} zł</td></tr>`;
+      });
+      if (hiddenTotal > 0) {
+        kosztyHTML += `<tr><td style="padding:3px 0;color:#475569;">Koszty powiązane</td><td style="padding:3px 0;text-align:right;font-weight:500;">${fmtCur(hiddenTotal)} zł</td></tr>`;
+      }
+      const totalRC = visibleCosts.reduce((s, c) => s + (c.mode === 'percent' ? totals.nettoAfterDiscount * (c.value / 100) : c.value), 0);
+      kosztyHTML += `<tr style="border-top:1px solid #cbd5e1;font-weight:600;"><td style="padding:6px 0;">Suma kosztów powiązanych:</td><td style="padding:6px 0;text-align:right;">${fmtCur(totalRC)} zł</td></tr>`;
+      kosztyHTML += `</table></div>`;
+    }
+    return warunkiHTML + kosztyHTML;
+  })()}
+
   ${selectedOffer.notes ? `<div style="margin-top:24px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:4px;font-size:12px;"><strong>Uwagi:</strong><br/><span style="white-space:pre-wrap;">${selectedOffer.notes}</span></div>` : ''}
 </body></html>`;
   };
@@ -4421,7 +4487,7 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                     className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"
                   >
                     <option value="">— Wybierz —</option>
-                    {paymentTermOptions.map(v => {
+                    {(paymentTermRules.length > 0 ? paymentTermRules.map(r => r.value) : paymentTermOptions).map(v => {
                       const rule = paymentTermRules.find(r => r.value === v);
                       return <option key={v} value={String(v)}>{v} dni{rule && rule.surcharge !== 0 ? ` (${rule.surcharge > 0 ? '+' : ''}${rule.surcharge}%)` : ''}</option>;
                     })}
@@ -4439,7 +4505,7 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                     className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"
                   >
                     <option value="">— Wybierz —</option>
-                    {invoiceFreqOptions.map(v => {
+                    {(invoiceFreqRules.length > 0 ? invoiceFreqRules.map(r => r.value) : invoiceFreqOptions).map(v => {
                       const rule = invoiceFreqRules.find(r => r.value === v);
                       return <option key={v} value={String(v)}>co {v} dni{rule && rule.surcharge !== 0 ? ` (${rule.surcharge > 0 ? '+' : ''}${rule.surcharge}%)` : ''}</option>;
                     })}
@@ -4457,7 +4523,7 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                     className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"
                   >
                     <option value="">— Wybierz —</option>
-                    {warrantyOptions.map(v => {
+                    {(warrantyRules.length > 0 ? warrantyRules.map(r => r.value) : warrantyOptions).map(v => {
                       const rule = warrantyRules.find(r => r.value === v);
                       return <option key={v} value={String(v)}>{v} mies.{rule && rule.surcharge !== 0 ? ` (${rule.surcharge > 0 ? '+' : ''}${rule.surcharge}%)` : ''}</option>;
                     })}
@@ -4702,13 +4768,27 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                 if (ptRule && ptRule.surcharge !== 0) surcharges.push({ label: `Termin płatności (${paymentTerm} dni)`, pct: ptRule.surcharge, val: totals.nettoAfterDiscount * (ptRule.surcharge / 100) });
                 if (wrRule && wrRule.surcharge !== 0) surcharges.push({ label: `Gwarancja (${warrantyPeriod} mies.)`, pct: wrRule.surcharge, val: totals.nettoAfterDiscount * (wrRule.surcharge / 100) });
                 if (ifRule && ifRule.surcharge !== 0) surcharges.push({ label: `Fakturowanie (co ${invoiceFrequency} dni)`, pct: ifRule.surcharge, val: totals.nettoAfterDiscount * (ifRule.surcharge / 100) });
-                return surcharges.length > 0 ? surcharges.map((s, i) => (
-                  <div key={i} className={`flex justify-between text-sm ${s.pct > 0 ? 'text-red-500' : 'text-green-600'}`}>
-                    <span>{s.label} ({s.pct > 0 ? '+' : ''}{s.pct}%):</span>
-                    <span>{s.pct > 0 ? '+' : ''}{formatCurrency(s.val)}</span>
-                  </div>
-                )) : null;
+                return surcharges.length > 0 ? (
+                  <>
+                    {surcharges.map((s, i) => (
+                      <div key={i} className={`flex justify-between text-sm ${s.pct > 0 ? 'text-red-500' : 'text-green-600'}`}>
+                        <span>{s.label} ({s.pct > 0 ? '+' : ''}{s.pct}%):</span>
+                        <span>{s.pct > 0 ? '+' : ''}{formatCurrency(s.val)}</span>
+                      </div>
+                    ))}
+                    <div className="flex justify-between font-semibold">
+                      <span className="text-slate-700">Netto po dopłatach:</span>
+                      <span className="text-blue-700">{formatCurrency(totals.nettoAfterSurcharges)}</span>
+                    </div>
+                  </>
+                ) : null;
               })()}
+              {totals.relatedCostsTotal > 0 && (
+                <div className="flex justify-between text-sm text-slate-500">
+                  <span>Koszty powiązane:</span>
+                  <span>{formatCurrency(totals.relatedCostsTotal)}</span>
+                </div>
+              )}
               {totals.profit !== 0 && (
                 <div className="flex justify-between text-slate-500">
                   <span className="text-sm">Zysk netto:</span>
@@ -4852,6 +4932,22 @@ body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:30px 40px;color:#1e
                   <span className="ml-1 font-medium text-red-600">
                     {totals.discountPercent > 0 ? `${totals.discountPercent.toFixed(1)}% (${formatCurrency(totals.totalDiscount)})` : '-'}
                   </span>
+                </div>
+                {totals.surchargePercent !== 0 && (
+                  <>
+                    <div className="h-4 w-px bg-slate-300" />
+                    <div>
+                      <span className="text-slate-500">{totals.surchargePercent > 0 ? 'Narzut' : 'Rabat'} warunki:</span>
+                      <span className={`ml-1 font-medium ${totals.surchargePercent > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                        {totals.surchargePercent > 0 ? '+' : ''}{totals.surchargePercent.toFixed(1)}% ({formatCurrency(totals.surchargeAmount)})
+                      </span>
+                    </div>
+                  </>
+                )}
+                <div className="h-4 w-px bg-slate-300" />
+                <div>
+                  <span className="text-slate-500">Netto po dopłatach:</span>
+                  <span className="ml-1 font-bold text-blue-700">{formatCurrency(totals.nettoAfterSurcharges)}</span>
                 </div>
                 <div className="h-4 w-px bg-slate-300" />
                 <div>
