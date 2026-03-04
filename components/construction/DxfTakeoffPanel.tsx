@@ -60,7 +60,7 @@ export default function DxfTakeoffPanel({ result, analysis, sourceType = 'DXF', 
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `przedmiar_dxf_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `przedmiar_${sourceType.toLowerCase()}_${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

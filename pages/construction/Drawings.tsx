@@ -663,6 +663,8 @@ export const DrawingsPage: React.FC = () => {
     setShowPdfTakeoff(false);
     setShowPdfStyleGroups(false);
     setShowPdfLegend(false);
+    setShowPdfAnalysis(false);
+    setShowPdfMappingDict(false);
     setPdfHighlightPaths([]);
     setPdfHighlightPoints([]);
     setPdfHighlightLabel('');

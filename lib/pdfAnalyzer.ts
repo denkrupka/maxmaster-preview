@@ -1097,6 +1097,7 @@ function toDxfAnalysis(
         type: 'point',
         center: { x: sym.centerX, y: sym.centerY },
         radius: sym.radius,
+        points: [{ x: sym.centerX, y: sym.centerY }],
       },
       lengthM: 0,
       areaM2: 0,

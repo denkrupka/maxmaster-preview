@@ -6092,14 +6092,14 @@ tr{page-break-inside:avoid;page-break-after:auto;}
       <div className="mb-6 flex items-center justify-between">
         <div className="flex border-b border-slate-200">
           <button
-            onClick={() => setOffersTab('offers')}
+            onClick={() => { setOffersTab('offers'); setSelectedRequest(null); }}
             className={`px-5 py-2.5 text-sm font-medium border-b-2 transition ${offersTab === 'offers' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
           >
             Oferty dla klientów
             {offers.length > 0 && <span className="ml-1.5 text-xs text-slate-400">({offers.length})</span>}
           </button>
           <button
-            onClick={() => setOffersTab('requests')}
+            onClick={() => { setOffersTab('requests'); setSelectedRequest(null); }}
             className={`px-5 py-2.5 text-sm font-medium border-b-2 transition ${offersTab === 'requests' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
           >
             Zapytania dla podwykonawców
@@ -6394,12 +6394,18 @@ tr{page-break-inside:avoid;page-break-after:auto;}
             {selectedRequest.status === 'draft' && (
               <button
                 onClick={async () => {
-                  await supabase.from('offer_requests').update({ status: 'sent', sent_at: new Date().toISOString() }).eq('id', selectedRequest.id);
-                  setOfferRequests(prev => prev.map(r => r.id === selectedRequest.id ? { ...r, status: 'sent', sent_at: new Date().toISOString() } : r));
-                  setSelectedRequest((prev: any) => prev ? { ...prev, status: 'sent' } : null);
-                  const url = `${window.location.origin}/#/offer-request/${selectedRequest.share_token}`;
-                  await navigator.clipboard.writeText(url);
-                  showToast('Zapytanie oznaczone jako wysłane — link skopiowany', 'success');
+                  try {
+                    const { error } = await supabase.from('offer_requests').update({ status: 'sent', sent_at: new Date().toISOString() }).eq('id', selectedRequest.id);
+                    if (error) throw error;
+                    setOfferRequests(prev => prev.map(r => r.id === selectedRequest.id ? { ...r, status: 'sent', sent_at: new Date().toISOString() } : r));
+                    setSelectedRequest((prev: any) => prev ? { ...prev, status: 'sent' } : null);
+                    const url = `${window.location.origin}/#/offer-request/${selectedRequest.share_token}`;
+                    await navigator.clipboard.writeText(url);
+                    showToast('Zapytanie oznaczone jako wysłane — link skopiowany', 'success');
+                  } catch (err) {
+                    console.error('Error sending request:', err);
+                    showToast('Błąd wysyłania zapytania', 'error');
+                  }
                 }}
                 className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm"
               >
