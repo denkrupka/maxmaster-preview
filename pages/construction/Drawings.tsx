@@ -10,12 +10,31 @@ import {
   Camera, MessageSquare, Scissors, Link2, History,
   Save, Undo2, ScanLine, Filter, MapPin, Image,
   ExternalLink, Crosshair, LayoutList, BookOpen,
-  Hash, CloudLightning, MessageCircleWarning
+  Hash, CloudLightning, MessageCircleWarning,
+  Magnet, FileSearch, BarChart3, Printer, FileType2, Info
 } from 'lucide-react';
 import { useAppContext } from '../../context/AppContext';
 import { supabase } from '../../lib/supabase';
 import { Project } from '../../types';
 import * as pdfjsLib from 'pdfjs-dist';
+import {
+  renderDxfToSvgBlobUrl, parseDxf, extractLayerInfo, renderDxfToBlobUrl, renderDxfFull,
+  screenToDxfCoords, dxfToScreenCoords, findNearestEntity, findMatchingEntities, getEntityCenter,
+  type IDxf, type DxfLayerInfo, type DxfViewBoxInfo
+} from '../../lib/dxfRenderer';
+import { findSnapPoints, getBestSnap, findIntersections, type SnapPoint, type SnapType } from '../../lib/dxfSnap';
+import type { DxfSearchResult } from '../../lib/dxfSearch';
+import type { DxfAnalysis } from '../../lib/dxfAnalyzer';
+import type { TakeoffRule, TakeoffResult } from '../../lib/dxfTakeoff';
+import { applyRules, getDefaultElectricalRules } from '../../lib/dxfTakeoff';
+import DxfSearchPanel from '../../components/construction/DxfSearchPanel';
+import DxfPropertiesPanel from '../../components/construction/DxfPropertiesPanel';
+import DxfTakeoffPanel from '../../components/construction/DxfTakeoffPanel';
+import DxfTakeoffRulesModal from '../../components/construction/DxfTakeoffRulesModal';
+import DxfBlockMappingsModal from '../../components/construction/DxfBlockMappingsModal';
+import DxfAnalysisModal from '../../components/construction/DxfAnalysisModal';
+import DxfExportModal from '../../components/construction/DxfExportModal';
+import DwgConvertPanel from '../../components/construction/DwgConvertPanel';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://unpkg.com/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs';
 
@@ -97,10 +116,11 @@ const formatFileSize = (bytes?: number): string => {
   return `${(bytes / 1048576).toFixed(2)} MB`;
 };
 
-const getFileType = (plan: PlanRecord): 'pdf' | 'image' | 'dwg' | 'other' => {
+const getFileType = (plan: PlanRecord): 'pdf' | 'image' | 'dxf' | 'dwg' | 'other' => {
   const ext = (plan.original_filename || plan.file_url || '').toLowerCase();
   if (plan.mime_type === 'application/pdf' || ext.endsWith('.pdf')) return 'pdf';
-  if (ext.match(/\.(dwg|dxf)$/)) return 'dwg';
+  if (ext.endsWith('.dxf')) return 'dxf';
+  if (ext.endsWith('.dwg')) return 'dwg';
   if (plan.mime_type?.startsWith('image/') || ext.match(/\.(png|jpg|jpeg|gif|bmp|webp|svg|tiff?)$/)) return 'image';
   return 'other';
 };
@@ -296,6 +316,35 @@ export const DrawingsPage: React.FC = () => {
   const [planNatW, setPlanNatW] = useState(800);
   const [planNatH, setPlanNatH] = useState(600);
 
+  // DXF
+  const [dxfImageUrl, setDxfImageUrl] = useState<string | null>(null);
+  const [dxfLoading, setDxfLoading] = useState(false);
+  const [dxfData, setDxfData] = useState<IDxf | null>(null);
+  const [dxfLayers, setDxfLayers] = useState<DxfLayerInfo[]>([]);
+  const [dxfHiddenLayers, setDxfHiddenLayers] = useState<Set<string>>(new Set());
+  const [dxfViewBox, setDxfViewBox] = useState<DxfViewBoxInfo | null>(null);
+  const [showDxfLayerPanel, setShowDxfLayerPanel] = useState(false);
+  // DXF auto-count
+  const [dxfCountMatches, setDxfCountMatches] = useState<{x: number; y: number}[]>([]);
+  const [dxfCountLabel, setDxfCountLabel] = useState('');
+
+  // DXF Advanced features
+  const [dxfSnapEnabled, setDxfSnapEnabled] = useState(true);
+  const [dxfSnapPoint, setDxfSnapPoint] = useState<SnapPoint | null>(null);
+  const [dxfCursorCoords, setDxfCursorCoords] = useState<{ x: number; y: number } | null>(null);
+  const [showDxfSearch, setShowDxfSearch] = useState(false);
+  const [showDxfProperties, setShowDxfProperties] = useState(false);
+  const [dxfSelectedEntity, setDxfSelectedEntity] = useState<any>(null);
+  const [showDxfAnalysis, setShowDxfAnalysis] = useState(false);
+  const [dxfAnalysis, setDxfAnalysis] = useState<DxfAnalysis | null>(null);
+  const [showDxfTakeoff, setShowDxfTakeoff] = useState(false);
+  const [dxfTakeoffResult, setDxfTakeoffResult] = useState<TakeoffResult | null>(null);
+  const [dxfTakeoffRules, setDxfTakeoffRules] = useState<TakeoffRule[]>([]);
+  const [showDxfRulesModal, setShowDxfRulesModal] = useState(false);
+  const [showDxfMappingsModal, setShowDxfMappingsModal] = useState(false);
+  const [showDxfExportModal, setShowDxfExportModal] = useState(false);
+  const [showDwgConvert, setShowDwgConvert] = useState(false);
+
   // Annotations
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [currentDrawing, setCurrentDrawing] = useState<Annotation | null>(null);
@@ -309,6 +358,9 @@ export const DrawingsPage: React.FC = () => {
   const [showRulerDropdown, setShowRulerDropdown] = useState(false);
   const [polylinePoints, setPolylinePoints] = useState<{ x: number; y: number }[]>([]);
   const [polylineCursorPt, setPolylineCursorPt] = useState<{ x: number; y: number } | null>(null);
+  // Ruler single click-to-click
+  const [rulerSingleStart, setRulerSingleStart] = useState<{ x: number; y: number } | null>(null);
+  const [rulerSingleCursorPt, setRulerSingleCursorPt] = useState<{ x: number; y: number } | null>(null);
 
   // Comments
   const [comments, setComments] = useState<PlanComment[]>([]);
@@ -396,6 +448,7 @@ export const DrawingsPage: React.FC = () => {
   const textInputRef = useRef<HTMLInputElement>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const commentInputRef = useRef<HTMLTextAreaElement>(null);
+  const finishPolylineRef = useRef<(forceClose?: boolean) => void>(() => {});
 
   const MAX_PLANS = 500;
   const notifyTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
@@ -408,10 +461,11 @@ export const DrawingsPage: React.FC = () => {
     notifyTimeoutRef.current = setTimeout(() => setNotification(null), 3500);
   };
 
-  // Cleanup PDF on unmount
+  // Cleanup PDF + DXF blob on unmount
   useEffect(() => {
     return () => {
       if (pdfDoc) { try { pdfDoc.destroy(); } catch {} }
+      if (dxfImageUrl) URL.revokeObjectURL(dxfImageUrl);
     };
   }, []);
 
@@ -426,14 +480,23 @@ export const DrawingsPage: React.FC = () => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); if (hasUnsavedChanges) handleUndo(); return; }
       // Delete: remove selected annotation
       if (e.key === 'Delete' && selectedAnnotation >= 0) { deleteAnnotation(selectedAnnotation); return; }
+      // Enter: finish polyline measurement
+      if (e.key === 'Enter') { finishPolylineRef.current(); return; }
       // Escape: cancel current tool or exit fullscreen
       if (e.key === 'Escape') {
         if (isFullscreen) { setIsFullscreen(false); return; }
         setActiveTool('pointer'); setPolylinePoints([]); setPolylineCursorPt(null);
+        setRulerSingleStart(null); setRulerSingleCursorPt(null);
         setTextInputPos(null); setCommentInputPos(null); setPhotoModalPos(null);
-        setScreenshotRect(null); setCountItems([]);
+        setScreenshotRect(null); setCountItems([]); setDxfCountMatches([]); setDxfCountLabel('');
         if (calibrationMode) { setCalibrationMode(false); setCalibrationPoints([]); }
         return;
+      }
+      // F3 — toggle SNAP
+      if (e.key === 'F3') { e.preventDefault(); setDxfSnapEnabled(prev => !prev); return; }
+      // Ctrl+F — DXF search
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f' && fileType === 'dxf' && dxfData) {
+        e.preventDefault(); setShowDxfSearch(prev => !prev); return;
       }
       // Tool shortcuts (no modifier keys)
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -451,7 +514,7 @@ export const DrawingsPage: React.FC = () => {
           case 'e': setActiveTool('eraser'); break;
           case 'k': setActiveTool('cloud'); break;
           case 'b': setActiveTool('callout'); break;
-          case 'n': setActiveTool('count'); setCountItems([]); break;
+          case 'n': setActiveTool('count'); setCountItems([]); setDxfCountMatches([]); setDxfCountLabel(''); break;
         }
       }
     };
@@ -529,10 +592,42 @@ export const DrawingsPage: React.FC = () => {
     return () => { if (pdfRenderTimeout.current) clearTimeout(pdfRenderTimeout.current); };
   }, [pdfDoc, pdfPage, zoom, renderPdfToCanvas]);
 
+  // Re-render DXF when hidden layers change
+  useEffect(() => {
+    if (!dxfData) return;
+    if (dxfImageUrl) URL.revokeObjectURL(dxfImageUrl);
+    const { url, viewBox } = renderDxfToBlobUrl(dxfData, dxfHiddenLayers);
+    setDxfImageUrl(url);
+    setDxfViewBox(viewBox);
+  }, [dxfHiddenLayers]);
+
   // ==================== DATA LOADING ====================
 
   useEffect(() => { if (currentUser) loadProjects(); }, [currentUser]);
   useEffect(() => { if (selectedProject) loadPlansData(); }, [selectedProject]);
+
+  const loadDxf = async (url: string) => {
+    setDxfLoading(true);
+    if (dxfImageUrl) { URL.revokeObjectURL(dxfImageUrl); setDxfImageUrl(null); }
+    setDxfData(null); setDxfLayers([]); setDxfHiddenLayers(new Set()); setDxfViewBox(null);
+    setDxfCountMatches([]); setDxfCountLabel('');
+    try {
+      const resp = await fetch(url);
+      const text = await resp.text();
+      const dxf = parseDxf(text);
+      setDxfData(dxf);
+      const layers = extractLayerInfo(dxf);
+      setDxfLayers(layers);
+      const { url: blobUrl, viewBox } = renderDxfToBlobUrl(dxf);
+      setDxfImageUrl(blobUrl);
+      setDxfViewBox(viewBox);
+    } catch (err) {
+      console.error('DXF render error:', err);
+      notify('Nie udało się wyrenderować pliku DXF', 'error');
+    } finally {
+      setDxfLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (selectedPlan) {
@@ -544,14 +639,25 @@ export const DrawingsPage: React.FC = () => {
         const ft = getFileType(selectedPlan);
         if (ft === 'pdf') {
           loadPdf(selectedPlan.file_url);
+          setDxfImageUrl(null); setDxfData(null); setDxfLayers([]); setDxfHiddenLayers(new Set()); setDxfViewBox(null);
+        } else if (ft === 'dxf') {
+          setPdfDoc(null);
+          setPdfTotalPages(0);
+          loadDxf(selectedPlan.file_url);
         } else {
           setPdfDoc(null);
           setPdfTotalPages(0);
+          if (dxfImageUrl) { URL.revokeObjectURL(dxfImageUrl); setDxfImageUrl(null); }
+          setDxfData(null); setDxfLayers([]); setDxfHiddenLayers(new Set()); setDxfViewBox(null);
         }
       }
+      setDxfCountMatches([]); setDxfCountLabel('');
       loadAnnotations(selectedPlan.id);
     } else {
       setPdfDoc(null);
+      if (dxfImageUrl) { URL.revokeObjectURL(dxfImageUrl); setDxfImageUrl(null); }
+      setDxfData(null); setDxfLayers([]); setDxfHiddenLayers(new Set()); setDxfViewBox(null);
+      setDxfCountMatches([]); setDxfCountLabel('');
       setAnnotations([]);
       if (selectedFolder) {
         setEditName(selectedFolder.name);
@@ -660,6 +766,48 @@ export const DrawingsPage: React.FC = () => {
     setSelectedAnnotation(-1);
     setHasUnsavedChanges(true);
   };
+
+  // Finish polyline/area measurement (shared by double-click and Enter)
+  const finishPolylineMeasurement = useCallback((forceClose?: boolean) => {
+    if (activeTool !== 'ruler' || rulerMode === 'single' || polylinePoints.length < 2) return;
+    if (!selectedPlan || !currentUser) return;
+    const ratio = selectedPlan.scale_ratio || 1;
+    const pts = polylinePoints;
+    let totalDist = 0;
+    const segDists: number[] = [];
+    for (let i = 1; i < pts.length; i++) {
+      const d = Math.sqrt((pts[i].x - pts[i - 1].x) ** 2 + (pts[i].y - pts[i - 1].y) ** 2) * ratio;
+      segDists.push(d);
+      totalDist += d;
+    }
+    const first = pts[0], last = pts[pts.length - 1];
+    const closeDist = Math.sqrt((last.x - first.x) ** 2 + (last.y - first.y) ** 2);
+    const isClosed = forceClose || (closeDist < 30 && pts.length >= 3);
+    if (isClosed) {
+      const closingDist = closeDist * ratio;
+      segDists.push(closingDist);
+      totalDist += closingDist;
+    }
+    let area: number | undefined;
+    if (isClosed && pts.length >= 3) {
+      let a = 0;
+      for (let i = 0; i < pts.length; i++) {
+        const j = (i + 1) % pts.length;
+        a += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+      }
+      area = Math.abs(a / 2) * ratio * ratio;
+    }
+    const ann: Annotation = {
+      type: 'measurement',
+      geometry: { points: pts.map(p => [p.x, p.y]), segDists, isClosed, area },
+      strokeColor: annColor, strokeWidth: annWidth,
+      measurementValue: totalDist, measurementUnit: scaleUnit || 'm',
+    };
+    saveAnnotation(ann);
+    setPolylinePoints([]);
+    setPolylineCursorPt(null);
+  }, [activeTool, rulerMode, polylinePoints, selectedPlan, currentUser, annColor, annWidth, scaleUnit]);
+  finishPolylineRef.current = finishPolylineMeasurement;
 
   // ==================== COMMENTS CRUD ====================
 
@@ -1005,7 +1153,23 @@ export const DrawingsPage: React.FC = () => {
   // ==================== ANNOTATION TOOL HANDLERS ====================
 
   const handleSvgMouseDown = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
-    if (activeTool === 'pointer') return;
+    if (activeTool === 'pointer') {
+      // DXF entity properties on click
+      if (dxfData && dxfViewBox && selectedPlan && getFileType(selectedPlan) === 'dxf') {
+        const pt = getSvgPoint(e);
+        const dxfPt = screenToDxfCoords(pt, planNatW, planNatH, dxfViewBox);
+        const maxDist = Math.max(dxfViewBox.vbW, dxfViewBox.vbH) * 0.02;
+        const entity = findNearestEntity(dxfData, dxfPt, maxDist, dxfHiddenLayers);
+        if (entity) {
+          setDxfSelectedEntity(entity);
+          setShowDxfProperties(true);
+        } else {
+          setDxfSelectedEntity(null);
+          setShowDxfProperties(false);
+        }
+      }
+      return;
+    }
     if (calibrationMode) {
       const pt = getSvgPoint(e);
       setCalibrationPoints(prev => prev.length >= 2 ? [pt] : [...prev, pt]);
@@ -1033,12 +1197,65 @@ export const DrawingsPage: React.FC = () => {
     }
     if (activeTool === 'count') {
       const pt = getSvgPoint(e);
-      setCountItems(prev => [...prev, pt]);
+      const ft = selectedPlan ? getFileType(selectedPlan) : 'other';
+      if (ft === 'dxf' && dxfData && dxfViewBox) {
+        // DXF auto-count: find entity → find all matching → show markers
+        const dxfPt = screenToDxfCoords(pt, planNatW, planNatH, dxfViewBox);
+        const maxDist = Math.max(dxfViewBox.vbW, dxfViewBox.vbH) * 0.02;
+        const entity = findNearestEntity(dxfData, dxfPt, maxDist, dxfHiddenLayers);
+        if (entity) {
+          const matches = findMatchingEntities(dxfData, entity, dxfHiddenLayers);
+          const screenPts = matches.map(m => {
+            const c = getEntityCenter(m);
+            return c ? dxfToScreenCoords(c, planNatW, planNatH, dxfViewBox) : null;
+          }).filter((p): p is {x: number; y: number} => p !== null);
+          setDxfCountMatches(screenPts);
+          const e = entity as any;
+          const label = e.type === 'INSERT' ? `Blok: ${e.name}` : `${e.type} @ ${e.layer || '0'}`;
+          setDxfCountLabel(label);
+        }
+      } else {
+        // Manual count (PDF/image)
+        setCountItems(prev => [...prev, pt]);
+      }
+      return;
+    }
+    // Ruler single: click-to-click (first click = start, second click = finish)
+    if (activeTool === 'ruler' && rulerMode === 'single') {
+      const pt = getSvgPoint(e);
+      if (!rulerSingleStart) {
+        setRulerSingleStart(pt);
+        setRulerSingleCursorPt(pt);
+      } else {
+        // Second click — save measurement
+        const { x: x1, y: y1 } = rulerSingleStart;
+        const { x: x2, y: y2 } = pt;
+        const pxDist = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+        const ann: Annotation = {
+          type: 'measurement',
+          geometry: { x1, y1, x2, y2 },
+          strokeColor: annColor, strokeWidth: annWidth,
+          measurementValue: pxDist * (selectedPlan?.scale_ratio || 1),
+          measurementUnit: scaleUnit || 'm',
+        };
+        saveAnnotation(ann);
+        setRulerSingleStart(null);
+        setRulerSingleCursorPt(null);
+      }
       return;
     }
     // Polyline/area ruler: click-based, not drag
     if (activeTool === 'ruler' && rulerMode !== 'single') {
       const pt = getSvgPoint(e);
+      // Check if clicking near first point to close area (3+ points, distance < 30)
+      if (polylinePoints.length >= 3) {
+        const first = polylinePoints[0];
+        const dist = Math.sqrt((pt.x - first.x) ** 2 + (pt.y - first.y) ** 2);
+        if (dist < 30) {
+          finishPolylineMeasurement(true);
+          return;
+        }
+      }
       setPolylinePoints(prev => [...prev, pt]);
       return;
     }
@@ -1078,19 +1295,40 @@ export const DrawingsPage: React.FC = () => {
         type: 'callout', geometry: { x1: pt.x, y1: pt.y, x2: pt.x, y2: pt.y },
         strokeColor: annColor, strokeWidth: annWidth,
       });
-    } else if (activeTool === 'line' || activeTool === 'arrow' || (activeTool === 'ruler' && rulerMode === 'single')) {
-      const type = activeTool === 'ruler' ? 'measurement' : activeTool;
+    } else if (activeTool === 'line' || activeTool === 'arrow') {
       setCurrentDrawing({
-        type: type as any, geometry: { x1: pt.x, y1: pt.y, x2: pt.x, y2: pt.y },
+        type: activeTool, geometry: { x1: pt.x, y1: pt.y, x2: pt.x, y2: pt.y },
         strokeColor: annColor, strokeWidth: annWidth,
       });
     }
-  }, [activeTool, annColor, annWidth, getSvgPoint, calibrationMode, rulerMode]);
+  }, [activeTool, annColor, annWidth, getSvgPoint, calibrationMode, rulerMode, rulerSingleStart, polylinePoints, selectedPlan, scaleUnit, finishPolylineMeasurement, dxfData, dxfViewBox, dxfHiddenLayers, planNatW, planNatH]);
 
   const handleSvgMouseMove = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
+    // DXF coordinate tracking + SNAP
+    const svgPt = getSvgPoint(e);
+    if (dxfData && dxfViewBox && selectedPlan && getFileType(selectedPlan) === 'dxf') {
+      const dxfPt = screenToDxfCoords(svgPt, planNatW, planNatH, dxfViewBox);
+      setDxfCursorCoords(dxfPt);
+      // SNAP
+      if (dxfSnapEnabled) {
+        const snapRadius = Math.max(dxfViewBox.vbW, dxfViewBox.vbH) * 0.015;
+        const snaps = findSnapPoints(dxfData, dxfPt, snapRadius, dxfHiddenLayers);
+        const intersections = findIntersections(dxfData, dxfPt, snapRadius, dxfHiddenLayers);
+        const allSnaps = [...snaps, ...intersections];
+        const best = getBestSnap(allSnaps);
+        setDxfSnapPoint(best);
+      } else {
+        setDxfSnapPoint(null);
+      }
+    }
+
+    // Ruler single: track cursor for preview line
+    if (activeTool === 'ruler' && rulerMode === 'single' && rulerSingleStart) {
+      setRulerSingleCursorPt(svgPt);
+    }
     // Polyline cursor tracking
     if (activeTool === 'ruler' && rulerMode !== 'single' && polylinePoints.length > 0) {
-      setPolylineCursorPt(getSvgPoint(e));
+      setPolylineCursorPt(svgPt);
     }
     // Screenshot rect drag
     if (activeTool === 'screenshot' && isDrawing && screenshotRect) {
@@ -1118,50 +1356,12 @@ export const DrawingsPage: React.FC = () => {
       }
       return prev;
     });
-  }, [isDrawing, currentDrawing, getSvgPoint, activeTool, rulerMode, polylinePoints, screenshotRect]);
+  }, [isDrawing, currentDrawing, getSvgPoint, activeTool, rulerMode, polylinePoints, screenshotRect, rulerSingleStart]);
 
   // Polyline double-click to finish
   const handleSvgDoubleClick = useCallback(() => {
-    if (activeTool === 'ruler' && rulerMode !== 'single' && polylinePoints.length >= 2) {
-      const ratio = selectedPlan?.scale_ratio || 1;
-      const pts = polylinePoints;
-      let totalDist = 0;
-      const segDists: number[] = [];
-      for (let i = 1; i < pts.length; i++) {
-        const d = Math.sqrt((pts[i].x - pts[i - 1].x) ** 2 + (pts[i].y - pts[i - 1].y) ** 2) * ratio;
-        segDists.push(d);
-        totalDist += d;
-      }
-      // Check if closed (last point near first)
-      const first = pts[0], last = pts[pts.length - 1];
-      const closeDist = Math.sqrt((last.x - first.x) ** 2 + (last.y - first.y) ** 2);
-      const isClosed = closeDist < 30 && pts.length >= 3;
-      if (isClosed) {
-        const closingDist = closeDist * ratio;
-        segDists.push(closingDist);
-        totalDist += closingDist;
-      }
-      // Area calculation (shoelace formula)
-      let area: number | undefined;
-      if (isClosed && pts.length >= 3) {
-        let a = 0;
-        for (let i = 0; i < pts.length; i++) {
-          const j = (i + 1) % pts.length;
-          a += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
-        }
-        area = Math.abs(a / 2) * ratio * ratio;
-      }
-      const ann: Annotation = {
-        type: 'measurement',
-        geometry: { points: pts.map(p => [p.x, p.y]), segDists, isClosed, area },
-        strokeColor: annColor, strokeWidth: annWidth,
-        measurementValue: totalDist, measurementUnit: scaleUnit || 'm',
-      };
-      saveAnnotation(ann);
-      setPolylinePoints([]);
-      setPolylineCursorPt(null);
-    }
-  }, [activeTool, rulerMode, polylinePoints, selectedPlan, annColor, annWidth, scaleUnit]);
+    finishPolylineMeasurement();
+  }, [finishPolylineMeasurement]);
 
   const handleSvgMouseUp = useCallback(() => {
     // Screenshot finish
@@ -1530,6 +1730,46 @@ export const DrawingsPage: React.FC = () => {
                   <Download className="w-4 h-4" />
                 </a>
                 <div className="w-px h-5 bg-slate-200 mx-1" />
+                {fileType === 'dxf' && dxfData && (
+                  <>
+                    <button onClick={() => setShowDxfLayerPanel(!showDxfLayerPanel)}
+                      className={`p-1.5 rounded-lg transition ${showDxfLayerPanel ? 'bg-blue-100 text-blue-700' : 'hover:bg-white text-slate-600'}`} title="Warstwy DXF">
+                      <Filter className="w-4 h-4" />
+                    </button>
+                    <button onClick={() => setDxfSnapEnabled(!dxfSnapEnabled)}
+                      className={`p-1.5 rounded-lg transition ${dxfSnapEnabled ? 'bg-green-100 text-green-700' : 'hover:bg-white text-slate-600'}`} title={`SNAP (F3) — ${dxfSnapEnabled ? 'WŁ' : 'WYŁ'}`}>
+                      <Magnet className="w-4 h-4" />
+                    </button>
+                    <button onClick={() => setShowDxfSearch(!showDxfSearch)}
+                      className={`p-1.5 rounded-lg transition ${showDxfSearch ? 'bg-blue-100 text-blue-700' : 'hover:bg-white text-slate-600'}`} title="Szukaj w DXF (Ctrl+F)">
+                      <FileSearch className="w-4 h-4" />
+                    </button>
+                    <button onClick={() => setShowDxfProperties(!showDxfProperties)}
+                      className={`p-1.5 rounded-lg transition ${showDxfProperties ? 'bg-blue-100 text-blue-700' : 'hover:bg-white text-slate-600'}`} title="Właściwości elementu">
+                      <Info className="w-4 h-4" />
+                    </button>
+                    <div className="w-px h-5 bg-slate-200 mx-0.5" />
+                    <button onClick={() => setShowDxfAnalysis(true)}
+                      className="p-1.5 rounded-lg transition hover:bg-white text-slate-600" title="Analiza DXF + AI">
+                      <BarChart3 className="w-4 h-4" />
+                    </button>
+                    <button onClick={() => { if (dxfAnalysis && dxfTakeoffRules.length > 0) { const result = applyRules(dxfAnalysis, dxfTakeoffRules); setDxfTakeoffResult(result); } setShowDxfTakeoff(!showDxfTakeoff); }}
+                      className={`p-1.5 rounded-lg transition ${showDxfTakeoff ? 'bg-blue-100 text-blue-700' : 'hover:bg-white text-slate-600'}`} title="Przedmiar z DXF">
+                      <BookOpen className="w-4 h-4" />
+                    </button>
+                    <div className="w-px h-5 bg-slate-200 mx-0.5" />
+                    <button onClick={() => setShowDxfExportModal(true)}
+                      className="p-1.5 rounded-lg transition hover:bg-white text-slate-600" title="Eksport do PDF">
+                      <Printer className="w-4 h-4" />
+                    </button>
+                  </>
+                )}
+                {fileType === 'dwg' && selectedPlan && (
+                  <button onClick={() => setShowDwgConvert(true)}
+                    className="p-1.5 rounded-lg transition hover:bg-white text-slate-600" title="Konwertuj DWG → DXF">
+                    <FileType2 className="w-4 h-4" />
+                  </button>
+                )}
                 <button onClick={() => setShowNavigator(!showNavigator)}
                   className={`p-1.5 rounded-lg transition ${showNavigator ? 'bg-blue-100 text-blue-700' : 'hover:bg-white text-slate-600'}`} title="Panel nawigacji — lista oznaczeń">
                   <LayoutList className="w-4 h-4" />
@@ -1540,14 +1780,53 @@ export const DrawingsPage: React.FC = () => {
               <div ref={viewerRef} className="flex-1 overflow-auto bg-slate-100 relative"
                 onDrop={handleFileDrop} onDragOver={e => { e.preventDefault(); e.stopPropagation(); }}>
                 {fileType === 'dwg' ? (
-                  <div className="flex-1 flex flex-col items-center justify-center p-12 text-center">
+                  <div className="flex-1 flex flex-col items-center justify-center p-12 text-center relative">
                     <AlertTriangle className="w-16 h-16 text-amber-400 mb-4" />
-                    <h3 className="text-lg font-semibold text-slate-700 mb-2">Format DWG/DXF</h3>
+                    <h3 className="text-lg font-semibold text-slate-700 mb-2">Format DWG</h3>
                     <p className="text-sm text-slate-500 mb-6 max-w-md">
-                      Podgląd plików DWG/DXF nie jest dostępny w przeglądarce. Pobierz plik i otwórz w programie AutoCAD, LibreCAD lub skonwertuj do PDF.
+                      Podgląd plików DWG nie jest dostępny w przeglądarce. Skonwertuj do DXF lub pobierz plik.
                     </p>
-                    <a href={selectedPlan!.file_url} download className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl font-medium hover:bg-blue-700 shadow-sm">
-                      <FileDown className="w-5 h-5" /> Pobierz plik {selectedPlan!.original_filename?.split('.').pop()?.toUpperCase()}
+                    <div className="flex items-center gap-3">
+                      <button onClick={() => setShowDwgConvert(true)} className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl font-medium hover:bg-blue-700 shadow-sm">
+                        <FileType2 className="w-5 h-5" /> Konwertuj DWG → DXF
+                      </button>
+                      <a href={selectedPlan!.file_url} download className="flex items-center gap-2 px-6 py-3 border border-slate-300 text-slate-700 rounded-xl font-medium hover:bg-slate-50">
+                        <FileDown className="w-5 h-5" /> Pobierz plik DWG
+                      </a>
+                    </div>
+                    {showDwgConvert && selectedPlan && (
+                      <DwgConvertPanel
+                        fileName={selectedPlan.original_filename || selectedPlan.name}
+                        fileUrl={selectedPlan.file_url}
+                        onConvertComplete={(dxfText, dxfFileName) => {
+                          setShowDwgConvert(false);
+                          try {
+                            const dxf = parseDxf(dxfText);
+                            setDxfData(dxf);
+                            setDxfLayers(extractLayerInfo(dxf));
+                            const { url: blobUrl, viewBox } = renderDxfToBlobUrl(dxf);
+                            setDxfImageUrl(blobUrl);
+                            setDxfViewBox(viewBox);
+                          } catch (err) {
+                            console.error('DXF parse after convert error:', err);
+                            notify('Nie udało się przetworzyć skonwertowanego pliku DXF', 'error');
+                          }
+                        }}
+                        onClose={() => setShowDwgConvert(false)}
+                      />
+                    )}
+                  </div>
+                ) : fileType === 'dxf' && dxfLoading ? (
+                  <div className="flex-1 flex flex-col items-center justify-center p-12">
+                    <Loader2 className="w-10 h-10 text-blue-500 animate-spin mb-3" />
+                    <p className="text-sm text-slate-500">Renderowanie pliku DXF...</p>
+                  </div>
+                ) : fileType === 'dxf' && !dxfImageUrl ? (
+                  <div className="flex-1 flex flex-col items-center justify-center p-12 text-center">
+                    <AlertTriangle className="w-12 h-12 text-amber-400 mb-3" />
+                    <p className="text-sm text-slate-500 mb-4">Nie udało się wyrenderować podglądu DXF.</p>
+                    <a href={selectedPlan!.file_url} download className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700 shadow-sm">
+                      <FileDown className="w-4 h-4" /> Pobierz plik DXF
                     </a>
                   </div>
                 ) : (
@@ -1561,6 +1840,13 @@ export const DrawingsPage: React.FC = () => {
                           className="shadow-lg bg-white" style={{ imageRendering: zoom > 200 ? 'pixelated' : 'auto' }}
                           onLoad={e => { const img = e.target as HTMLImageElement; setPlanNatW(img.naturalWidth); setPlanNatH(img.naturalHeight); }}
                           onError={() => notify('Nie można załadować obrazu', 'error')} />
+                      )}
+                      {/* DXF rendered as SVG image */}
+                      {fileType === 'dxf' && dxfImageUrl && (
+                        <img src={dxfImageUrl} alt={selectedPlan!.name}
+                          className="shadow-lg bg-white"
+                          onLoad={e => { const img = e.target as HTMLImageElement; setPlanNatW(img.naturalWidth); setPlanNatH(img.naturalHeight); }}
+                          onError={() => notify('Nie można wyświetlić podglądu DXF', 'error')} />
                       )}
                       {/* SVG Annotation Overlay */}
                       <svg ref={svgRef} viewBox={`0 0 ${planNatW} ${planNatH}`}
@@ -1652,15 +1938,77 @@ export const DrawingsPage: React.FC = () => {
                               <line x1={polylinePoints[polylinePoints.length - 1].x} y1={polylinePoints[polylinePoints.length - 1].y}
                                 x2={polylineCursorPt.x} y2={polylineCursorPt.y} stroke={annColor} strokeWidth={1} strokeDasharray="4 4" opacity={0.5} />
                             )}
+                            {/* Pulsing circle on first point when cursor is near (area close hint) */}
+                            {polylinePoints.length >= 3 && polylineCursorPt && (() => {
+                              const first = polylinePoints[0];
+                              const dist = Math.sqrt((polylineCursorPt.x - first.x) ** 2 + (polylineCursorPt.y - first.y) ** 2);
+                              if (dist < 30) return <circle cx={first.x} cy={first.y} r={12} fill="none" stroke={annColor} strokeWidth={2} opacity={0.7}>
+                                <animate attributeName="r" values="8;14;8" dur="1.2s" repeatCount="indefinite" />
+                                <animate attributeName="opacity" values="0.8;0.3;0.8" dur="1.2s" repeatCount="indefinite" />
+                              </circle>;
+                              return null;
+                            })()}
                           </g>
                         )}
-                        {/* Count markers */}
+                        {/* Ruler single click-to-click preview */}
+                        {rulerSingleStart && rulerSingleCursorPt && (
+                          <g>
+                            <line x1={rulerSingleStart.x} y1={rulerSingleStart.y} x2={rulerSingleCursorPt.x} y2={rulerSingleCursorPt.y}
+                              stroke={annColor} strokeWidth={annWidth} strokeDasharray="6 3" />
+                            <circle cx={rulerSingleStart.x} cy={rulerSingleStart.y} r={4} fill={annColor} />
+                            <circle cx={rulerSingleCursorPt.x} cy={rulerSingleCursorPt.y} r={4} fill={annColor} opacity={0.5} />
+                            {(() => {
+                              const dx = rulerSingleCursorPt.x - rulerSingleStart.x;
+                              const dy = rulerSingleCursorPt.y - rulerSingleStart.y;
+                              const pxDist = Math.sqrt(dx * dx + dy * dy);
+                              const dist = pxDist * (selectedPlan?.scale_ratio || 1);
+                              const mx = (rulerSingleStart.x + rulerSingleCursorPt.x) / 2;
+                              const my = (rulerSingleStart.y + rulerSingleCursorPt.y) / 2;
+                              const angleDeg = Math.atan2(dy, dx) * 180 / Math.PI;
+                              let textAngle = angleDeg; if (textAngle > 90 || textAngle < -90) textAngle += 180;
+                              return <text transform={`translate(${mx},${my}) rotate(${textAngle})`} dy={-6} fill="#fff" fontSize="11" textAnchor="middle" fontFamily="Arial" fontWeight="600" paintOrder="stroke" stroke={annColor} strokeWidth={3}>{dist.toFixed(2)} {scaleUnit}</text>;
+                            })()}
+                          </g>
+                        )}
+                        {/* Count markers (manual) */}
                         {countItems.map((item, i) => (
                           <g key={`count-${i}`}>
                             <circle cx={item.x} cy={item.y} r={14} fill="#ef4444" stroke="white" strokeWidth={2} />
                             <text x={item.x} y={item.y + 5} fill="white" fontSize="12" fontWeight="700" textAnchor="middle" fontFamily="Arial">{i + 1}</text>
                           </g>
                         ))}
+                        {/* DXF auto-count markers */}
+                        {dxfCountMatches.map((item, i) => (
+                          <g key={`dxfc-${i}`}>
+                            <circle cx={item.x} cy={item.y} r={16} fill="#f97316" fillOpacity={0.25} stroke="#f97316" strokeWidth={2} />
+                            <text x={item.x} y={item.y + 5} fill="#f97316" fontSize="11" fontWeight="700" textAnchor="middle" fontFamily="Arial" paintOrder="stroke" stroke="white" strokeWidth={3}>{i + 1}</text>
+                          </g>
+                        ))}
+                        {/* SNAP indicator */}
+                        {dxfSnapEnabled && dxfSnapPoint && dxfViewBox && (() => {
+                          const screenPt = dxfToScreenCoords(dxfSnapPoint, planNatW, planNatH, dxfViewBox);
+                          const snapColors: Record<SnapType, string> = { endpoint: '#ef4444', midpoint: '#22c55e', center: '#3b82f6', intersection: '#f59e0b', nearest: '#8b5cf6' };
+                          const color = snapColors[dxfSnapPoint.type] || '#ef4444';
+                          return (
+                            <g>
+                              {dxfSnapPoint.type === 'endpoint' && (
+                                <rect x={screenPt.x - 5} y={screenPt.y - 5} width={10} height={10} fill="none" stroke={color} strokeWidth={2} />
+                              )}
+                              {dxfSnapPoint.type === 'midpoint' && (
+                                <polygon points={`${screenPt.x},${screenPt.y - 6} ${screenPt.x - 6},${screenPt.y + 4} ${screenPt.x + 6},${screenPt.y + 4}`} fill="none" stroke={color} strokeWidth={2} />
+                              )}
+                              {dxfSnapPoint.type === 'center' && (
+                                <circle cx={screenPt.x} cy={screenPt.y} r={6} fill="none" stroke={color} strokeWidth={2} />
+                              )}
+                              {dxfSnapPoint.type === 'intersection' && (
+                                <g><line x1={screenPt.x - 6} y1={screenPt.y - 6} x2={screenPt.x + 6} y2={screenPt.y + 6} stroke={color} strokeWidth={2} /><line x1={screenPt.x + 6} y1={screenPt.y - 6} x2={screenPt.x - 6} y2={screenPt.y + 6} stroke={color} strokeWidth={2} /></g>
+                              )}
+                              {dxfSnapPoint.type === 'nearest' && (
+                                <g><circle cx={screenPt.x} cy={screenPt.y} r={4} fill={color} /><circle cx={screenPt.x} cy={screenPt.y} r={8} fill="none" stroke={color} strokeWidth={1} strokeDasharray="2 2" /></g>
+                              )}
+                            </g>
+                          );
+                        })()}
                         {/* Screenshot selection rect */}
                         {screenshotRect && (
                           <rect x={Math.min(screenshotRect.x1, screenshotRect.x2)} y={Math.min(screenshotRect.y1, screenshotRect.y2)}
@@ -1671,12 +2019,21 @@ export const DrawingsPage: React.FC = () => {
                     </div>
                   </div>
                 )}
+                {/* DXF coordinates display */}
+                {fileType === 'dxf' && dxfCursorCoords && (
+                  <div className="absolute bottom-1 left-1 z-30 bg-black/70 text-white text-[10px] font-mono px-2 py-0.5 rounded select-none pointer-events-none">
+                    X: {dxfCursorCoords.x.toFixed(2)} &nbsp; Y: {dxfCursorCoords.y.toFixed(2)}
+                    {dxfSnapEnabled && dxfSnapPoint && (
+                      <span className="ml-2 text-green-300">[SNAP: {dxfSnapPoint.type}]</span>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Bottom annotation toolbar */}
               <div className="px-3 py-1.5 border-t border-slate-200 bg-white flex items-center gap-0.5 flex-shrink-0" onClick={e => e.stopPropagation()}>
                 {/* Pointer */}
-                <button onClick={() => { setActiveTool('pointer'); setPolylinePoints([]); setPolylineCursorPt(null); setCountItems([]); }}
+                <button onClick={() => { setActiveTool('pointer'); setPolylinePoints([]); setPolylineCursorPt(null); setRulerSingleStart(null); setRulerSingleCursorPt(null); setCountItems([]); setDxfCountMatches([]); setDxfCountLabel(''); }}
                   className={`p-2 rounded-lg transition ${activeTool === 'pointer' ? 'bg-blue-100 text-blue-700 shadow-inner' : 'hover:bg-slate-100 text-slate-600'}`} title="Zaznacz (V)">
                   <MousePointer className="w-5 h-5" />
                 </button>
@@ -1759,15 +2116,15 @@ export const DrawingsPage: React.FC = () => {
                   {showRulerDropdown && (
                     <div className="absolute left-0 bottom-full mb-1 w-64 bg-white border border-slate-200 rounded-xl shadow-xl z-50 py-1" onClick={e => e.stopPropagation()}>
                       <button className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm ${activeTool === 'ruler' && rulerMode === 'single' ? 'bg-blue-50 text-blue-700' : 'text-slate-700 hover:bg-slate-50'}`}
-                        onClick={() => { setActiveTool('ruler'); setRulerMode('single'); setShowRulerDropdown(false); setPolylinePoints([]); }}>
+                        onClick={() => { setActiveTool('ruler'); setRulerMode('single'); setShowRulerDropdown(false); setPolylinePoints([]); setRulerSingleStart(null); setRulerSingleCursorPt(null); }}>
                         <Crosshair className="w-4 h-4" /> Odcinek
                       </button>
                       <button className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm ${activeTool === 'ruler' && rulerMode === 'polyline' ? 'bg-blue-50 text-blue-700' : 'text-slate-700 hover:bg-slate-50'}`}
-                        onClick={() => { setActiveTool('ruler'); setRulerMode('polyline'); setShowRulerDropdown(false); setPolylinePoints([]); }}>
+                        onClick={() => { setActiveTool('ruler'); setRulerMode('polyline'); setShowRulerDropdown(false); setPolylinePoints([]); setRulerSingleStart(null); setRulerSingleCursorPt(null); }}>
                         <Ruler className="w-4 h-4" /> Polilinia — łamana
                       </button>
                       <button className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm ${activeTool === 'ruler' && rulerMode === 'area' ? 'bg-blue-50 text-blue-700' : 'text-slate-700 hover:bg-slate-50'}`}
-                        onClick={() => { setActiveTool('ruler'); setRulerMode('area'); setShowRulerDropdown(false); setPolylinePoints([]); }}>
+                        onClick={() => { setActiveTool('ruler'); setRulerMode('area'); setShowRulerDropdown(false); setPolylinePoints([]); setRulerSingleStart(null); setRulerSingleCursorPt(null); }}>
                         <Square className="w-4 h-4" /> Polilinia / obszar
                       </button>
                     </div>
@@ -1775,14 +2132,20 @@ export const DrawingsPage: React.FC = () => {
                 </div>
 
                 {/* Count tool */}
-                <button onClick={() => { setActiveTool('count'); setCountItems([]); }}
+                <button onClick={() => { setActiveTool('count'); setCountItems([]); setDxfCountMatches([]); setDxfCountLabel(''); }}
                   className={`p-2 rounded-lg transition ${activeTool === 'count' ? 'bg-amber-100 text-amber-700 shadow-inner' : 'hover:bg-slate-100 text-slate-600'}`} title="Licznik elementów (N)">
                   <Hash className="w-5 h-5" />
                 </button>
-                {activeTool === 'count' && countItems.length > 0 && (
+                {activeTool === 'count' && (countItems.length > 0 || dxfCountMatches.length > 0) && (
                   <div className="flex items-center gap-1 ml-1">
-                    <span className="text-xs font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">Σ {countItems.length}</span>
-                    <button onClick={() => setCountItems([])} className="p-1 hover:bg-red-50 rounded text-slate-400 hover:text-red-500" title="Wyczyść licznik">
+                    {dxfCountMatches.length > 0 ? (
+                      <span className="text-xs font-bold text-orange-700 bg-orange-50 px-2 py-0.5 rounded-full truncate max-w-[200px]" title={dxfCountLabel}>
+                        {dxfCountLabel}: {dxfCountMatches.length}
+                      </span>
+                    ) : (
+                      <span className="text-xs font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">Σ {countItems.length}</span>
+                    )}
+                    <button onClick={() => { setCountItems([]); setDxfCountMatches([]); setDxfCountLabel(''); }} className="p-1 hover:bg-red-50 rounded text-slate-400 hover:text-red-500" title="Wyczyść licznik">
                       <X className="w-3.5 h-3.5" />
                     </button>
                   </div>
@@ -1899,8 +2262,8 @@ export const DrawingsPage: React.FC = () => {
                   {(activeTool === 'rectangle' || activeTool === 'ellipse' || activeTool === 'cloud') && 'Kliknij i przeciągnij aby narysować'}
                   {(activeTool === 'arrow' || activeTool === 'line' || activeTool === 'callout') && 'Kliknij i przeciągnij od początku do końca'}
                   {activeTool === 'text' && 'Kliknij na planie aby wstawić tekst'}
-                  {activeTool === 'ruler' && rulerMode === 'single' && 'Kliknij i przeciągnij aby zmierzyć odległość'}
-                  {activeTool === 'ruler' && rulerMode !== 'single' && 'Klikaj punkty · Dwuklik = zakończ pomiar'}
+                  {activeTool === 'ruler' && rulerMode === 'single' && 'Kliknij punkt początkowy, następnie kliknij punkt końcowy'}
+                  {activeTool === 'ruler' && rulerMode !== 'single' && 'Klikaj punkty · Dwuklik lub Enter = zakończ pomiar'}
                   {activeTool === 'comment' && 'Kliknij na planie aby dodać komentarz'}
                   {activeTool === 'camera' && 'Kliknij na planie aby przypiąć zdjęcie'}
                   {activeTool === 'screenshot' && 'Zaznacz obszar aby pobrać fragment jako PNG'}
@@ -2019,6 +2382,53 @@ export const DrawingsPage: React.FC = () => {
                 <div className="text-center py-10 px-4">
                   <LayoutList className="w-8 h-8 text-slate-200 mx-auto mb-2" />
                   <p className="text-xs text-slate-400">Brak oznaczeń</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* DXF LAYER PANEL (RIGHT) */}
+        {showDxfLayerPanel && dxfData && viewingPlan && (
+          <div className="w-[300px] min-w-[260px] border-l border-slate-200 bg-white flex flex-col overflow-hidden flex-shrink-0">
+            <div className="px-3 py-2.5 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+              <span className="font-semibold text-slate-700 text-sm flex items-center gap-1.5"><Filter className="w-4 h-4" /> Warstwy DXF</span>
+              <button onClick={() => setShowDxfLayerPanel(false)} className="p-1 hover:bg-slate-200 rounded text-slate-400"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="px-3 py-2 border-b border-slate-100 flex items-center gap-2">
+              <button onClick={() => setDxfHiddenLayers(new Set())}
+                className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-green-100 text-green-700 hover:bg-green-200 transition">
+                Włącz wszystkie
+              </button>
+              <button onClick={() => setDxfHiddenLayers(new Set(dxfLayers.map(l => l.name)))}
+                className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-100 text-red-600 hover:bg-red-200 transition">
+                Wyłącz wszystkie
+              </button>
+              <span className="ml-auto text-[10px] text-slate-400">{dxfLayers.length} warstw</span>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {dxfLayers.map(layer => (
+                <label key={layer.name}
+                  className={`flex items-center gap-2 px-3 py-1.5 border-b border-slate-50 cursor-pointer hover:bg-slate-50 transition ${dxfHiddenLayers.has(layer.name) ? 'opacity-50' : ''}`}>
+                  <input type="checkbox" checked={!dxfHiddenLayers.has(layer.name)}
+                    onChange={() => {
+                      setDxfHiddenLayers(prev => {
+                        const next = new Set(prev);
+                        if (next.has(layer.name)) next.delete(layer.name);
+                        else next.add(layer.name);
+                        return next;
+                      });
+                    }}
+                    className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
+                  <div className="w-3 h-3 rounded-sm flex-shrink-0 border border-slate-200" style={{ backgroundColor: layer.color }} />
+                  <span className="text-xs text-slate-700 truncate flex-1" title={layer.name}>{layer.name}</span>
+                  <span className="text-[10px] text-slate-400 flex-shrink-0">{layer.entityCount}</span>
+                </label>
+              ))}
+              {dxfLayers.length === 0 && (
+                <div className="text-center py-10 px-4">
+                  <Filter className="w-8 h-8 text-slate-200 mx-auto mb-2" />
+                  <p className="text-xs text-slate-400">Brak warstw</p>
                 </div>
               )}
             </div>
@@ -2332,6 +2742,119 @@ export const DrawingsPage: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* DXF Search Panel */}
+      {showDxfSearch && dxfData && (
+        <DxfSearchPanel
+          dxf={dxfData}
+          hiddenLayers={dxfHiddenLayers}
+          onResultClick={(result: DxfSearchResult) => {
+            if (dxfViewBox) {
+              const screenPt = dxfToScreenCoords(result.position, planNatW, planNatH, dxfViewBox);
+              // Scroll to entity position
+              const viewer = viewerRef.current;
+              if (viewer) {
+                const scale = zoom / 100;
+                viewer.scrollTo({
+                  left: screenPt.x * scale - viewer.clientWidth / 2,
+                  top: screenPt.y * scale - viewer.clientHeight / 2,
+                  behavior: 'smooth',
+                });
+              }
+              setDxfSelectedEntity(result.entity);
+              setShowDxfProperties(true);
+            }
+          }}
+          onClose={() => setShowDxfSearch(false)}
+        />
+      )}
+
+      {/* DXF Properties Panel */}
+      {showDxfProperties && dxfSelectedEntity && dxfData && (
+        <DxfPropertiesPanel
+          entity={dxfSelectedEntity}
+          dxf={dxfData}
+          onClose={() => { setShowDxfProperties(false); setDxfSelectedEntity(null); }}
+        />
+      )}
+
+      {/* DXF Analysis Modal */}
+      {showDxfAnalysis && dxfData && selectedPlan && currentUser?.company_id && (
+        <DxfAnalysisModal
+          dxf={dxfData}
+          companyId={currentUser.company_id}
+          drawingId={selectedPlan.id}
+          onAnalysisComplete={(analysis: DxfAnalysis) => {
+            setDxfAnalysis(analysis);
+            // Auto-load default rules if none loaded
+            if (dxfTakeoffRules.length === 0) {
+              setDxfTakeoffRules(getDefaultElectricalRules());
+            }
+          }}
+          onClose={() => setShowDxfAnalysis(false)}
+        />
+      )}
+
+      {/* DXF Takeoff Panel */}
+      {showDxfTakeoff && dxfTakeoffResult && (
+        <DxfTakeoffPanel
+          result={dxfTakeoffResult}
+          onItemClick={(item) => {
+            // Highlight source entities on the drawing
+            if (dxfData && dxfViewBox) {
+              const screenPts = item.sourceEntityIndices.map(idx => {
+                const entity = (dxfData.entities as any[])[idx];
+                if (!entity) return null;
+                const center = getEntityCenter(entity);
+                return center ? dxfToScreenCoords(center, planNatW, planNatH, dxfViewBox) : null;
+              }).filter((p): p is { x: number; y: number } => p !== null);
+              setDxfCountMatches(screenPts);
+              setDxfCountLabel(item.description);
+            }
+          }}
+          onClose={() => { setShowDxfTakeoff(false); setDxfCountMatches([]); setDxfCountLabel(''); }}
+          onOpenRules={() => setShowDxfRulesModal(true)}
+        />
+      )}
+
+      {/* DXF Takeoff Rules Modal */}
+      {showDxfRulesModal && currentUser?.company_id && (
+        <DxfTakeoffRulesModal
+          companyId={currentUser.company_id}
+          rules={dxfTakeoffRules}
+          onRulesChange={(rules) => {
+            setDxfTakeoffRules(rules);
+            // Re-apply rules if analysis exists
+            if (dxfAnalysis) {
+              const result = applyRules(dxfAnalysis, rules);
+              setDxfTakeoffResult(result);
+            }
+          }}
+          onClose={() => setShowDxfRulesModal(false)}
+          onTestRules={dxfAnalysis ? () => {
+            const result = applyRules(dxfAnalysis!, dxfTakeoffRules);
+            setDxfTakeoffResult(result);
+            setShowDxfTakeoff(true);
+          } : undefined}
+        />
+      )}
+
+      {/* DXF Block Mappings Modal */}
+      {showDxfMappingsModal && currentUser?.company_id && (
+        <DxfBlockMappingsModal
+          companyId={currentUser.company_id}
+          onClose={() => setShowDxfMappingsModal(false)}
+        />
+      )}
+
+      {/* DXF Export Modal */}
+      {showDxfExportModal && dxfData && (
+        <DxfExportModal
+          svgContent={renderDxfFull(dxfData, dxfHiddenLayers).svg}
+          drawingName={selectedPlan?.name}
+          onClose={() => setShowDxfExportModal(false)}
+        />
       )}
 
       {/* Scale Calibration - floating card (non-blocking so user can click on plan) */}

@@ -18,10 +18,11 @@ const formatFileSize = (bytes?: number): string => {
   return `${(bytes / 1048576).toFixed(2)} MB`;
 };
 
-const getFileType = (filename: string, mimeType?: string): 'pdf' | 'image' | 'dwg' | 'other' => {
+const getFileType = (filename: string, mimeType?: string): 'pdf' | 'image' | 'dxf' | 'dwg' | 'other' => {
   const ext = filename.toLowerCase();
   if (mimeType === 'application/pdf' || ext.endsWith('.pdf')) return 'pdf';
-  if (ext.match(/\.(dwg|dxf)$/)) return 'dwg';
+  if (ext.endsWith('.dxf')) return 'dxf';
+  if (ext.endsWith('.dwg')) return 'dwg';
   if (mimeType?.startsWith('image/') || ext.match(/\.(png|jpg|jpeg|gif|bmp|webp|svg|tiff?)$/)) return 'image';
   return 'other';
 };
@@ -142,7 +143,7 @@ describe('getFileType', () => {
     expect(getFileType('drawing.dwg')).toBe('dwg');
   });
   it('detects DXF', () => {
-    expect(getFileType('drawing.dxf')).toBe('dwg');
+    expect(getFileType('drawing.dxf')).toBe('dxf');
   });
   it('detects image by extension', () => {
     expect(getFileType('plan.png')).toBe('image');
