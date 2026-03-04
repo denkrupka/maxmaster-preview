@@ -10,7 +10,7 @@ export interface TakeoffRule {
   id: string;
   name: string;
   category: string;
-  matchType: 'layer_contains' | 'layer_exact' | 'layer_regex' | 'block_contains' | 'block_exact' | 'block_regex' | 'entity_type';
+  matchType: 'layer_contains' | 'layer_exact' | 'layer_regex' | 'block_contains' | 'block_exact' | 'block_regex' | 'entity_type' | 'style_color' | 'symbol_shape';
   matchPattern: string;
   quantitySource: 'count' | 'length_m' | 'area_m2' | 'group_length_m';
   unit: string;
@@ -29,6 +29,8 @@ export interface TakeoffItem {
   sourceLayer?: string;
   sourceBlock?: string;
   status: 'auto' | 'manual' | 'verified';
+  confidence?: number; // 0-1, average confidence from matched entities
+  room?: string; // detected room/zone name from PDF analysis
 }
 
 export interface TakeoffResult {
@@ -61,6 +63,12 @@ function matchesRule(rule: TakeoffRule, entity: AnalyzedEntity): boolean {
       } catch { return false; }
     case 'entity_type':
       return entity.entityType.toUpperCase() === rule.matchPattern.toUpperCase();
+    case 'style_color':
+      return !!entity.properties?.styleColor &&
+        entity.properties.styleColor.toUpperCase() === rule.matchPattern.toUpperCase();
+    case 'symbol_shape':
+      return !!entity.properties?.symbolShape &&
+        entity.properties.symbolShape.toUpperCase() === rule.matchPattern.toUpperCase();
     default:
       return false;
   }
@@ -124,6 +132,25 @@ export function applyRules(analysis: DxfAnalysis, rules: TakeoffRule[]): Takeoff
       const qty = getQuantity(rule, groupEntities, analysis.lineGroups);
       if (qty === 0) continue;
 
+      // Average confidence from matched entities (if they have it)
+      const confidences = groupEntities
+        .map(e => e.properties?.confidence as number | undefined)
+        .filter((c): c is number => c != null && c > 0);
+      const avgConf = confidences.length > 0
+        ? parseFloat((confidences.reduce((s, c) => s + c, 0) / confidences.length).toFixed(2))
+        : undefined;
+
+      // Most common room from matched entities
+      const roomCounts = new Map<string, number>();
+      for (const e of groupEntities) {
+        const r = e.properties?.room as string | undefined;
+        if (r) roomCounts.set(r, (roomCounts.get(r) || 0) + 1);
+      }
+      let itemRoom: string | undefined;
+      if (roomCounts.size > 0) {
+        itemRoom = [...roomCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+      }
+
       items.push({
         id: `item_${++itemCounter}`,
         ruleId: rule.id,
@@ -137,6 +164,8 @@ export function applyRules(analysis: DxfAnalysis, rules: TakeoffRule[]): Takeoff
         sourceLayer: layer,
         sourceBlock: block || undefined,
         status: 'auto',
+        confidence: avgConf,
+        room: itemRoom,
       });
     }
   }
@@ -341,6 +370,47 @@ export function getDefaultElectricalRules(): TakeoffRule[] {
   ];
 }
 
+/** Default rules for PDF electrical drawings (matched by color/shape) */
+export function getDefaultPdfElectricalRules(): TakeoffRule[] {
+  return [
+    {
+      id: 'pdf_kab_red', name: 'Kabel (czerwony)', category: 'Kable i przewody',
+      matchType: 'style_color', matchPattern: '#FF0000',
+      quantitySource: 'group_length_m', unit: 'm', multiplier: 1.1, isDefault: true,
+    },
+    {
+      id: 'pdf_kab_blue', name: 'Kabel (niebieski)', category: 'Kable i przewody',
+      matchType: 'style_color', matchPattern: '#0000FF',
+      quantitySource: 'group_length_m', unit: 'm', multiplier: 1.1, isDefault: true,
+    },
+    {
+      id: 'pdf_kab_green', name: 'Kabel (zielony)', category: 'Kable i przewody',
+      matchType: 'style_color', matchPattern: '#008000',
+      quantitySource: 'group_length_m', unit: 'm', multiplier: 1.1, isDefault: true,
+    },
+    {
+      id: 'pdf_sym_circle', name: 'Oprawa (okrąg)', category: 'Oprawy oświetleniowe',
+      matchType: 'symbol_shape', matchPattern: 'CIRCLE',
+      quantitySource: 'count', unit: 'szt.', multiplier: 1, isDefault: true,
+    },
+    {
+      id: 'pdf_sym_cross', name: 'Gniazdo / wyłącznik (krzyż)', category: 'Osprzęt elektryczny',
+      matchType: 'symbol_shape', matchPattern: 'CROSS',
+      quantitySource: 'count', unit: 'szt.', multiplier: 1, isDefault: true,
+    },
+    {
+      id: 'pdf_sym_square', name: 'Tablica / puszka (kwadrat)', category: 'Tablice i rozdzielnice',
+      matchType: 'symbol_shape', matchPattern: 'SQUARE',
+      quantitySource: 'count', unit: 'szt.', multiplier: 1, isDefault: true,
+    },
+    {
+      id: 'pdf_sym_triangle', name: 'Czujnik (trójkąt)', category: 'Instalacja alarmowa',
+      matchType: 'symbol_shape', matchPattern: 'TRIANGLE',
+      quantitySource: 'count', unit: 'szt.', multiplier: 1, isDefault: true,
+    },
+  ];
+}
+
 /** Validate a rule pattern — returns error message or null */
 export function validateRulePattern(rule: Partial<TakeoffRule>): string | null {
   if (!rule.matchPattern?.trim()) return 'Wzorzec nie może być pusty';
@@ -351,6 +421,17 @@ export function validateRulePattern(rule: Partial<TakeoffRule>): string | null {
       return `Nieprawidłowe wyrażenie regularne: ${(e as Error).message}`;
     }
   }
+  if (rule.matchType === 'style_color' && rule.matchPattern) {
+    if (!/^#[0-9A-Fa-f]{6}$/.test(rule.matchPattern)) {
+      return 'Kolor musi być w formacie #RRGGBB';
+    }
+  }
+  if (rule.matchType === 'symbol_shape' && rule.matchPattern) {
+    const validShapes = ['CIRCLE', 'CROSS', 'SQUARE', 'TRIANGLE', 'DIAMOND', 'OTHER'];
+    if (!validShapes.includes(rule.matchPattern.toUpperCase())) {
+      return `Kształt musi być jednym z: ${validShapes.join(', ')}`;
+    }
+  }
   if (rule.multiplier != null && (rule.multiplier <= 0 || rule.multiplier > 100)) {
     return 'Mnożnik musi być między 0 a 100';
   }
@@ -359,7 +440,7 @@ export function validateRulePattern(rule: Partial<TakeoffRule>): string | null {
 
 /** Export takeoff items to CSV string */
 export function takeoffToCsv(items: TakeoffItem[]): string {
-  const header = 'Kategoria;Opis;Ilość;Jednostka;Warstwa;Blok;Status';
+  const header = 'Kategoria;Opis;Ilość;Jednostka;Warstwa;Blok;Pomieszczenie;Pewność;Status';
   const rows = items.map(item =>
     [
       item.category,
@@ -368,6 +449,8 @@ export function takeoffToCsv(items: TakeoffItem[]): string {
       item.unit,
       item.sourceLayer || '',
       item.sourceBlock || '',
+      item.room || '',
+      item.confidence != null ? `${Math.round(item.confidence * 100)}%` : '',
       item.status,
     ].join(';')
   );

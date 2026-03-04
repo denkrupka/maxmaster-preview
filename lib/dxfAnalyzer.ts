@@ -52,6 +52,12 @@ export interface LineGroup {
   totalLengthM: number;
   layer: string;
   points: { x: number; y: number }[];
+  /** Branching points (degree > 2) — junctions in the route */
+  branchPoints?: { x: number; y: number; degree: number }[];
+  /** Endpoints (degree === 1) — terminal nodes */
+  endpoints?: { x: number; y: number }[];
+  /** Number of branches in the route subgraph */
+  branchCount?: number;
 }
 
 export interface DxfAnalysis {

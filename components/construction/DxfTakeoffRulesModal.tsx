@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Plus, Trash2, Download, Upload, TestTube } from 'lucide-react';
 import type { TakeoffRule } from '../../lib/dxfTakeoff';
-import { getDefaultElectricalRules, validateRulePattern } from '../../lib/dxfTakeoff';
+import { getDefaultElectricalRules, getDefaultPdfElectricalRules, validateRulePattern } from '../../lib/dxfTakeoff';
 import { supabase } from '../../lib/supabase';
 
 interface DxfTakeoffRulesModalProps {
@@ -26,6 +26,8 @@ export default function DxfTakeoffRulesModal({ companyId, rules, onRulesChange, 
     { value: 'block_exact', label: 'Blok dokładnie' },
     { value: 'block_regex', label: 'Blok regex' },
     { value: 'entity_type', label: 'Typ elementu' },
+    { value: 'style_color', label: 'Kolor stylu (PDF)' },
+    { value: 'symbol_shape', label: 'Kształt symbolu (PDF)' },
   ];
 
   const quantitySources: { value: TakeoffRule['quantitySource']; label: string }[] = [
@@ -60,8 +62,8 @@ export default function DxfTakeoffRulesModal({ companyId, rules, onRulesChange, 
     if (editingId === id) setEditingId(null);
   };
 
-  const importDefaults = () => {
-    const defaults = getDefaultElectricalRules();
+  const importDefaults = (type: 'dxf' | 'pdf' = 'dxf') => {
+    const defaults = type === 'pdf' ? getDefaultPdfElectricalRules() : getDefaultElectricalRules();
     const existingIds = new Set(localRules.map(r => r.id));
     const newRules = defaults.filter(d => !existingIds.has(d.id));
     setLocalRules([...localRules, ...newRules]);
@@ -121,8 +123,11 @@ export default function DxfTakeoffRulesModal({ companyId, rules, onRulesChange, 
           <button onClick={addRule} className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">
             <Plus size={12} /> Dodaj regułę
           </button>
-          <button onClick={importDefaults} className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-200 rounded hover:bg-gray-300">
-            <Download size={12} /> Importuj domyślne (elektr.)
+          <button onClick={() => importDefaults('dxf')} className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-200 rounded hover:bg-gray-300">
+            <Download size={12} /> Domyślne DXF
+          </button>
+          <button onClick={() => importDefaults('pdf')} className="flex items-center gap-1 px-2 py-1 text-xs bg-purple-100 text-purple-700 rounded hover:bg-purple-200">
+            <Download size={12} /> Domyślne PDF
           </button>
           {onTestRules && (
             <button onClick={onTestRules} className="flex items-center gap-1 px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700">

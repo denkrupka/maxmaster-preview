@@ -7,7 +7,9 @@ import {
   Briefcase, ListTree, ClipboardList, MoreVertical, GripVertical,
   Eye, EyeOff, Maximize2, Minimize2, Upload, FileDown, ChevronUp,
   MoreHorizontal, ArrowRight, Undo2, Redo2, Copy, ClipboardPaste,
-  HelpCircle, MoveRight, MoveLeft, CheckCircle2, Diamond
+  HelpCircle, MoveRight, MoveLeft, CheckCircle2, Diamond,
+  Shield, Map, Wrench, Package, FileQuestion, Camera, Layers,
+  TrendingUp, Target, BarChart3, Activity, Bookmark, BookmarkCheck
 } from 'lucide-react';
 import { useAppContext } from '../../context/AppContext';
 import { supabase } from '../../lib/supabase';
@@ -23,6 +25,15 @@ import {
   findCriticalPath, autoSchedule,
   GanttTaskNode, GanttDepRecord
 } from '../../lib/ganttUtils';
+import {
+  GanttZone, GanttNorm, GanttConditionFactor, GanttMaterial, GanttRFI,
+  GanttWorkOrder, GanttEvidence, GanttAcceptedAct, GanttBaseline, GanttScenario,
+  LPSStatus, LPS_STATUS_LABELS, LPS_STATUS_COLORS,
+  DEFAULT_NORMS, DEFAULT_CONDITION_FACTORS, DECOMPOSITION_TEMPLATES,
+  calculateDurationFromNorm, filterLookaheadTasks, calculateRiskBuffer,
+  generateWorkOrderNumber, generatePredictiveInsights, whatIfAddCrew, whatIfMaterialDelay,
+  calculateEVM, type PredictiveInsight, BaselineTaskSnapshot
+} from '../../lib/ganttAdvanced';
 
 type ZoomLevel = 'day' | 'week' | 'month';
 
@@ -225,7 +236,8 @@ export const GanttPage: React.FC = () => {
     duration: 0, start_date: '', end_date: '', progress: 0,
     has_custom_progress: false, is_milestone: false, color: '#3b82f6',
     assigned_to_id: '', supervisor_id: '', approver_id: '',
-    notes: '', priority: 'normal' as 'low' | 'normal' | 'high' | 'critical'
+    notes: '', priority: 'normal' as 'low' | 'normal' | 'high' | 'critical',
+    zone_id: '', norm_id: '', quantity: 0, quantity_unit: '', selectedConditions: [] as string[]
   });
 
   // Dependency form
@@ -239,7 +251,7 @@ export const GanttPage: React.FC = () => {
 
   // Drag state for Gantt bars
   const [dragState, setDragState] = useState<{
-    taskId: string; mode: 'move' | 'resize-end';
+    taskId: string; mode: 'move' | 'resize-start' | 'resize-end';
     startX: number; origLeft: number; origWidth: number;
     origStartDate: string; origEndDate: string;
   } | null>(null);
@@ -258,8 +270,10 @@ export const GanttPage: React.FC = () => {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<HTMLDivElement>(null);
+  const leftPanelRef = useRef<HTMLDivElement>(null);
   const autoSelectDone = useRef(false);
   const settingsRef = useRef<HTMLDivElement>(null);
+  const pendingScrollRef = useRef<{ left: number; top: number } | null>(null);
   const [chartScrollLeft, setChartScrollLeft] = useState(0);
   const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
 
@@ -283,6 +297,57 @@ export const GanttPage: React.FC = () => {
 
   // Dependency hover
   const [hoveredDepId, setHoveredDepId] = useState<string | null>(null);
+
+  // ========== ADVANCED FEATURES STATE ==========
+  // Baseline
+  const [baselines, setBaselines] = useState<GanttBaseline[]>([]);
+  const [activeBaseline, setActiveBaseline] = useState<GanttBaseline | null>(null);
+  const [showBaselineModal, setShowBaselineModal] = useState(false);
+  const [baselineName, setBaselineName] = useState('');
+
+  // Lookahead
+  const [lookaheadMode, setLookaheadMode] = useState(false);
+  const [lookaheadWeeks, setLookaheadWeeks] = useState(3);
+
+  // Zones
+  const [zones, setZones] = useState<GanttZone[]>([]);
+  const [zoneForm, setZoneForm] = useState({ name: '', zone_type: 'floor' as string, floor_number: 0, color: '#3b82f6' });
+
+  // Norms & Condition Factors
+  const [norms, setNorms] = useState<GanttNorm[]>([]);
+  const [conditionFactors, setConditionFactors] = useState<GanttConditionFactor[]>([]);
+
+  // Materials
+  const [materials, setMaterials] = useState<GanttMaterial[]>([]);
+
+  // RFIs
+  const [rfis, setRFIs] = useState<GanttRFI[]>([]);
+  const [showRFIModal, setShowRFIModal] = useState(false);
+  const [rfiForm, setRfiForm] = useState({ subject: '', question: '', assigned_to_id: '', due_date: '', priority: 'normal', gantt_task_id: '' });
+
+  // Accepted Acts
+  const [acceptedActs, setAcceptedActs] = useState<GanttAcceptedAct[]>([]);
+  const [showActForm, setShowActForm] = useState(false);
+  const [actForm, setActForm] = useState({ description: '', total_amount: 0, zone_id: '' });
+
+  // Evidence
+  const [showEvidenceModal, setShowEvidenceModal] = useState(false);
+  const [evidenceTaskId, setEvidenceTaskId] = useState<string | null>(null);
+  const [taskEvidence, setTaskEvidence] = useState<GanttEvidence[]>([]);
+
+  // Work Orders
+  const [workOrders, setWorkOrders] = useState<GanttWorkOrder[]>([]);
+
+  // Material form
+  const [showAddMaterial, setShowAddMaterial] = useState(false);
+  const [materialForm, setMaterialForm] = useState({ gantt_task_id: '', name: '', quantity: 0, unit: 'szt', supplier: '', delivery_date: '' });
+
+  // Predictive Insights
+  const [showInsights, setShowInsights] = useState(false);
+  const [insights, setInsights] = useState<PredictiveInsight[]>([]);
+
+  // Advanced panel toggle
+  const [showAdvancedPanel, setShowAdvancedPanel] = useState<string | null>(null); // 'baseline' | 'lookahead' | 'zones' | 'materials' | 'rfis' | 'insights'
 
   // Auto-dismiss notifications
   useEffect(() => {
@@ -317,7 +382,7 @@ export const GanttPage: React.FC = () => {
         await supabase.from('gantt_dependencies').delete().or(`predecessor_id.eq.${entry.taskId},successor_id.eq.${entry.taskId}`);
         await supabase.from('gantt_tasks').delete().eq('id', entry.taskId);
       }
-      await loadGanttData();
+      await loadGanttDataKeepScroll();
       showSuccess('Cofnięto.');
     } catch (err: any) { showError('Błąd cofania: ' + (err?.message || err)); }
   }, [undoStack, selectedProject]);
@@ -337,7 +402,7 @@ export const GanttPage: React.FC = () => {
       } else if (entry.type === 'create' && entry.after) {
         await supabase.from('gantt_tasks').insert(entry.after);
       }
-      await loadGanttData();
+      await loadGanttDataKeepScroll();
       showSuccess('Ponowiono.');
     } catch (err: any) { showError('Błąd ponowienia: ' + (err?.message || err)); }
   }, [redoStack, selectedProject]);
@@ -348,14 +413,35 @@ export const GanttPage: React.FC = () => {
     return findCriticalPath(tasks as GanttTaskNode[], dependencies as GanttDepRecord[]);
   }, [showCriticalPath, tasks, dependencies]);
 
-  // Track chart scroll for smart Today button
+  // Track chart scroll for smart Today button + sync vertical scroll between panels
   useEffect(() => {
     const el = chartRef.current;
+    const lp = leftPanelRef.current;
     if (!el) return;
-    const handler = () => setChartScrollLeft(el.scrollLeft);
+    let syncing = false;
+    const handler = () => {
+      setChartScrollLeft(el.scrollLeft);
+      if (!syncing && lp) { syncing = true; lp.scrollTop = el.scrollTop; syncing = false; }
+    };
+    const leftHandler = () => {
+      if (!syncing && el && lp) { syncing = true; el.scrollTop = lp.scrollTop; syncing = false; }
+    };
     el.addEventListener('scroll', handler, { passive: true });
-    return () => el.removeEventListener('scroll', handler);
+    if (lp) lp.addEventListener('scroll', leftHandler, { passive: true });
+    return () => {
+      el.removeEventListener('scroll', handler);
+      if (lp) lp.removeEventListener('scroll', leftHandler);
+    };
   }, [selectedProject, loading]);
+
+  // Restore scroll position after data reload (drag operations)
+  useEffect(() => {
+    if (pendingScrollRef.current && chartRef.current && !loading) {
+      chartRef.current.scrollLeft = pendingScrollRef.current.left;
+      chartRef.current.scrollTop = pendingScrollRef.current.top;
+      pendingScrollRef.current = null;
+    }
+  }, [loading, tasks]);
 
   // Close settings menu on outside click
   useEffect(() => {
@@ -447,7 +533,25 @@ export const GanttPage: React.FC = () => {
     }
   }, [loading, projects]);
 
-  useEffect(() => { if (selectedProject) loadGanttData(); }, [selectedProject]);
+  useEffect(() => { if (selectedProject) { loadGanttData(); loadAdvancedData(); } }, [selectedProject]);
+
+  // Auto-scroll to today or first task when project loads
+  useEffect(() => {
+    if (!loading && selectedProject && allFlatTasks.length > 0 && chartRef.current) {
+      const today = new Date();
+      const todayOffset = getDaysBetween(dateRange.start, today) * dayWidth;
+      if (todayOffset > 0 && todayOffset < chartWidth) {
+        chartRef.current.scrollLeft = Math.max(0, todayOffset - chartRef.current.clientWidth / 2);
+      } else {
+        // Scroll to first task
+        const firstWithDate = allFlatTasks.find(t => t.start_date);
+        if (firstWithDate) {
+          const offset = getDaysBetween(dateRange.start, new Date(firstWithDate.start_date!)) * dayWidth;
+          chartRef.current.scrollLeft = Math.max(0, offset - 100);
+        }
+      }
+    }
+  }, [loading, selectedProject?.id]);
 
   const loadProjects = async () => {
     if (!currentUser) return;
@@ -479,8 +583,211 @@ export const GanttPage: React.FC = () => {
         setWorkingDays(workingDaysFromMask(wdRes.data.working_days_mask || 31));
       }
       setHarmonogramStart(selectedProject.start_date?.split('T')[0] || new Date().toISOString().split('T')[0]);
+      // Load advanced data in parallel (non-blocking)
+      loadAdvancedData();
     } catch (err: any) { showError('Błąd ładowania danych harmonogramu: ' + (err?.message || err)); }
     finally { setLoading(false); }
+  };
+
+  const loadAdvancedData = async () => {
+    if (!selectedProject) return;
+    const pid = selectedProject.id;
+    try {
+      const [baselinesRes, zonesRes, normsRes, cfRes, matsRes, rfisRes, actsRes] = await Promise.all([
+        supabase.from('gantt_baselines').select('*').eq('project_id', pid).order('created_at', { ascending: false }),
+        supabase.from('gantt_zones').select('*').eq('project_id', pid).order('sort_order'),
+        supabase.from('gantt_norms').select('*').eq('company_id', currentUser?.company_id || ''),
+        supabase.from('gantt_condition_factors').select('*').eq('company_id', currentUser?.company_id || '').order('sort_order'),
+        supabase.from('gantt_materials').select('*').in('gantt_task_id', allFlatTasks.map(t => t.id).slice(0, 100)),
+        supabase.from('gantt_rfis').select('*').eq('project_id', pid).order('created_at', { ascending: false }),
+        supabase.from('gantt_accepted_acts').select('*').eq('project_id', pid).order('act_date', { ascending: false })
+      ]);
+      if (baselinesRes.data) setBaselines(baselinesRes.data);
+      if (zonesRes.data) setZones(zonesRes.data);
+      if (normsRes.data) setNorms(normsRes.data);
+      if (cfRes.data) setConditionFactors(cfRes.data);
+      if (matsRes.data) setMaterials(matsRes.data as any);
+      if (rfisRes.data) setRFIs(rfisRes.data as any);
+      if (actsRes.data) setAcceptedActs(actsRes.data as any);
+      // Load work orders separately
+      const woRes = await supabase.from('gantt_work_orders').select('*, items:gantt_work_order_items(*)').eq('project_id', pid).order('order_date', { ascending: false }).limit(20);
+      if (woRes.data) setWorkOrders(woRes.data as any);
+    } catch (err) { console.warn('Advanced data load partial failure:', err); }
+  };
+
+  // ========== ADVANCED FEATURE HANDLERS ==========
+
+  // Save baseline
+  const handleSaveBaseline = async () => {
+    if (!selectedProject || !currentUser || !baselineName.trim()) return;
+    try {
+      const snapshot: BaselineTaskSnapshot[] = allFlatTasks.map(t => ({
+        task_id: t.id,
+        start_date: t.start_date || '',
+        end_date: t.end_date || '',
+        duration: t.duration || 0,
+        progress: t.progress || 0
+      }));
+      await supabase.from('gantt_baselines').insert({
+        project_id: selectedProject.id,
+        name: baselineName.trim(),
+        tasks_snapshot: snapshot,
+        created_by_id: currentUser.id
+      });
+      // Also save baseline dates on tasks
+      for (const t of allFlatTasks) {
+        if (t.start_date || t.end_date) {
+          await supabase.from('gantt_tasks').update({
+            baseline_start: t.start_date || null,
+            baseline_end: t.end_date || null,
+            baseline_duration: t.duration || null
+          }).eq('id', t.id);
+        }
+      }
+      setShowBaselineModal(false);
+      setBaselineName('');
+      showSuccess('Baseline zapisany.');
+      loadAdvancedData();
+    } catch (err: any) { showError('Błąd zapisu baseline: ' + (err?.message || err)); }
+  };
+
+  // Save zone
+  const handleSaveZone = async () => {
+    if (!selectedProject || !zoneForm.name.trim()) return;
+    try {
+      await supabase.from('gantt_zones').insert({
+        project_id: selectedProject.id,
+        name: zoneForm.name.trim(),
+        zone_type: zoneForm.zone_type,
+        floor_number: zoneForm.floor_number,
+        color: zoneForm.color,
+        sort_order: zones.length
+      });
+      setZoneForm({ name: '', zone_type: 'floor', floor_number: 0, color: '#3b82f6' });
+      showSuccess('Strefa zapisana.');
+      loadAdvancedData();
+    } catch (err: any) { showError('Błąd: ' + (err?.message || err)); }
+  };
+
+  // Initialize default norms
+  const handleInitDefaultNorms = async () => {
+    if (!currentUser) return;
+    try {
+      for (const norm of DEFAULT_NORMS) {
+        await supabase.from('gantt_norms').insert({ ...norm, company_id: currentUser.company_id });
+      }
+      for (const cf of DEFAULT_CONDITION_FACTORS) {
+        await supabase.from('gantt_condition_factors').insert({ ...cf, company_id: currentUser.company_id });
+      }
+      showSuccess('Domyślne normy i współczynniki zainicjowane.');
+      if (selectedProject) loadAdvancedData();
+    } catch (err: any) { showError('Błąd: ' + (err?.message || err)); }
+  };
+
+  // Create RFI
+  const handleCreateRFI = async () => {
+    if (!selectedProject || !currentUser || !rfiForm.subject.trim()) return;
+    try {
+      const rfiNumber = `RFI-${rfis.length + 1}`;
+      await supabase.from('gantt_rfis').insert({
+        project_id: selectedProject.id,
+        rfi_number: rfiNumber,
+        subject: rfiForm.subject.trim(),
+        question: rfiForm.question.trim(),
+        assigned_to_id: rfiForm.assigned_to_id || null,
+        due_date: rfiForm.due_date || null,
+        priority: rfiForm.priority,
+        gantt_task_id: rfiForm.gantt_task_id || null,
+        created_by_id: currentUser.id,
+        status: 'open'
+      });
+      setShowRFIModal(false);
+      setRfiForm({ subject: '', question: '', assigned_to_id: '', due_date: '', priority: 'normal', gantt_task_id: '' });
+      showSuccess('RFI utworzone.');
+      loadAdvancedData();
+    } catch (err: any) { showError('Błąd: ' + (err?.message || err)); }
+  };
+
+  // Update LPS status
+  const handleUpdateLPSStatus = async (taskId: string, status: LPSStatus, blockerReason?: string) => {
+    try {
+      const updates: any = { lps_status: status };
+      if (blockerReason !== undefined) updates.blocker_reason = blockerReason;
+      if (status === 'done') { updates.progress = 100; updates.has_custom_progress = true; updates.actual_end = new Date().toISOString().split('T')[0]; }
+      if (status === 'in_progress' && !(allFlatTasks.find(t => t.id === taskId) as any)?.actual_start) {
+        updates.actual_start = new Date().toISOString().split('T')[0];
+      }
+      await supabase.from('gantt_tasks').update(updates).eq('id', taskId);
+      await loadGanttDataKeepScroll();
+    } catch (err: any) { showError('Błąd: ' + (err?.message || err)); }
+  };
+
+  // Generate work orders for today/this week
+  const handleGenerateWorkOrders = async () => {
+    if (!selectedProject || !currentUser) return;
+    try {
+      const today = new Date();
+      const weekEnd = new Date(today); weekEnd.setDate(weekEnd.getDate() + 7);
+      const weekTasks = allFlatTasks.filter(t => {
+        if (!t.start_date || t.progress >= 100) return false;
+        const start = new Date(t.start_date);
+        const end = t.end_date ? new Date(t.end_date) : start;
+        return start <= weekEnd && end >= today;
+      });
+      if (weekTasks.length === 0) { showError('Brak zadań na ten tydzień.'); return; }
+      const orderNumber = generateWorkOrderNumber(selectedProject.name, today, 0);
+      const { data: wo } = await supabase.from('gantt_work_orders').insert({
+        project_id: selectedProject.id,
+        order_number: orderNumber,
+        order_date: today.toISOString().split('T')[0],
+        status: 'draft',
+        created_by_id: currentUser.id
+      }).select('id').single();
+      if (wo) {
+        for (let i = 0; i < weekTasks.length; i++) {
+          await supabase.from('gantt_work_order_items').insert({
+            work_order_id: wo.id,
+            gantt_task_id: weekTasks[i].id,
+            description: weekTasks[i].title || '',
+            sort_order: i
+          });
+        }
+      }
+      showSuccess(`Naryk ${orderNumber} utworzony z ${weekTasks.length} zadaniami.`);
+    } catch (err: any) { showError('Błąd: ' + (err?.message || err)); }
+  };
+
+  // Create accepted act
+  const handleCreateAct = async () => {
+    if (!selectedProject || !actForm.description.trim()) return;
+    try {
+      const actNumber = `AKT-${selectedProject.name.slice(0, 3).toUpperCase()}-${String(acceptedActs.length + 1).padStart(3, '0')}`;
+      await supabase.from('gantt_accepted_acts').insert({
+        project_id: selectedProject.id,
+        act_number: actNumber,
+        act_date: new Date().toISOString().split('T')[0],
+        description: actForm.description.trim(),
+        total_amount: actForm.total_amount || 0,
+        zone_id: actForm.zone_id || null,
+        status: 'draft'
+      });
+      setActForm({ description: '', total_amount: 0, zone_id: '' });
+      setShowActForm(false);
+      showSuccess(`Akt ${actNumber} utworzony.`);
+      loadAdvancedData();
+    } catch (err: any) { showError('Błąd: ' + (err?.message || err)); }
+  };
+
+  // Generate predictive insights
+  const handleGenerateInsights = () => {
+    const newInsights = generatePredictiveInsights(
+      allFlatTasks as any,
+      dependencies as any,
+      materials,
+      criticalPathIds
+    );
+    setInsights(newInsights);
+    setShowInsights(true);
   };
 
   const flattenTasksFiltered = (items: GanttTaskWithChildren[], result: GanttTaskWithChildren[] = []): GanttTaskWithChildren[] => {
@@ -567,7 +874,7 @@ export const GanttPage: React.FC = () => {
 
   const ROW_HEIGHT = 40;
   const dayWidth = zoomLevel === 'day' ? 40 : zoomLevel === 'week' ? 20 : 6;
-  const totalDays = getDaysBetween(dateRange.start, dateRange.end);
+  const totalDays = getDaysBetween(dateRange.start, dateRange.end) + 1;
   const chartWidth = totalDays * dayWidth;
 
   const getTaskPosition = (task: GanttTaskWithChildren) => {
@@ -667,7 +974,8 @@ export const GanttPage: React.FC = () => {
       duration: 0, start_date: startDate, end_date: '', progress: 0,
       has_custom_progress: false, is_milestone: false, color: '#3b82f6',
       assigned_to_id: '', supervisor_id: '', approver_id: '',
-      notes: '', priority: 'normal'
+      notes: '', priority: 'normal',
+      zone_id: '', norm_id: '', quantity: 0, quantity_unit: '', selectedConditions: []
     });
     setShowPhaseModal(true);
   };
@@ -688,7 +996,12 @@ export const GanttPage: React.FC = () => {
       supervisor_id: task.supervisor_id || '',
       approver_id: task.approver_id || '',
       notes: task.notes || '',
-      priority: task.priority || 'normal'
+      priority: task.priority || 'normal',
+      zone_id: (task as any).zone_id || '',
+      norm_id: (task as any).norm_id || '',
+      quantity: (task as any).quantity || 0,
+      quantity_unit: (task as any).quantity_unit || '',
+      selectedConditions: []
     });
     setShowPhaseModal(true);
   };
@@ -724,6 +1037,10 @@ export const GanttPage: React.FC = () => {
         approver_id: phaseForm.approver_id || null,
         notes: phaseForm.notes || null,
         priority: phaseForm.priority || 'normal',
+        zone_id: phaseForm.zone_id || null,
+        norm_id: phaseForm.norm_id || null,
+        quantity: phaseForm.quantity || null,
+        quantity_unit: phaseForm.quantity_unit || null,
         source: 'manual' as const,
         sort_order: editingPhase ? editingPhase.sort_order : allFlatTasks.length
       };
@@ -741,7 +1058,7 @@ export const GanttPage: React.FC = () => {
       setShowPhaseModal(false);
       setEditingPhase(null);
       showSuccess(editingPhase ? 'Faza zapisana.' : 'Faza utworzona.');
-      await loadGanttData();
+      await loadGanttDataKeepScroll();
     } catch (err: any) { showError('Błąd zapisu fazy: ' + (err?.message || err)); }
     finally { setSaving(false); }
   };
@@ -787,7 +1104,7 @@ export const GanttPage: React.FC = () => {
       // Recalc parent if exists
       if (parentId) await recalcAndSaveParent(parentId);
       showSuccess('Faza usunięta.');
-      await loadGanttData();
+      await loadGanttDataKeepScroll();
     } catch (err: any) { showError('Błąd usuwania fazy: ' + (err?.message || err)); }
   };
 
@@ -807,7 +1124,7 @@ export const GanttPage: React.FC = () => {
       }).select('id').single();
       if (inserted) pushHistory({ type: 'create', taskId: inserted.id, after: { ...task, id: inserted.id } });
       showSuccess('Zduplikowano fazę.');
-      await loadGanttData();
+      await loadGanttDataKeepScroll();
     } catch (err: any) { showError('Błąd duplikacji: ' + (err?.message || err)); }
   };
 
@@ -830,7 +1147,7 @@ export const GanttPage: React.FC = () => {
       };
       await duplicateRecursive(task, task.parent_id || null);
       showSuccess('Zduplikowano fazę z podfazami.');
-      await loadGanttData();
+      await loadGanttDataKeepScroll();
     } catch (err: any) { showError('Błąd duplikacji: ' + (err?.message || err)); }
   };
 
@@ -848,7 +1165,7 @@ export const GanttPage: React.FC = () => {
       pushHistory({ type: 'update', taskId: task.id, before, after: { parent_id: newParent.id } });
       if (task.parent_id) await recalcAndSaveParent(task.parent_id);
       await recalcAndSaveParent(newParent.id);
-      await loadGanttData();
+      await loadGanttDataKeepScroll();
     } catch (err: any) { showError('Błąd wcięcia: ' + (err?.message || err)); }
   };
 
@@ -862,7 +1179,7 @@ export const GanttPage: React.FC = () => {
       pushHistory({ type: 'update', taskId: task.id, before, after: { parent_id: newParentId } });
       await recalcAndSaveParent(task.parent_id);
       if (newParentId) await recalcAndSaveParent(newParentId);
-      await loadGanttData();
+      await loadGanttDataKeepScroll();
     } catch (err: any) { showError('Błąd cofnięcia wcięcia: ' + (err?.message || err)); }
   };
 
@@ -872,7 +1189,7 @@ export const GanttPage: React.FC = () => {
       await supabase.from('gantt_tasks').update({ is_milestone: !task.is_milestone }).eq('id', task.id);
       pushHistory({ type: 'update', taskId: task.id, before, after: { is_milestone: !task.is_milestone } });
       showSuccess(task.is_milestone ? 'Kamień milowy usunięty.' : 'Oznaczono jako kamień milowy.');
-      await loadGanttData();
+      await loadGanttDataKeepScroll();
     } catch (err: any) { showError('Błąd: ' + (err?.message || err)); }
   };
 
@@ -883,7 +1200,7 @@ export const GanttPage: React.FC = () => {
       pushHistory({ type: 'update', taskId: task.id, before, after: { progress: 100, has_custom_progress: true } });
       if (task.parent_id) await recalcAndSaveParent(task.parent_id);
       showSuccess('Oznaczono jako ukończone.');
-      await loadGanttData();
+      await loadGanttDataKeepScroll();
     } catch (err: any) { showError('Błąd: ' + (err?.message || err)); }
   };
 
@@ -907,7 +1224,7 @@ export const GanttPage: React.FC = () => {
       }).select('id').single();
       if (inserted) pushHistory({ type: 'create', taskId: inserted.id });
       showSuccess('Wklejono fazę.');
-      await loadGanttData();
+      await loadGanttDataKeepScroll();
     } catch (err: any) { showError('Błąd wklejania: ' + (err?.message || err)); }
   };
 
@@ -916,7 +1233,7 @@ export const GanttPage: React.FC = () => {
     try {
       await supabase.from('gantt_tasks').update({ priority }).eq('id', task.id);
       pushHistory({ type: 'update', taskId: task.id, before, after: { priority } });
-      await loadGanttData();
+      await loadGanttDataKeepScroll();
     } catch (err: any) { showError('Błąd: ' + (err?.message || err)); }
   };
 
@@ -946,7 +1263,7 @@ export const GanttPage: React.FC = () => {
       pushHistory({ type: 'update', taskId: inlineEdit.taskId, before, after });
       if (task.parent_id) await recalcAndSaveParent(task.parent_id);
       setInlineEdit(null);
-      await loadGanttData();
+      await loadGanttDataKeepScroll();
     } catch (err: any) { showError('Błąd zapisu: ' + (err?.message || err)); }
   };
 
@@ -996,7 +1313,7 @@ export const GanttPage: React.FC = () => {
       setShowDepModal(false);
       setDepValidationError('');
       showSuccess('Zależność zapisana.');
-      await loadGanttData();
+      await loadGanttDataKeepScroll();
     } catch (err: any) { showError('Błąd zapisu zależności: ' + (err?.message || err)); }
     finally { setSaving(false); }
   };
@@ -1006,7 +1323,7 @@ export const GanttPage: React.FC = () => {
     try {
       await supabase.from('gantt_dependencies').delete().eq('id', editingDep.id);
       setShowDepModal(false);
-      await loadGanttData();
+      await loadGanttDataKeepScroll();
     } catch (err) { console.error('Error deleting dependency:', err); }
   };
 
@@ -1073,7 +1390,7 @@ export const GanttPage: React.FC = () => {
         }).eq('id', taskId);
       }
       showSuccess('Harmonogram przeliczony automatycznie.');
-      await loadGanttData();
+      await loadGanttDataKeepScroll();
     } catch (err: any) { showError('Błąd planowania: ' + (err?.message || err)); }
     finally { setSaving(false); }
   };
@@ -1165,8 +1482,16 @@ export const GanttPage: React.FC = () => {
     input.click();
   };
 
+  // Helper: reload data but preserve scroll position
+  const loadGanttDataKeepScroll = async () => {
+    if (chartRef.current) {
+      pendingScrollRef.current = { left: chartRef.current.scrollLeft, top: chartRef.current.scrollTop };
+    }
+    await loadGanttData();
+  };
+
   // ========== DRAG HANDLERS FOR GANTT BARS ==========
-  const handleBarMouseDown = (e: React.MouseEvent, task: GanttTaskWithChildren, mode: 'move' | 'resize-end') => {
+  const handleBarMouseDown = (e: React.MouseEvent, task: GanttTaskWithChildren, mode: 'move' | 'resize-start' | 'resize-end') => {
     e.preventDefault();
     e.stopPropagation();
     if (!task.start_date || isParentTask(task)) return;
@@ -1186,6 +1511,10 @@ export const GanttPage: React.FC = () => {
       const dx = ev.clientX - ds.startX;
       if (ds.mode === 'move') {
         setDragPreview({ taskId: ds.taskId, left: ds.origLeft + dx, width: ds.origWidth });
+      } else if (ds.mode === 'resize-start') {
+        const newLeft = ds.origLeft + dx;
+        const newWidth = Math.max(dayWidth, ds.origWidth - dx);
+        setDragPreview({ taskId: ds.taskId, left: newLeft, width: newWidth });
       } else {
         const newWidth = Math.max(dayWidth, ds.origWidth + dx);
         setDragPreview({ taskId: ds.taskId, left: ds.origLeft, width: newWidth });
@@ -1215,6 +1544,17 @@ export const GanttPage: React.FC = () => {
             start_date: newStart.toISOString().split('T')[0],
             end_date: newEnd.toISOString().split('T')[0]
           }).eq('id', ds.taskId);
+        } else if (ds.mode === 'resize-start') {
+          const daysDelta = Math.round(dx / dayWidth);
+          if (daysDelta === 0) return;
+          const newStart = new Date(ds.origStartDate);
+          newStart.setDate(newStart.getDate() + daysDelta);
+          if (newStart > new Date(ds.origEndDate)) return;
+          const duration = getDaysBetween(newStart, new Date(ds.origEndDate));
+          await supabase.from('gantt_tasks').update({
+            start_date: newStart.toISOString().split('T')[0],
+            duration: Math.max(duration, 1)
+          }).eq('id', ds.taskId);
         } else {
           const daysDelta = Math.round(dx / dayWidth);
           if (daysDelta === 0) return;
@@ -1230,7 +1570,7 @@ export const GanttPage: React.FC = () => {
         // Recalc parent
         const task = allFlatTasks.find(t => t.id === ds.taskId);
         if (task?.parent_id) await recalcAndSaveParent(task.parent_id);
-        await loadGanttData();
+        await loadGanttDataKeepScroll();
       } catch (err: any) { showError('Błąd aktualizacji: ' + (err?.message || err)); }
     };
 
@@ -1301,7 +1641,7 @@ export const GanttPage: React.FC = () => {
         });
         if (error) throw error;
         showSuccess(`Zależność ${GANTT_DEPENDENCY_SHORT_LABELS[depType]} utworzona.`);
-        await loadGanttData();
+        await loadGanttDataKeepScroll();
       } catch (err: any) { showError('Błąd tworzenia zależności: ' + (err?.message || err)); }
     };
 
@@ -1567,8 +1907,12 @@ export const GanttPage: React.FC = () => {
       return false;
     });
     if (filters.criticalOnly) result = result.filter(t => criticalPathIds.has(t.id));
+    // Lookahead mode — only show tasks within N weeks window
+    if (lookaheadMode) {
+      result = filterLookaheadTasks(result, { weeks: lookaheadWeeks, startDate: new Date() });
+    }
     return result;
-  }, [flatTasks, search, filters, criticalPathIds]);
+  }, [flatTasks, search, filters, criticalPathIds, lookaheadMode, lookaheadWeeks]);
 
   // ========== RENDER: PROJECT SELECTION VIEW ==========
   if (!selectedProject) {
@@ -1912,6 +2256,20 @@ export const GanttPage: React.FC = () => {
                 <Calendar className="w-4 h-4" /> Edytuj dni robocze
               </button>
               <div className="border-t border-slate-100 my-1" />
+              <div className="px-4 py-1.5 text-xs font-semibold text-slate-400 uppercase">Zaawansowane</div>
+              <button onClick={() => { handleInitDefaultNorms(); setShowSettingsMenu(false); }}
+                className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2">
+                <Wrench className="w-4 h-4" /> Zainicjuj normy produkcyjne
+              </button>
+              <button onClick={() => { handleGenerateWorkOrders(); setShowSettingsMenu(false); }}
+                className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2">
+                <ClipboardList className="w-4 h-4" /> Generuj naryk pracy
+              </button>
+              <button onClick={() => { loadAdvancedData(); setShowSettingsMenu(false); }}
+                className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2">
+                <Layers className="w-4 h-4" /> Odśwież dane zaawansowane
+              </button>
+              <div className="border-t border-slate-100 my-1" />
               <div className="px-4 py-1.5 text-xs font-semibold text-slate-400 uppercase">Import / Eksport</div>
               <button onClick={() => { handleExportJSON(); setShowSettingsMenu(false); }}
                 className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2">
@@ -1950,6 +2308,64 @@ export const GanttPage: React.FC = () => {
           <input type="text" placeholder="Szukaj..." value={search} onChange={e => setSearch(e.target.value)}
             className="pl-7 pr-3 py-1 text-xs border border-slate-200 rounded-lg w-44 focus:ring-1 focus:ring-blue-200" />
         </div>
+      </div>
+
+      {/* Advanced features toolbar */}
+      <div className="px-3 py-1 bg-white border-b border-slate-100 flex items-center gap-1 flex-shrink-0 overflow-x-auto">
+        <span className="text-[10px] font-semibold text-slate-400 uppercase mr-1">Zaawansowane:</span>
+        <button onClick={() => { setShowBaselineModal(true); setBaselineName(`Baseline ${new Date().toLocaleDateString('pl-PL')}`); }}
+          title="Zapisz/Przywróć baseline"
+          className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md transition-all ${activeBaseline ? 'bg-purple-100 text-purple-700' : 'hover:bg-slate-100 text-slate-600'}`}>
+          <Bookmark className="w-3 h-3" /> Baseline
+        </button>
+        <button onClick={() => setLookaheadMode(!lookaheadMode)}
+          title="Tryb Lookahead (Last Planner)"
+          className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md transition-all ${lookaheadMode ? 'bg-green-100 text-green-700' : 'hover:bg-slate-100 text-slate-600'}`}>
+          <Target className="w-3 h-3" /> Lookahead
+        </button>
+        {lookaheadMode && (
+          <select value={lookaheadWeeks} onChange={e => setLookaheadWeeks(Number(e.target.value))}
+            className="text-xs border border-slate-200 rounded px-1 py-0.5">
+            {[2,3,4,5,6].map(w => <option key={w} value={w}>{w} tyg.</option>)}
+          </select>
+        )}
+        <button onClick={() => setShowAdvancedPanel(showAdvancedPanel === 'zones' ? null : 'zones')}
+          title="Strefy / Piętra"
+          className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md transition-all ${showAdvancedPanel === 'zones' ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100 text-slate-600'}`}>
+          <Map className="w-3 h-3" /> Strefy
+        </button>
+        <button onClick={() => setShowAdvancedPanel(showAdvancedPanel === 'materials' ? null : 'materials')}
+          title="Materiały / Logistyka"
+          className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md transition-all ${showAdvancedPanel === 'materials' ? 'bg-orange-100 text-orange-700' : 'hover:bg-slate-100 text-slate-600'}`}>
+          <Package className="w-3 h-3" /> Materiały
+        </button>
+        <button onClick={() => setShowAdvancedPanel(showAdvancedPanel === 'rfis' ? null : 'rfis')}
+          title="RFI — zapytania"
+          className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md transition-all ${showAdvancedPanel === 'rfis' ? 'bg-indigo-100 text-indigo-700' : 'hover:bg-slate-100 text-slate-600'}`}>
+          <FileQuestion className="w-3 h-3" /> RFI{rfis.length > 0 && <span className="ml-0.5 px-1 py-0 bg-indigo-200 text-indigo-700 rounded-full text-[9px]">{rfis.length}</span>}
+        </button>
+        <button onClick={handleGenerateInsights}
+          title="Analityka predykcyjna"
+          className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md transition-all ${showInsights ? 'bg-emerald-100 text-emerald-700' : 'hover:bg-slate-100 text-slate-600'}`}>
+          <TrendingUp className="w-3 h-3" /> Insights
+        </button>
+        <button onClick={() => setShowAdvancedPanel(showAdvancedPanel === 'workorders' ? null : 'workorders')}
+          title="Narydy pracy"
+          className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md transition-all ${showAdvancedPanel === 'workorders' ? 'bg-teal-100 text-teal-700' : 'hover:bg-slate-100 text-slate-600'}`}>
+          <Wrench className="w-3 h-3" /> Narydy{workOrders.length > 0 && <span className="ml-0.5 px-1 py-0 bg-teal-200 text-teal-700 rounded-full text-[9px]">{workOrders.length}</span>}
+        </button>
+        <button onClick={() => setShowAdvancedPanel(showAdvancedPanel === 'acts' ? null : 'acts')}
+          title="Akty odbioru"
+          className={`flex items-center gap-1 px-2 py-1 text-xs rounded-md transition-all ${showAdvancedPanel === 'acts' ? 'bg-violet-100 text-violet-700' : 'hover:bg-slate-100 text-slate-600'}`}>
+          <BookmarkCheck className="w-3 h-3" /> Odbiory{acceptedActs.length > 0 && <span className="ml-0.5 px-1 py-0 bg-violet-200 text-violet-700 rounded-full text-[9px]">{acceptedActs.length}</span>}
+        </button>
+        <div className="flex-1" />
+        {activeBaseline && (
+          <span className="flex items-center gap-1 text-[10px] text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full">
+            <BookmarkCheck className="w-3 h-3" /> {activeBaseline.name}
+            <button onClick={() => setActiveBaseline(null)} className="ml-1 hover:text-purple-800"><X className="w-3 h-3" /></button>
+          </span>
+        )}
       </div>
 
       {/* Filter panel */}
@@ -2003,9 +2419,9 @@ export const GanttPage: React.FC = () => {
       ) : (
         <div className="flex-1 flex overflow-hidden">
           {/* LEFT PANEL: task table */}
-          <div className="flex-shrink-0 border-r border-slate-300 bg-white overflow-auto" style={{ width: leftPanelWidth }}>
+          <div ref={leftPanelRef} className="flex-shrink-0 border-r border-slate-300 bg-white overflow-auto" style={{ width: leftPanelWidth }}>
             {/* Table header */}
-            <div className="sticky top-0 z-20 bg-slate-100 border-b border-slate-300 flex items-center text-[10px] font-semibold text-slate-500 uppercase tracking-wide" style={{ height: 56 }}>
+            <div className="sticky top-0 z-30 bg-slate-100 border-b border-slate-300 flex items-center text-[10px] font-semibold text-slate-500 uppercase tracking-wide" style={{ height: 56 }}>
               <div className="w-14 text-center shrink-0 px-1">SPP</div>
               <div className="flex-1 px-2 min-w-[120px]">Nazwa</div>
               <div className="w-8 text-center" title="Przypisany"><Users className="w-3 h-3 mx-auto text-slate-400" /></div>
@@ -2084,6 +2500,13 @@ export const GanttPage: React.FC = () => {
                       {/* Deadline warning icon */}
                       {deadline === 'overdue' && <span title="Przekroczony termin!"><AlertCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" /></span>}
                       {deadline === 'due-soon' && <span title="Termin wkrótce"><Clock className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" /></span>}
+                      {(task as any).lps_status && LPS_STATUS_LABELS[(task as any).lps_status as LPSStatus] && (
+                        <span className="px-1 py-0 text-[9px] font-medium rounded flex-shrink-0"
+                          style={{ backgroundColor: LPS_STATUS_COLORS[(task as any).lps_status as LPSStatus] + '30', color: LPS_STATUS_COLORS[(task as any).lps_status as LPSStatus] }}
+                          title={`LPS: ${LPS_STATUS_LABELS[(task as any).lps_status as LPSStatus]}`}>
+                          {LPS_STATUS_LABELS[(task as any).lps_status as LPSStatus]}
+                        </span>
+                      )}
                     </div>
                     {/* Assigned user avatar */}
                     <div className="w-8 flex items-center justify-center flex-shrink-0" onClick={e => e.stopPropagation()}>
@@ -2144,7 +2567,7 @@ export const GanttPage: React.FC = () => {
           <div className="flex-1 overflow-auto relative" ref={chartRef}>
             <div style={{ width: chartWidth, minHeight: '100%' }} className="relative">
               {/* Timeline header */}
-              <div className="sticky top-0 z-10" style={{ height: 56 }}>
+              <div className="sticky top-0 z-30 bg-white" style={{ height: 56 }}>
                 {/* Row 1: months / primary */}
                 <div className="flex h-7 bg-slate-100 border-b border-slate-200">
                   {primaryHeaders.map((m, i) => (
@@ -2254,6 +2677,10 @@ export const GanttPage: React.FC = () => {
                                 {task.progress > 0 ? `${task.progress}%` : ''}
                               </span>
                             )}
+                            {/* Resize handle (left edge) */}
+                            <div className="absolute left-0 top-0 bottom-0 w-2 cursor-w-resize opacity-0 group-hover/bar:opacity-100 bg-white/30 hover:bg-white/60"
+                              title="Przeciągnij, aby zmienić datę rozpoczęcia"
+                              onMouseDown={(e) => { e.stopPropagation(); handleBarMouseDown(e, task, 'resize-start'); }} />
                             {/* Resize handle (right edge) */}
                             <div className="absolute right-0 top-0 bottom-0 w-2 cursor-e-resize opacity-0 group-hover/bar:opacity-100 bg-white/30 hover:bg-white/60"
                               title="Przeciągnij, aby zmienić czas trwania"
@@ -2267,6 +2694,19 @@ export const GanttPage: React.FC = () => {
                               onMouseDown={(e) => { e.stopPropagation(); handleConnectStart(e, task.id, 'end'); }} />
                           </div>
                         )}
+                        {/* Baseline ghost bar */}
+                        {activeBaseline && (() => {
+                          const snap = (activeBaseline.tasks_snapshot)?.find((s: BaselineTaskSnapshot) => s.task_id === task.id);
+                          if (!snap?.start_date) return null;
+                          const bStart = getDaysBetween(dateRange.start, new Date(snap.start_date));
+                          const bEnd = snap.end_date ? new Date(snap.end_date) : new Date(snap.start_date);
+                          const bDur = Math.max(getDaysBetween(new Date(snap.start_date), bEnd), 1);
+                          return (
+                            <div className="absolute z-[9] pointer-events-none rounded border-2 border-dashed border-purple-400 opacity-50"
+                              style={{ left: bStart * dayWidth, width: bDur * dayWidth, top: (ROW_HEIGHT - 24) / 2, height: 24 }}
+                              title={`Baseline: ${new Date(snap.start_date).toLocaleDateString('pl-PL')} → ${snap.end_date ? new Date(snap.end_date).toLocaleDateString('pl-PL') : '–'}`} />
+                          );
+                        })()}
                         {/* Label next to bar */}
                         {!task.is_milestone && pos.width > 0 && (
                           <span className="absolute z-10 text-[11px] text-slate-600 whitespace-nowrap pointer-events-none font-medium"
@@ -2488,6 +2928,98 @@ export const GanttPage: React.FC = () => {
                 </div>
               </div>
 
+              {/* Zone assignment */}
+              {zones.length > 0 && (
+                <div className="bg-slate-50 rounded-lg p-4">
+                  <label className="block text-sm font-bold text-slate-800 mb-1.5 flex items-center gap-2">
+                    <Map className="w-4 h-4" /> Strefa / Piętro
+                  </label>
+                  <select value={phaseForm.zone_id} onChange={e => setPhaseForm({ ...phaseForm, zone_id: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm">
+                    <option value="">Nie przypisano</option>
+                    {zones.map(z => <option key={z.id} value={z.id}>{z.name} ({z.zone_type}{z.floor_number !== undefined ? `, p. ${z.floor_number}` : ''})</option>)}
+                  </select>
+                </div>
+              )}
+
+              {/* Norm-based duration calculator */}
+              {norms.length > 0 && (
+                <div className="bg-blue-50/50 rounded-lg p-4 space-y-3">
+                  <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                    <Wrench className="w-4 h-4" /> Kalkulacja z normy produkcyjnej
+                  </h4>
+                  <select value={phaseForm.norm_id} onChange={e => setPhaseForm({ ...phaseForm, norm_id: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm">
+                    <option value="">Wybierz normę...</option>
+                    {norms.map(n => <option key={n.id} value={n.id}>{n.name} ({n.output_per_day_avg} {n.unit}/dzień, brygada {n.crew_size})</option>)}
+                  </select>
+                  {phaseForm.norm_id && (() => {
+                    const selectedNorm = norms.find(n => n.id === phaseForm.norm_id);
+                    if (!selectedNorm) return null;
+                    return (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <input type="number" placeholder="Ilość" value={phaseForm.quantity || ''} min="0"
+                            onChange={e => setPhaseForm({ ...phaseForm, quantity: parseFloat(e.target.value) || 0 })}
+                            className="w-24 px-2 py-1.5 border border-slate-200 rounded-lg text-sm" />
+                          <span className="text-sm text-slate-500">{selectedNorm.unit}</span>
+                          <span className="text-xs text-slate-400">Brygada: {selectedNorm.crew_size} os.</span>
+                        </div>
+                        {phaseForm.quantity > 0 && (() => {
+                          const factors = phaseForm.selectedConditions
+                            .map(cfId => conditionFactors.find(c => c.id === cfId)?.factor)
+                            .filter((f): f is number => f !== undefined);
+                          const calc = calculateDurationFromNorm(selectedNorm, phaseForm.quantity, selectedNorm.crew_size, factors);
+                          return (
+                            <div className="flex items-center gap-3 flex-wrap">
+                              <div className="bg-white rounded px-2 py-1 text-xs border border-slate-200">
+                                <span className="text-slate-400">Min:</span> <strong className="text-green-600">{calc.minDays}d</strong>
+                              </div>
+                              <div className="bg-white rounded px-2 py-1 text-xs border border-blue-200">
+                                <span className="text-slate-400">Śr:</span> <strong className="text-blue-600">{calc.avgDays}d</strong>
+                              </div>
+                              <div className="bg-white rounded px-2 py-1 text-xs border border-slate-200">
+                                <span className="text-slate-400">Max:</span> <strong className="text-orange-600">{calc.maxDays}d</strong>
+                              </div>
+                              <button type="button" onClick={() => setPhaseForm({ ...phaseForm, duration: calc.avgDays })}
+                                className="px-2 py-1 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+                                Użyj śr. ({calc.avgDays}d)
+                              </button>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {/* Condition factors */}
+              {conditionFactors.length > 0 && (
+                <div className="bg-slate-50 rounded-lg p-4">
+                  <h4 className="text-sm font-bold text-slate-800 mb-2 flex items-center gap-2">
+                    <Activity className="w-4 h-4" /> Czynniki warunkowe
+                  </h4>
+                  <div className="space-y-1 max-h-32 overflow-y-auto">
+                    {conditionFactors.map(cf => (
+                      <label key={cf.id} className="flex items-center gap-2 px-2 py-1 rounded hover:bg-white cursor-pointer text-xs">
+                        <input type="checkbox"
+                          checked={phaseForm.selectedConditions.includes(cf.id)}
+                          onChange={e => {
+                            const newConds = e.target.checked
+                              ? [...phaseForm.selectedConditions, cf.id]
+                              : phaseForm.selectedConditions.filter(id => id !== cf.id);
+                            setPhaseForm({ ...phaseForm, selectedConditions: newConds });
+                          }}
+                          className="w-3.5 h-3.5 rounded text-blue-600" />
+                        <span className="text-slate-700">{cf.name}</span>
+                        <span className="text-slate-400 ml-auto">+{Math.round((cf.factor - 1) * 100)}%</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Notes */}
               <div>
                 <label className="block text-sm font-bold text-slate-800 mb-1.5">Notatki</label>
@@ -2662,11 +3194,566 @@ export const GanttPage: React.FC = () => {
             { label: 'Priorytet: Wysoki', icon: <div className="w-3 h-3 rounded-full bg-amber-500" />, onClick: () => handleSetPriority(contextMenu.task, 'high') },
             { label: 'Priorytet: Krytyczny', icon: <div className="w-3 h-3 rounded-full bg-red-500" />, onClick: () => handleSetPriority(contextMenu.task, 'critical') },
             { label: '', onClick: () => {}, divider: true },
+            // LPS Status
+            { label: 'LPS: Gotowe', icon: <CheckCircle2 className="w-4 h-4 text-green-500" />, onClick: () => handleUpdateLPSStatus(contextMenu.task.id, 'ready') },
+            { label: 'LPS: Zablokowane', icon: <Shield className="w-4 h-4 text-red-500" />, onClick: () => handleUpdateLPSStatus(contextMenu.task.id, 'blocked', 'Powód do uzupełnienia') },
+            { label: 'LPS: W trakcie', icon: <Activity className="w-4 h-4 text-blue-500" />, onClick: () => handleUpdateLPSStatus(contextMenu.task.id, 'in_progress') },
+            { label: 'LPS: Zrobione', icon: <Check className="w-4 h-4 text-emerald-500" />, onClick: () => handleUpdateLPSStatus(contextMenu.task.id, 'done') },
+            { label: '', onClick: () => {}, divider: true },
+            // Evidence
+            { label: 'Dodaj dowód (zdjęcie/protokół)', icon: <Camera className="w-4 h-4" />, onClick: () => { setEvidenceTaskId(contextMenu.task.id); setShowEvidenceModal(true); } },
+            // Decomposition
+            ...DECOMPOSITION_TEMPLATES.map(tmpl => ({
+              label: `Dekompozycja: ${tmpl.name}`,
+              icon: <Layers className="w-4 h-4" />,
+              onClick: async () => {
+                if (!selectedProject || !currentUser) return;
+                try {
+                  const parentId = contextMenu.task.id;
+                  const startDate = contextMenu.task.start_date || new Date().toISOString().split('T')[0];
+                  let prevId: string | null = null;
+                  for (let i = 0; i < tmpl.tasks.length; i++) {
+                    const t = tmpl.tasks[i];
+                    const { data: ins } = await supabase.from('gantt_tasks').insert({
+                      project_id: selectedProject.id, title: t.title, parent_id: parentId,
+                      start_date: startDate, duration: 3, progress: 0, is_milestone: false,
+                      is_auto: true, sort_order: i, source: 'template', color: contextMenu.task.color || '#93c5fd'
+                    }).select('id').single();
+                    if (ins && prevId) {
+                      await supabase.from('gantt_dependencies').insert({
+                        project_id: selectedProject.id, predecessor_id: prevId, successor_id: ins.id,
+                        dependency_type: t.depType, lag: t.lag
+                      });
+                    }
+                    if (ins) prevId = ins.id;
+                  }
+                  showSuccess(`Dekompozycja "${tmpl.name}" — ${tmpl.tasks.length} podzadań utworzonych.`);
+                  await loadGanttDataKeepScroll();
+                } catch (err: any) { showError('Błąd dekompozycji: ' + (err?.message || err)); }
+              }
+            })),
+            { label: '', onClick: () => {}, divider: true },
             // Delete
             { label: 'Usuń fazę (Del)', icon: <Trash2 className="w-4 h-4" />, onClick: () => handleDeletePhase(contextMenu.task), danger: true },
           ]}
         />
       )}
+      {/* ========== BASELINE MODAL ========== */}
+      {showBaselineModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => setShowBaselineModal(false)}>
+          <div className="bg-white rounded-xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+            <div className="p-5 border-b border-slate-200 flex justify-between items-center">
+              <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2"><Bookmark className="w-5 h-5 text-purple-500" /> Baseline</h2>
+              <button onClick={() => setShowBaselineModal(false)} className="p-1.5 hover:bg-slate-100 rounded-lg"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-sm font-bold text-slate-800 mb-1.5">Nazwa baseline</label>
+                <input type="text" value={baselineName} onChange={e => setBaselineName(e.target.value)}
+                  placeholder="np. Plan v1.0" className="w-full px-3 py-2 border border-slate-200 rounded-lg" />
+              </div>
+              <button onClick={() => { handleSaveBaseline(); setShowBaselineModal(false); }}
+                disabled={!baselineName.trim() || saving}
+                className="w-full px-4 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 font-medium flex items-center justify-center gap-2">
+                <Save className="w-4 h-4" /> Zapisz obecny plan jako baseline
+              </button>
+              {baselines.length > 0 && (
+                <div>
+                  <h4 className="text-sm font-bold text-slate-700 mb-2">Zapisane baseline ({baselines.length})</h4>
+                  <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                    {baselines.map(bl => (
+                      <div key={bl.id} className={`flex items-center justify-between p-2.5 rounded-lg border transition-all cursor-pointer ${activeBaseline?.id === bl.id ? 'border-purple-400 bg-purple-50' : 'border-slate-200 hover:border-purple-200 hover:bg-purple-50/30'}`}
+                        onClick={() => { setActiveBaseline(activeBaseline?.id === bl.id ? null : bl); }}>
+                        <div>
+                          <div className="text-sm font-medium text-slate-800">{bl.name}</div>
+                          <div className="text-[10px] text-slate-400">{new Date(bl.created_at).toLocaleString('pl-PL')} — {bl.tasks_snapshot?.length || 0} zadań</div>
+                        </div>
+                        {activeBaseline?.id === bl.id && <BookmarkCheck className="w-4 h-4 text-purple-600" />}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========== ZONE MANAGEMENT MODAL ========== */}
+      {showAdvancedPanel === 'zones' && (
+        <div className="fixed bottom-4 left-4 z-[100] bg-white rounded-xl shadow-2xl border border-slate-200 w-80 max-h-[60vh] overflow-hidden flex flex-col">
+          <div className="p-3 border-b border-slate-200 flex justify-between items-center">
+            <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm"><Map className="w-4 h-4 text-blue-500" /> Strefy / Piętra</h3>
+            <button onClick={() => setShowAdvancedPanel(null)} className="p-1 hover:bg-slate-100 rounded"><X className="w-4 h-4 text-slate-400" /></button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            {zones.length === 0 ? (
+              <p className="text-xs text-slate-400 text-center py-4">Brak stref. Dodaj pierwszą poniżej.</p>
+            ) : zones.map(z => (
+              <div key={z.id} className="flex items-center gap-2 p-2 rounded-lg border border-slate-100 hover:border-blue-200">
+                <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: z.color }} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-slate-700 truncate">{z.name}</div>
+                  <div className="text-[10px] text-slate-400">{z.zone_type}{z.floor_number !== undefined ? ` — piętro ${z.floor_number}` : ''}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="p-3 border-t border-slate-200 space-y-2">
+            <div className="flex gap-1.5">
+              <input type="text" placeholder="Nazwa strefy..." value={zoneForm.name} onChange={e => setZoneForm({...zoneForm, name: e.target.value})}
+                className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+              <select value={zoneForm.zone_type} onChange={e => setZoneForm({...zoneForm, zone_type: e.target.value})}
+                className="px-1.5 py-1.5 text-xs border border-slate-200 rounded-lg">
+                <option value="floor">Piętro</option>
+                <option value="sector">Sektor</option>
+                <option value="building">Budynek</option>
+                <option value="area">Obszar</option>
+                <option value="room">Pomieszczenie</option>
+              </select>
+            </div>
+            <div className="flex gap-1.5">
+              <input type="number" placeholder="Nr piętra" value={zoneForm.floor_number || ''} onChange={e => setZoneForm({...zoneForm, floor_number: parseInt(e.target.value) || 0})}
+                className="w-20 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+              <input type="color" value={zoneForm.color} onChange={e => setZoneForm({...zoneForm, color: e.target.value})}
+                className="w-8 h-7 rounded border border-slate-200 cursor-pointer" />
+              <button onClick={() => { handleSaveZone(); setZoneForm({ name: '', zone_type: 'floor', floor_number: 0, color: '#3b82f6' }); }}
+                disabled={!zoneForm.name.trim()}
+                className="flex-1 px-2 py-1.5 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium">
+                <Plus className="w-3 h-3 inline mr-1" />Dodaj
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========== MATERIALS PANEL ========== */}
+      {showAdvancedPanel === 'materials' && (
+        <div className="fixed bottom-4 left-4 z-[100] bg-white rounded-xl shadow-2xl border border-slate-200 w-96 max-h-[60vh] overflow-hidden flex flex-col">
+          <div className="p-3 border-b border-slate-200 flex justify-between items-center">
+            <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm"><Package className="w-4 h-4 text-orange-500" /> Materiały ({materials.length})</h3>
+            <div className="flex items-center gap-1">
+              <button onClick={() => setShowAddMaterial(!showAddMaterial)} className="p-1 hover:bg-orange-100 rounded text-orange-600" title="Dodaj materiał"><Plus className="w-4 h-4" /></button>
+              <button onClick={() => setShowAdvancedPanel(null)} className="p-1 hover:bg-slate-100 rounded"><X className="w-4 h-4 text-slate-400" /></button>
+            </div>
+          </div>
+          {showAddMaterial && (
+            <div className="p-3 border-b border-slate-100 space-y-2 bg-orange-50/50">
+              <select value={materialForm.gantt_task_id} onChange={e => setMaterialForm({...materialForm, gantt_task_id: e.target.value})}
+                className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg">
+                <option value="">Przypisz do zadania...</option>
+                {allFlatTasks.map(t => <option key={t.id} value={t.id}>{t.wbs} {getTaskTitle(t)}</option>)}
+              </select>
+              <div className="flex gap-1.5">
+                <input type="text" placeholder="Nazwa materiału" value={materialForm.name} onChange={e => setMaterialForm({...materialForm, name: e.target.value})}
+                  className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+              </div>
+              <div className="flex gap-1.5">
+                <input type="number" placeholder="Ilość" value={materialForm.quantity || ''} onChange={e => setMaterialForm({...materialForm, quantity: parseFloat(e.target.value) || 0})}
+                  className="w-16 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                <input type="text" placeholder="Jedn." value={materialForm.unit} onChange={e => setMaterialForm({...materialForm, unit: e.target.value})}
+                  className="w-14 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                <input type="text" placeholder="Dostawca" value={materialForm.supplier} onChange={e => setMaterialForm({...materialForm, supplier: e.target.value})}
+                  className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+              </div>
+              <div className="flex gap-1.5 items-center">
+                <input type="date" value={materialForm.delivery_date} onChange={e => setMaterialForm({...materialForm, delivery_date: e.target.value})}
+                  className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                <button onClick={async () => {
+                  if (!materialForm.gantt_task_id || !materialForm.name) { showError('Podaj zadanie i nazwę materiału.'); return; }
+                  try {
+                    await supabase.from('gantt_materials').insert({
+                      gantt_task_id: materialForm.gantt_task_id, name: materialForm.name,
+                      quantity: materialForm.quantity, unit: materialForm.unit, unit_price: 0,
+                      supplier: materialForm.supplier || null, delivery_date: materialForm.delivery_date || null, delivered: false
+                    });
+                    showSuccess('Materiał dodany.');
+                    setMaterialForm({ gantt_task_id: '', name: '', quantity: 0, unit: 'szt', supplier: '', delivery_date: '' });
+                    setShowAddMaterial(false);
+                    loadAdvancedData();
+                  } catch (err: any) { showError('Błąd: ' + (err?.message || err)); }
+                }}
+                  disabled={!materialForm.gantt_task_id || !materialForm.name}
+                  className="px-3 py-1.5 bg-orange-600 text-white text-xs rounded-lg hover:bg-orange-700 disabled:opacity-50 font-medium">
+                  Dodaj
+                </button>
+              </div>
+            </div>
+          )}
+          <div className="flex-1 overflow-y-auto p-3">
+            {materials.length === 0 ? (
+              <p className="text-xs text-slate-400 text-center py-6">Brak materiałów. Kliknij + aby dodać.</p>
+            ) : (
+              <div className="space-y-1.5">
+                {materials.map(m => {
+                  const isLate = m.delivery_date && !m.delivered && new Date(m.delivery_date) < new Date();
+                  return (
+                    <div key={m.id} className={`p-2 rounded-lg border text-xs ${isLate ? 'border-red-200 bg-red-50' : m.delivered ? 'border-green-200 bg-green-50' : 'border-slate-100'}`}>
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium text-slate-700">{m.name}</span>
+                        <div className="flex items-center gap-1">
+                          <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-medium ${m.delivered ? 'bg-green-200 text-green-700' : isLate ? 'bg-red-200 text-red-700' : 'bg-slate-200 text-slate-600'}`}>
+                            {m.delivered ? 'Dostarczony' : isLate ? 'Spóźniony!' : 'Oczekuje'}
+                          </span>
+                          {!m.delivered && (
+                            <button onClick={async () => {
+                              await supabase.from('gantt_materials').update({ delivered: true }).eq('id', m.id);
+                              loadAdvancedData();
+                            }} className="p-0.5 hover:bg-green-100 rounded text-green-600" title="Oznacz jako dostarczony"><Check className="w-3 h-3" /></button>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-slate-400 mt-0.5">
+                        {m.quantity} {m.unit} {m.supplier ? `• ${m.supplier}` : ''} {m.delivery_date ? `• Dostawa: ${new Date(m.delivery_date).toLocaleDateString('pl-PL')}` : ''}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ========== WORK ORDERS PANEL ========== */}
+      {showAdvancedPanel === 'workorders' && (
+        <div className="fixed bottom-4 left-4 z-[100] bg-white rounded-xl shadow-2xl border border-slate-200 w-96 max-h-[60vh] overflow-hidden flex flex-col">
+          <div className="p-3 border-b border-slate-200 flex justify-between items-center">
+            <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm"><Wrench className="w-4 h-4 text-teal-500" /> Narydy pracy ({workOrders.length})</h3>
+            <div className="flex items-center gap-1">
+              <button onClick={() => { handleGenerateWorkOrders(); loadAdvancedData(); }}
+                className="p-1 hover:bg-teal-100 rounded text-teal-600" title="Generuj naryk na ten tydzień"><Plus className="w-4 h-4" /></button>
+              <button onClick={() => setShowAdvancedPanel(null)} className="p-1 hover:bg-slate-100 rounded"><X className="w-4 h-4 text-slate-400" /></button>
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3">
+            {workOrders.length === 0 ? (
+              <p className="text-xs text-slate-400 text-center py-6">Brak narydów. Kliknij + aby wygenerować naryk na bieżący tydzień.</p>
+            ) : (
+              <div className="space-y-2">
+                {workOrders.map(wo => {
+                  const statusColors: Record<string, string> = { draft: 'bg-slate-200 text-slate-600', issued: 'bg-blue-200 text-blue-700', in_progress: 'bg-amber-200 text-amber-700', completed: 'bg-green-200 text-green-700', cancelled: 'bg-red-200 text-red-700' };
+                  const statusLabels: Record<string, string> = { draft: 'Szkic', issued: 'Wydany', in_progress: 'W trakcie', completed: 'Zakończony', cancelled: 'Anulowany' };
+                  return (
+                    <div key={wo.id} className="p-2.5 rounded-lg border border-slate-100 hover:border-teal-200">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-bold text-slate-700">{wo.order_number}</span>
+                        <span className={`px-1.5 py-0 text-[9px] font-medium rounded-full ${statusColors[wo.status] || ''}`}>{statusLabels[wo.status] || wo.status}</span>
+                      </div>
+                      <div className="text-[10px] text-slate-400">Data: {new Date(wo.order_date).toLocaleDateString('pl-PL')}</div>
+                      {wo.items && wo.items.length > 0 && (
+                        <div className="mt-1 text-[10px] text-slate-500">{wo.items.length} zadań przypisanych</div>
+                      )}
+                      {wo.notes && <div className="mt-1 text-[10px] text-slate-400 line-clamp-2">{wo.notes}</div>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ========== ACCEPTED ACTS PANEL ========== */}
+      {showAdvancedPanel === 'acts' && (
+        <div className="fixed bottom-4 left-4 z-[100] bg-white rounded-xl shadow-2xl border border-slate-200 w-96 max-h-[60vh] overflow-hidden flex flex-col">
+          <div className="p-3 border-b border-slate-200 flex justify-between items-center">
+            <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm"><BookmarkCheck className="w-4 h-4 text-violet-500" /> Akty odbioru ({acceptedActs.length})</h3>
+            <div className="flex items-center gap-1">
+              <button onClick={() => setShowActForm(!showActForm)} className="p-1 hover:bg-violet-100 rounded" title="Nowy akt"><Plus className="w-4 h-4 text-violet-500" /></button>
+              <button onClick={() => setShowAdvancedPanel(null)} className="p-1 hover:bg-slate-100 rounded"><X className="w-4 h-4 text-slate-400" /></button>
+            </div>
+          </div>
+          {showActForm && (
+            <div className="p-3 border-b border-slate-100 bg-violet-50/50 space-y-2">
+              <input value={actForm.description} onChange={e => setActForm(f => ({ ...f, description: e.target.value }))}
+                placeholder="Opis aktu odbioru" className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+              <div className="flex gap-2">
+                <input type="number" value={actForm.total_amount || ''} onChange={e => setActForm(f => ({ ...f, total_amount: Number(e.target.value) }))}
+                  placeholder="Kwota PLN" className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                {zones.length > 0 && (
+                  <select value={actForm.zone_id} onChange={e => setActForm(f => ({ ...f, zone_id: e.target.value }))}
+                    className="flex-1 px-2 py-1.5 text-xs border border-slate-200 rounded-lg">
+                    <option value="">— Strefa —</option>
+                    {zones.map(z => <option key={z.id} value={z.id}>{z.name}</option>)}
+                  </select>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <button onClick={handleCreateAct} disabled={!actForm.description.trim()}
+                  className="flex-1 px-3 py-1.5 bg-violet-600 text-white text-xs rounded-lg hover:bg-violet-700 disabled:opacity-50">
+                  <Plus className="w-3 h-3 inline mr-1" />Utwórz akt
+                </button>
+                <button onClick={() => setShowActForm(false)} className="px-3 py-1.5 text-xs text-slate-500 hover:bg-slate-100 rounded-lg">Anuluj</button>
+              </div>
+            </div>
+          )}
+          <div className="flex-1 overflow-y-auto p-3">
+            {acceptedActs.length === 0 && !showActForm ? (
+              <div className="text-center py-6">
+                <p className="text-xs text-slate-400 mb-2">Brak aktów odbioru.</p>
+                <button onClick={() => setShowActForm(true)} className="px-3 py-1.5 bg-violet-600 text-white text-xs rounded-lg hover:bg-violet-700">
+                  <Plus className="w-3 h-3 inline mr-1" />Utwórz pierwszy akt
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {acceptedActs.map(act => (
+                  <div key={act.id} className="p-2.5 rounded-lg border border-slate-100 hover:border-violet-200">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-bold text-slate-700">{act.act_number}</span>
+                      <div className="flex items-center gap-1">
+                        <span className={`px-1.5 py-0 text-[9px] font-medium rounded-full ${act.status === 'accepted' ? 'bg-green-200 text-green-700' : act.status === 'rejected' ? 'bg-red-200 text-red-700' : act.status === 'draft' ? 'bg-slate-200 text-slate-600' : 'bg-amber-200 text-amber-700'}`}>
+                          {act.status === 'accepted' ? 'Przyjęty' : act.status === 'rejected' ? 'Odrzucony' : act.status === 'draft' ? 'Szkic' : 'Złożony'}
+                        </span>
+                        {act.status === 'draft' && (
+                          <button onClick={async () => {
+                            await supabase.from('gantt_accepted_acts').update({ status: 'submitted' }).eq('id', act.id);
+                            loadAdvancedData();
+                            showSuccess('Akt złożony do akceptacji.');
+                          }} className="p-0.5 hover:bg-violet-100 rounded" title="Złóż do akceptacji">
+                            <ArrowRight className="w-3 h-3 text-violet-500" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {act.description && <div className="text-[10px] text-slate-500 mb-0.5">{act.description}</div>}
+                    <div className="text-[10px] text-slate-400">Data: {new Date(act.act_date).toLocaleDateString('pl-PL')}</div>
+                    {act.total_amount > 0 && <div className="text-[10px] text-slate-600 font-medium mt-0.5">{act.total_amount.toLocaleString('pl-PL')} PLN</div>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ========== RFI PANEL ========== */}
+      {showAdvancedPanel === 'rfis' && (
+        <div className="fixed bottom-4 left-4 z-[100] bg-white rounded-xl shadow-2xl border border-slate-200 w-96 max-h-[60vh] overflow-hidden flex flex-col">
+          <div className="p-3 border-b border-slate-200 flex justify-between items-center">
+            <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm"><FileQuestion className="w-4 h-4 text-indigo-500" /> RFI ({rfis.length})</h3>
+            <div className="flex items-center gap-1">
+              <button onClick={() => { setRfiForm({ subject: '', question: '', assigned_to_id: '', due_date: '', priority: 'normal', gantt_task_id: '' }); setShowRFIModal(true); }}
+                className="p-1 hover:bg-indigo-100 rounded text-indigo-600" title="Nowe RFI"><Plus className="w-4 h-4" /></button>
+              <button onClick={() => setShowAdvancedPanel(null)} className="p-1 hover:bg-slate-100 rounded"><X className="w-4 h-4 text-slate-400" /></button>
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3">
+            {rfis.length === 0 ? (
+              <p className="text-xs text-slate-400 text-center py-6">Brak zapytań RFI.</p>
+            ) : (
+              <div className="space-y-1.5">
+                {rfis.map(rfi => {
+                  const priorityColors: Record<string, string> = { low: 'bg-slate-100 text-slate-600', normal: 'bg-blue-100 text-blue-700', high: 'bg-amber-100 text-amber-700', critical: 'bg-red-100 text-red-700' };
+                  const statusColors: Record<string, string> = { open: 'bg-red-100 text-red-700', pending: 'bg-amber-100 text-amber-700', answered: 'bg-green-100 text-green-700', closed: 'bg-slate-100 text-slate-600' };
+                  return (
+                    <div key={rfi.id} className="p-2.5 rounded-lg border border-slate-100 hover:border-indigo-200">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-bold text-slate-700">{rfi.rfi_number}</span>
+                        <div className="flex items-center gap-1">
+                          <span className={`px-1.5 py-0 text-[9px] font-medium rounded-full ${priorityColors[rfi.priority]}`}>{rfi.priority}</span>
+                          <span className={`px-1.5 py-0 text-[9px] font-medium rounded-full ${statusColors[rfi.status]}`}>{rfi.status}</span>
+                        </div>
+                      </div>
+                      <div className="text-xs font-medium text-slate-700">{rfi.subject}</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5 line-clamp-2">{rfi.question}</div>
+                      {rfi.due_date && <div className="text-[10px] text-slate-400 mt-1">Termin: {new Date(rfi.due_date).toLocaleDateString('pl-PL')}</div>}
+                      {rfi.impact_days && <div className="text-[10px] text-red-500 mt-0.5">Wpływ: +{rfi.impact_days} dni opóźnienia</div>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ========== RFI CREATE MODAL ========== */}
+      {showRFIModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60] p-4" onClick={() => setShowRFIModal(false)}>
+          <div className="bg-white rounded-xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+            <div className="p-5 border-b border-slate-200 flex justify-between items-center">
+              <h2 className="text-lg font-bold text-slate-900">Nowe RFI</h2>
+              <button onClick={() => setShowRFIModal(false)} className="p-1.5 hover:bg-slate-100 rounded-lg"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-sm font-bold text-slate-800 mb-1">Temat *</label>
+                <input type="text" value={rfiForm.subject} onChange={e => setRfiForm({...rfiForm, subject: e.target.value})}
+                  placeholder="Krótki opis problemu" className="w-full px-3 py-2 border border-slate-200 rounded-lg" />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-slate-800 mb-1">Pytanie *</label>
+                <textarea value={rfiForm.question} onChange={e => setRfiForm({...rfiForm, question: e.target.value})}
+                  placeholder="Szczegółowe pytanie..." rows={3} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm resize-none" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Termin odpowiedzi</label>
+                  <input type="date" value={rfiForm.due_date} onChange={e => setRfiForm({...rfiForm, due_date: e.target.value})}
+                    className="w-full px-2 py-1.5 border border-slate-200 rounded-lg text-sm" />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Priorytet</label>
+                  <select value={rfiForm.priority} onChange={e => setRfiForm({...rfiForm, priority: e.target.value})}
+                    className="w-full px-2 py-1.5 border border-slate-200 rounded-lg text-sm">
+                    <option value="low">Niski</option>
+                    <option value="normal">Normalny</option>
+                    <option value="high">Wysoki</option>
+                    <option value="critical">Krytyczny</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">Powiązane zadanie</label>
+                <select value={rfiForm.gantt_task_id} onChange={e => setRfiForm({...rfiForm, gantt_task_id: e.target.value})}
+                  className="w-full px-2 py-1.5 border border-slate-200 rounded-lg text-sm">
+                  <option value="">Brak</option>
+                  {allFlatTasks.map(t => <option key={t.id} value={t.id}>{t.wbs} {getTaskTitle(t)}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="p-5 border-t border-slate-200 flex justify-end gap-3">
+              <button onClick={() => setShowRFIModal(false)} className="px-4 py-2 border border-slate-200 rounded-lg hover:bg-slate-50 text-sm">Anuluj</button>
+              <button onClick={() => { handleCreateRFI(); setShowRFIModal(false); }}
+                disabled={!rfiForm.subject.trim() || !rfiForm.question.trim()}
+                className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 text-sm font-medium">
+                Utwórz RFI
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========== EVIDENCE UPLOAD MODAL ========== */}
+      {showEvidenceModal && evidenceTaskId && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60] p-4" onClick={() => { setShowEvidenceModal(false); setEvidenceTaskId(null); }}>
+          <div className="bg-white rounded-xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+            <div className="p-5 border-b border-slate-200 flex justify-between items-center">
+              <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2"><Camera className="w-5 h-5 text-blue-500" /> Dowody realizacji</h2>
+              <button onClick={() => { setShowEvidenceModal(false); setEvidenceTaskId(null); }} className="p-1.5 hover:bg-slate-100 rounded-lg"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="text-sm text-slate-600">
+                Zadanie: <strong>{getTaskTitle(allFlatTasks.find(t => t.id === evidenceTaskId) as GanttTaskWithChildren)}</strong>
+              </div>
+              {taskEvidence.length > 0 && (
+                <div className="space-y-1.5">
+                  {taskEvidence.map(ev => (
+                    <div key={ev.id} className="flex items-center gap-2 p-2 rounded-lg border border-slate-100 text-xs">
+                      <Camera className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-slate-700">{ev.evidence_type} — {ev.description || 'Bez opisu'}</div>
+                        <div className="text-slate-400">{ev.file_name || ev.evidence_type}</div>
+                      </div>
+                      {ev.verified && <Check className="w-4 h-4 text-green-500 flex-shrink-0" />}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="bg-slate-50 rounded-lg p-4 text-center">
+                <Camera className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                <p className="text-xs text-slate-500 mb-3">Prześlij zdjęcie, protokół lub podpis jako dowód realizacji</p>
+                <button onClick={async () => {
+                  try {
+                    await supabase.from('gantt_evidence').insert({
+                      gantt_task_id: evidenceTaskId,
+                      evidence_type: 'photo',
+                      description: `Dowód dodany ${new Date().toLocaleString('pl-PL')}`,
+                      file_url: '',
+                      created_by_id: currentUser?.id
+                    });
+                    showSuccess('Dowód dodany (placeholder — upload pliku wymaga konfiguracji Storage).');
+                    setShowEvidenceModal(false); setEvidenceTaskId(null);
+                  } catch (err: any) { showError('Błąd: ' + (err?.message || err)); }
+                }}
+                  className="px-4 py-2 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 font-medium">
+                  <Upload className="w-3.5 h-3.5 inline mr-1" /> Dodaj dowód
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========== PREDICTIVE INSIGHTS PANEL ========== */}
+      {showInsights && insights.length > 0 && (
+        <div className="fixed bottom-4 right-4 z-[100] bg-white rounded-xl shadow-2xl border border-slate-200 w-96 max-h-[60vh] overflow-hidden flex flex-col">
+          <div className="p-3 border-b border-slate-200 flex justify-between items-center">
+            <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm"><TrendingUp className="w-4 h-4 text-emerald-500" /> Analityka ({insights.length})</h3>
+            <button onClick={() => setShowInsights(false)} className="p-1 hover:bg-slate-100 rounded"><X className="w-4 h-4 text-slate-400" /></button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
+            {insights.map((ins, i) => {
+              const severityColors: Record<string, string> = { low: 'border-l-slate-300 bg-slate-50', medium: 'border-l-amber-400 bg-amber-50', high: 'border-l-red-400 bg-red-50' };
+              return (
+                <div key={i} className={`p-2.5 rounded-lg border-l-4 ${severityColors[ins.severity] || 'border-l-slate-300 bg-slate-50'}`}>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <span className="text-xs font-bold text-slate-700">{ins.type.replace('_', ' ').toUpperCase()}</span>
+                    <span className={`px-1.5 py-0 text-[9px] font-medium rounded-full ${ins.severity === 'high' ? 'bg-red-200 text-red-700' : ins.severity === 'medium' ? 'bg-amber-200 text-amber-700' : 'bg-slate-200 text-slate-600'}`}>
+                      {ins.severity}
+                    </span>
+                  </div>
+                  <div className="text-xs text-slate-700">{ins.message}</div>
+                  {ins.recommendation && <div className="text-[10px] text-blue-600 mt-1">{ins.recommendation}</div>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ========== EVM / STATISTICS PANEL (shows with insights) ========== */}
+      {showInsights && (() => {
+        // Compute simplified EVM: totalBudget = total planned days, planned% from baseline or schedule, actual% from progress
+        const totalDuration = allFlatTasks.reduce((s, t) => s + (t.duration || 0), 0) || 1;
+        const actualProgress = allFlatTasks.length > 0 ? allFlatTasks.reduce((s, t) => s + (t.progress || 0), 0) / allFlatTasks.length : 0;
+        const plannedProgress = (() => {
+          const today = new Date();
+          const starts = allFlatTasks.filter(t => t.start_date).map(t => new Date(t.start_date!).getTime());
+          const ends = allFlatTasks.filter(t => t.end_date).map(t => new Date(t.end_date!).getTime());
+          if (starts.length === 0 || ends.length === 0) return 50;
+          const projStart = Math.min(...starts);
+          const projEnd = Math.max(...ends);
+          const elapsed = today.getTime() - projStart;
+          const total = projEnd - projStart;
+          return total > 0 ? Math.min(100, Math.max(0, (elapsed / total) * 100)) : 50;
+        })();
+        const evm = calculateEVM(totalDuration, plannedProgress, actualProgress, totalDuration * (actualProgress / 100));
+        const spiPct = evm.spi * 100;
+        const cpiPct = evm.cpi * 100;
+        return (
+          <div className="fixed top-20 right-4 z-[100] bg-white rounded-xl shadow-2xl border border-slate-200 w-72">
+            <div className="p-3 border-b border-slate-200">
+              <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm"><BarChart3 className="w-4 h-4 text-blue-500" /> EVM Earned Value</h3>
+            </div>
+            <div className="p-3 grid grid-cols-2 gap-2">
+              <div className="bg-slate-50 rounded-lg p-2 text-center">
+                <div className="text-[10px] text-slate-400 uppercase">SPI</div>
+                <div className={`text-lg font-bold ${spiPct >= 100 ? 'text-green-600' : spiPct >= 80 ? 'text-amber-600' : 'text-red-600'}`}>{spiPct.toFixed(0)}%</div>
+              </div>
+              <div className="bg-slate-50 rounded-lg p-2 text-center">
+                <div className="text-[10px] text-slate-400 uppercase">CPI</div>
+                <div className={`text-lg font-bold ${cpiPct >= 100 ? 'text-green-600' : cpiPct >= 80 ? 'text-amber-600' : 'text-red-600'}`}>{cpiPct.toFixed(0)}%</div>
+              </div>
+              <div className="bg-slate-50 rounded-lg p-2 text-center">
+                <div className="text-[10px] text-slate-400 uppercase">PV</div>
+                <div className="text-sm font-bold text-slate-700">{evm.pv.toFixed(0)}</div>
+              </div>
+              <div className="bg-slate-50 rounded-lg p-2 text-center">
+                <div className="text-[10px] text-slate-400 uppercase">EV</div>
+                <div className="text-sm font-bold text-slate-700">{evm.ev.toFixed(0)}</div>
+              </div>
+              <div className="col-span-2 bg-slate-50 rounded-lg p-2 text-center">
+                <div className="text-[10px] text-slate-400 uppercase">EAC (prognoza)</div>
+                <div className="text-sm font-bold text-slate-700">{evm.eac.toFixed(0)} dni</div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ========== HELP / LEGEND OVERLAY ========== */}
       {showHelp && (
         <div className="fixed bottom-4 right-4 z-[100] bg-white rounded-xl shadow-2xl border border-slate-200 w-96 max-h-[70vh] overflow-y-auto" onClick={e => e.stopPropagation()}>

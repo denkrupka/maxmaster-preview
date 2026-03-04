@@ -330,6 +330,8 @@ export const OffersPage: React.FC = () => {
   const [requestSubcontractorId, setRequestSubcontractorId] = useState('');
   const [requestName, setRequestName] = useState('');
   const [requestOfferId, setRequestOfferId] = useState('');
+  const [requestSections, setRequestSections] = useState<any[]>([]);
+  const [loadingRequestSections, setLoadingRequestSections] = useState(false);
   const [subcontractors, setSubcontractors] = useState<any[]>([]);
   const [creatingRequest, setCreatingRequest] = useState(false);
 
@@ -6114,9 +6116,9 @@ tr{page-break-inside:avoid;page-break-after:auto;}
         ) : (
           <button
             onClick={() => {
-              // Open create request modal — need to select an offer first
               setRequestType('all');
               setRequestStep('type');
+              setRequestOfferId('');
               setRequestName('');
               setRequestSubcontractorId('');
               setShowCreateRequestModal(true);
@@ -8010,6 +8012,7 @@ tr{page-break-inside:avoid;page-break-after:auto;}
       {/* Create Offer Request (Zapytanie ofertowe) Modal */}
       {showCreateRequestModal && (() => {
         const reqOffer = selectedOffer || offers.find(o => o.id === requestOfferId) || null;
+        const modalSections = selectedOffer ? sections : requestSections;
         return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[70] p-4">
           <div className="bg-white rounded-xl w-full max-w-2xl max-h-[85vh] flex flex-col">
@@ -8028,10 +8031,26 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                       <label className="text-sm font-medium text-slate-700 mb-1 block">Oferta źródłowa</label>
                       <select
                         value={requestOfferId}
-                        onChange={e => {
-                          setRequestOfferId(e.target.value);
-                          const off = offers.find(o => o.id === e.target.value);
+                        onChange={async e => {
+                          const offerId = e.target.value;
+                          setRequestOfferId(offerId);
+                          const off = offers.find(o => o.id === offerId);
                           if (off) setRequestName(`Zapytanie — ${off.name || off.number || ''}`);
+                          if (offerId) {
+                            setLoadingRequestSections(true);
+                            const [secRes, itemRes] = await Promise.all([
+                              supabase.from('offer_sections').select('*').eq('offer_id', offerId).order('sort_order'),
+                              supabase.from('offer_items').select('*, components:offer_item_components(*)').eq('offer_id', offerId).order('sort_order')
+                            ]);
+                            const secs = (secRes.data || []).map((s: any) => ({
+                              ...s,
+                              items: (itemRes.data || []).filter((i: any) => i.section_id === s.id)
+                            }));
+                            setRequestSections(secs);
+                            setLoadingRequestSections(false);
+                          } else {
+                            setRequestSections([]);
+                          }
                         }}
                         className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
                       >
@@ -8096,11 +8115,11 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                     <p className="text-sm text-slate-600">
                       Pozycje w zapytaniu: {' '}
                       <span className="font-bold text-slate-900">
-                        {(() => {
-                          if (requestType === 'all') return sections.reduce((acc, s) => acc + (s.items?.length || 0), 0);
+                        {loadingRequestSections ? '…' : (() => {
+                          if (requestType === 'all') return modalSections.reduce((acc: number, s: any) => acc + (s.items?.length || 0), 0);
                           const typeMap: Record<string, string> = { robota: 'labor', materialy: 'material', sprzet: 'equipment' };
                           const compType = typeMap[requestType];
-                          return sections.reduce((acc, s) => acc + (s.items || []).filter((item: any) =>
+                          return modalSections.reduce((acc: number, s: any) => acc + (s.items || []).filter((item: any) =>
                             (item.components || []).some((c: any) => c.type === compType)
                           ).length, 0);
                         })()}
@@ -8112,6 +8131,12 @@ tr{page-break-inside:avoid;page-break-after:auto;}
 
               {requestStep === 'preview' && (
                 <div className="space-y-4">
+                  {loadingRequestSections && (
+                    <div className="flex items-center justify-center py-8">
+                      <Loader2 className="w-6 h-6 animate-spin text-blue-500" />
+                      <span className="ml-2 text-sm text-slate-500">Ładowanie pozycji…</span>
+                    </div>
+                  )}
                   <div className="bg-slate-50 rounded-lg p-4 space-y-2">
                     <div className="flex justify-between">
                       <span className="text-sm text-slate-500">Oferta źródłowa:</span>
@@ -8148,7 +8173,7 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                           const typeMap: Record<string, string> = { robota: 'labor', materialy: 'material', sprzet: 'equipment' };
                           const compType = requestType !== 'all' ? typeMap[requestType] : null;
                           let lp = 0;
-                          return sections.flatMap(sec =>
+                          return modalSections.flatMap((sec: any) =>
                             (sec.items || [])
                               .filter((item: any) => !compType || (item.components || []).some((c: any) => c.type === compType))
                               .map((item: any) => {
@@ -8189,7 +8214,7 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                           const token = crypto.randomUUID().replace(/-/g, '').substring(0, 16);
                           const typeMap: Record<string, string> = { robota: 'labor', materialy: 'material', sprzet: 'equipment' };
                           const compType = requestType !== 'all' ? typeMap[requestType] : null;
-                          const filteredItems = sections.flatMap(sec =>
+                          const filteredItems = modalSections.flatMap((sec: any) =>
                             (sec.items || [])
                               .filter((item: any) => !compType || (item.components || []).some((c: any) => c.type === compType))
                               .map((item: any) => ({ ...item, section_name: sec.name }))
@@ -8240,7 +8265,7 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                           const token = crypto.randomUUID().replace(/-/g, '').substring(0, 16);
                           const typeMap: Record<string, string> = { robota: 'labor', materialy: 'material', sprzet: 'equipment' };
                           const compType = requestType !== 'all' ? typeMap[requestType] : null;
-                          const filteredItems = sections.flatMap(sec =>
+                          const filteredItems = modalSections.flatMap((sec: any) =>
                             (sec.items || [])
                               .filter((item: any) => !compType || (item.components || []).some((c: any) => c.type === compType))
                               .map((item: any) => ({ ...item, section_name: sec.name }))

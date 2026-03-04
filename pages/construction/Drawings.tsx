@@ -26,7 +26,7 @@ import { findSnapPoints, getBestSnap, findIntersections, type SnapPoint, type Sn
 import type { DxfSearchResult } from '../../lib/dxfSearch';
 import type { DxfAnalysis } from '../../lib/dxfAnalyzer';
 import type { TakeoffRule, TakeoffResult } from '../../lib/dxfTakeoff';
-import { applyRules, getDefaultElectricalRules } from '../../lib/dxfTakeoff';
+import { applyRules, getDefaultElectricalRules, getDefaultPdfElectricalRules } from '../../lib/dxfTakeoff';
 import DxfSearchPanel from '../../components/construction/DxfSearchPanel';
 import DxfPropertiesPanel from '../../components/construction/DxfPropertiesPanel';
 import DxfTakeoffPanel from '../../components/construction/DxfTakeoffPanel';
@@ -35,6 +35,13 @@ import DxfBlockMappingsModal from '../../components/construction/DxfBlockMapping
 import DxfAnalysisModal from '../../components/construction/DxfAnalysisModal';
 import DxfExportModal from '../../components/construction/DxfExportModal';
 import DwgConvertPanel from '../../components/construction/DwgConvertPanel';
+import PdfAnalysisModal from '../../components/construction/PdfAnalysisModal';
+import PdfStyleGroupsPanel from '../../components/construction/PdfStyleGroupsPanel';
+import PdfLegendPanel from '../../components/construction/PdfLegendPanel';
+import PdfMappingDictionaryPanel from '../../components/construction/PdfMappingDictionaryPanel';
+import { mappingsToRules } from '../../lib/pdfCompanyMappings';
+import type { PdfAnalysisExtra } from '../../lib/pdfAnalyzer';
+import type { PdfStyleGroup, PdfLegend } from '../../lib/pdfTypes';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://unpkg.com/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs';
 
@@ -345,6 +352,23 @@ export const DrawingsPage: React.FC = () => {
   const [showDxfExportModal, setShowDxfExportModal] = useState(false);
   const [showDwgConvert, setShowDwgConvert] = useState(false);
 
+  // PDF Analysis
+  const [showPdfAnalysis, setShowPdfAnalysis] = useState(false);
+  const [pdfAnalysis, setPdfAnalysis] = useState<DxfAnalysis | null>(null);
+  const [pdfAnalysisExtra, setPdfAnalysisExtra] = useState<PdfAnalysisExtra | null>(null);
+  const [showPdfStyleGroups, setShowPdfStyleGroups] = useState(false);
+  const [showPdfLegend, setShowPdfLegend] = useState(false);
+  const [pdfStyleGroups, setPdfStyleGroups] = useState<PdfStyleGroup[]>([]);
+  const [pdfLegend, setPdfLegend] = useState<PdfLegend | null>(null);
+  const [showPdfTakeoff, setShowPdfTakeoff] = useState(false);
+  const [pdfTakeoffResult, setPdfTakeoffResult] = useState<TakeoffResult | null>(null);
+  const [pdfTakeoffRules, setPdfTakeoffRules] = useState<TakeoffRule[]>([]);
+  const [showPdfRulesModal, setShowPdfRulesModal] = useState(false);
+  const [pdfHighlightPaths, setPdfHighlightPaths] = useState<{ segments: { type: string; points: { x: number; y: number }[] }[]; color: string }[]>([]);
+  const [pdfHighlightPoints, setPdfHighlightPoints] = useState<{ x: number; y: number; label: string }[]>([]);
+  const [pdfHighlightLabel, setPdfHighlightLabel] = useState('');
+  const [showPdfMappingDict, setShowPdfMappingDict] = useState(false);
+
   // Annotations
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [currentDrawing, setCurrentDrawing] = useState<Annotation | null>(null);
@@ -640,6 +664,77 @@ export const DrawingsPage: React.FC = () => {
         if (ft === 'pdf') {
           loadPdf(selectedPlan.file_url);
           setDxfImageUrl(null); setDxfData(null); setDxfLayers([]); setDxfHiddenLayers(new Set()); setDxfViewBox(null);
+          // Load previous PDF analysis from DB if exists
+          if (currentUser?.company_id) {
+            supabase.from('pdf_analyses')
+              .select('id, analysis_result, detected_scale, scale_factor, ai_classification_status')
+              .eq('drawing_id', selectedPlan.id)
+              .eq('company_id', currentUser.company_id)
+              .eq('status', 'completed')
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .then(async ({ data: rows }) => {
+                if (rows && rows.length > 0 && rows[0].analysis_result) {
+                  const analysisId = rows[0].id;
+                  const savedAnalysis = rows[0].analysis_result as DxfAnalysis;
+                  setPdfAnalysis(savedAnalysis);
+                  if (pdfTakeoffRules.length === 0) {
+                    setPdfTakeoffRules(getDefaultPdfElectricalRules());
+                  }
+                  // Auto-apply rules
+                  const defaultRules = pdfTakeoffRules.length > 0 ? pdfTakeoffRules : getDefaultPdfElectricalRules();
+                  const result = applyRules(savedAnalysis, defaultRules);
+                  setPdfTakeoffResult(result);
+
+                  // Load style groups from DB
+                  const { data: sgRows } = await supabase.from('pdf_style_groups')
+                    .select('*')
+                    .eq('analysis_id', analysisId)
+                    .order('path_count', { ascending: false });
+                  if (sgRows && sgRows.length > 0) {
+                    const groups: PdfStyleGroup[] = sgRows.map(r => {
+                      // Reconstruct pathIndices from entities matching this group name
+                      const groupName = r.name;
+                      const indices: number[] = [];
+                      for (let i = 0; i < savedAnalysis.entities.length; i++) {
+                        if (savedAnalysis.entities[i].layerName === groupName) {
+                          const pi = savedAnalysis.entities[i].properties?.pathIndex;
+                          if (pi != null) indices.push(pi);
+                        }
+                      }
+                      return {
+                        id: r.id,
+                        name: r.name,
+                        styleKey: `${r.stroke_color}-${(r.line_width || 0).toFixed(1)}-${(r.dash_pattern || []).join(',')}`,
+                        strokeColor: r.stroke_color || '#000000',
+                        lineWidth: r.line_width || 1,
+                        dashPattern: r.dash_pattern || [],
+                        pathCount: r.path_count || 0,
+                        pathIndices: indices,
+                        totalLengthPx: r.total_length_px || 0,
+                        totalLengthM: r.total_length_m || 0,
+                        category: r.category,
+                        aiConfidence: r.ai_confidence,
+                        visible: true,
+                      };
+                    });
+                    setPdfStyleGroups(groups);
+                  }
+
+                  // Load legend from DB
+                  const { data: legendRows } = await supabase.from('pdf_legends')
+                    .select('*')
+                    .eq('analysis_id', analysisId)
+                    .limit(1);
+                  if (legendRows && legendRows.length > 0) {
+                    setPdfLegend({
+                      boundingBox: legendRows[0].bounding_box || { x: 0, y: 0, width: 0, height: 0 },
+                      entries: legendRows[0].entries || [],
+                    });
+                  }
+                }
+              });
+          }
         } else if (ft === 'dxf') {
           setPdfDoc(null);
           setPdfTotalPages(0);
@@ -1770,6 +1865,37 @@ export const DrawingsPage: React.FC = () => {
                     <FileType2 className="w-4 h-4" />
                   </button>
                 )}
+                {fileType === 'pdf' && pdfDoc && (
+                  <>
+                    <div className="w-px h-5 bg-slate-200 mx-0.5" />
+                    <button onClick={() => setShowPdfAnalysis(true)}
+                      className="p-1.5 rounded-lg transition hover:bg-white text-slate-600" title="Analiza PDF (wektorowa/rastrowa)">
+                      <BarChart3 className="w-4 h-4" />
+                    </button>
+                    {pdfAnalysis && (
+                      <>
+                        <button onClick={() => setShowPdfStyleGroups(!showPdfStyleGroups)}
+                          className={`p-1.5 rounded-lg transition ${showPdfStyleGroups ? 'bg-blue-100 text-blue-700' : 'hover:bg-white text-slate-600'}`} title="Grupy stylów PDF">
+                          <Filter className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => { if (pdfAnalysis && pdfTakeoffRules.length > 0) { const result = applyRules(pdfAnalysis, pdfTakeoffRules); setPdfTakeoffResult(result); } setShowPdfTakeoff(!showPdfTakeoff); }}
+                          className={`p-1.5 rounded-lg transition ${showPdfTakeoff ? 'bg-blue-100 text-blue-700' : 'hover:bg-white text-slate-600'}`} title="Przedmiar z PDF">
+                          <BookOpen className="w-4 h-4" />
+                        </button>
+                        {(pdfLegend || pdfAnalysisExtra?.legend) && (
+                          <button onClick={() => setShowPdfLegend(!showPdfLegend)}
+                            className={`p-1.5 rounded-lg transition ${showPdfLegend ? 'bg-amber-100 text-amber-700' : 'hover:bg-white text-slate-600'}`} title="Legenda PDF">
+                            <MapPin className="w-4 h-4" />
+                          </button>
+                        )}
+                        <button onClick={() => setShowPdfMappingDict(!showPdfMappingDict)}
+                          className={`p-1.5 rounded-lg transition ${showPdfMappingDict ? 'bg-indigo-100 text-indigo-700' : 'hover:bg-white text-slate-600'}`} title="Słownik mapowań">
+                          <Hash className="w-4 h-4" />
+                        </button>
+                      </>
+                    )}
+                  </>
+                )}
                 <button onClick={() => setShowNavigator(!showNavigator)}
                   className={`p-1.5 rounded-lg transition ${showNavigator ? 'bg-blue-100 text-blue-700' : 'hover:bg-white text-slate-600'}`} title="Panel nawigacji — lista oznaczeń">
                   <LayoutList className="w-4 h-4" />
@@ -1984,6 +2110,50 @@ export const DrawingsPage: React.FC = () => {
                             <text x={item.x} y={item.y + 5} fill="#f97316" fontSize="11" fontWeight="700" textAnchor="middle" fontFamily="Arial" paintOrder="stroke" stroke="white" strokeWidth={3}>{i + 1}</text>
                           </g>
                         ))}
+                        {/* PDF visible style groups overlay */}
+                        {showPdfStyleGroups && pdfStyleGroups.filter(g => g.visible).map(sg => {
+                          // When pdfAnalysisExtra is available (fresh analysis), use extraction.paths
+                          if (pdfAnalysisExtra) {
+                            return sg.pathIndices.slice(0, 150).map((pi, idx) => {
+                              const p = pdfAnalysisExtra.extraction.paths[pi];
+                              if (!p) return null;
+                              const d = p.segments.map(seg => {
+                                if (seg.type === 'M' && seg.points[0]) return `M${seg.points[0].x},${seg.points[0].y}`;
+                                if (seg.type === 'L' && seg.points[0]) return `L${seg.points[0].x},${seg.points[0].y}`;
+                                if (seg.type === 'C' && seg.points.length >= 3) return `C${seg.points[0].x},${seg.points[0].y} ${seg.points[1].x},${seg.points[1].y} ${seg.points[2].x},${seg.points[2].y}`;
+                                if (seg.type === 'Z') return 'Z';
+                                return '';
+                              }).join(' ');
+                              return <path key={`sgov-${sg.id}-${idx}`} d={d} fill="none" stroke={sg.strokeColor} strokeWidth={2} strokeOpacity={0.35} />;
+                            });
+                          }
+                          // Fallback: reconstruct from entity geometry (loaded from DB)
+                          if (!pdfAnalysis) return null;
+                          const entities = pdfAnalysis.entities.filter(e => e.layerName === sg.name && e.geometry.points?.length);
+                          return entities.slice(0, 150).map((entity, idx) => {
+                            const pts = entity.geometry.points!;
+                            const d = pts.map((p, i) => i === 0 ? `M${p.x},${p.y}` : `L${p.x},${p.y}`).join(' ');
+                            return <path key={`sgov-${sg.id}-${idx}`} d={d} fill="none" stroke={sg.strokeColor} strokeWidth={2} strokeOpacity={0.35} />;
+                          });
+                        })}
+                        {/* PDF highlight paths */}
+                        {pdfHighlightPaths.map((path, pi) => {
+                          const d = path.segments.map(seg => {
+                            if (seg.type === 'M' && seg.points[0]) return `M${seg.points[0].x},${seg.points[0].y}`;
+                            if (seg.type === 'L' && seg.points[0]) return `L${seg.points[0].x},${seg.points[0].y}`;
+                            if (seg.type === 'C' && seg.points.length >= 3) return `C${seg.points[0].x},${seg.points[0].y} ${seg.points[1].x},${seg.points[1].y} ${seg.points[2].x},${seg.points[2].y}`;
+                            if (seg.type === 'Z') return 'Z';
+                            return '';
+                          }).join(' ');
+                          return <path key={`pdfhl-${pi}`} d={d} fill="none" stroke="#f97316" strokeWidth={4} strokeOpacity={0.7} />;
+                        })}
+                        {/* PDF highlight points (symbols) */}
+                        {pdfHighlightPoints.map((pt, i) => (
+                          <g key={`pdfpt-${i}`}>
+                            <circle cx={pt.x} cy={pt.y} r={14} fill="#f97316" fillOpacity={0.25} stroke="#f97316" strokeWidth={2} />
+                            <text x={pt.x} y={pt.y + 4} fill="#f97316" fontSize="10" fontWeight="700" textAnchor="middle" fontFamily="Arial" paintOrder="stroke" stroke="white" strokeWidth={3}>{i + 1}</text>
+                          </g>
+                        ))}
                         {/* SNAP indicator */}
                         {dxfSnapEnabled && dxfSnapPoint && dxfViewBox && (() => {
                           const screenPt = dxfToScreenCoords(dxfSnapPoint, planNatW, planNatH, dxfViewBox);
@@ -2146,6 +2316,16 @@ export const DrawingsPage: React.FC = () => {
                       <span className="text-xs font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">Σ {countItems.length}</span>
                     )}
                     <button onClick={() => { setCountItems([]); setDxfCountMatches([]); setDxfCountLabel(''); }} className="p-1 hover:bg-red-50 rounded text-slate-400 hover:text-red-500" title="Wyczyść licznik">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+                {pdfHighlightLabel && (pdfHighlightPaths.length > 0 || pdfHighlightPoints.length > 0) && (
+                  <div className="flex items-center gap-1 ml-1">
+                    <span className="text-xs font-bold text-orange-700 bg-orange-50 px-2 py-0.5 rounded-full truncate max-w-[250px]" title={pdfHighlightLabel}>
+                      {pdfHighlightLabel}: {pdfHighlightPaths.length + pdfHighlightPoints.length}
+                    </span>
+                    <button onClick={() => { setPdfHighlightPaths([]); setPdfHighlightPoints([]); setPdfHighlightLabel(''); }} className="p-1 hover:bg-red-50 rounded text-slate-400 hover:text-red-500" title="Ukryj podświetlenie">
                       <X className="w-3.5 h-3.5" />
                     </button>
                   </div>
@@ -2800,6 +2980,7 @@ export const DrawingsPage: React.FC = () => {
       {showDxfTakeoff && dxfTakeoffResult && (
         <DxfTakeoffPanel
           result={dxfTakeoffResult}
+          analysis={dxfAnalysis || undefined}
           onItemClick={(item) => {
             // Highlight source entities on the drawing
             if (dxfData && dxfViewBox) {
@@ -2854,6 +3035,192 @@ export const DrawingsPage: React.FC = () => {
           svgContent={renderDxfFull(dxfData, dxfHiddenLayers).svg}
           drawingName={selectedPlan?.name}
           onClose={() => setShowDxfExportModal(false)}
+        />
+      )}
+
+      {/* PDF Analysis Modal */}
+      {showPdfAnalysis && pdfDoc && selectedPlan && currentUser?.company_id && (
+        <PdfAnalysisModal
+          pdfDoc={pdfDoc}
+          pageNumber={pdfPage}
+          companyId={currentUser.company_id}
+          drawingId={selectedPlan.id}
+          scaleRatio={selectedPlan.scale_ratio || undefined}
+          onAnalysisComplete={(analysis: DxfAnalysis, extra?: PdfAnalysisExtra) => {
+            setPdfAnalysis(analysis);
+            if (extra) {
+              setPdfAnalysisExtra(extra);
+              setPdfStyleGroups(extra.styleGroups);
+              if (extra.legend) setPdfLegend(extra.legend);
+            }
+            // Auto-apply rules and show takeoff
+            const rules = pdfTakeoffRules.length > 0 ? pdfTakeoffRules : getDefaultPdfElectricalRules();
+            if (pdfTakeoffRules.length === 0) {
+              setPdfTakeoffRules(rules);
+            }
+            const takeoffResult = applyRules(analysis, rules);
+            setPdfTakeoffResult(takeoffResult);
+            setShowPdfTakeoff(true);
+          }}
+          onClose={() => setShowPdfAnalysis(false)}
+        />
+      )}
+
+      {/* PDF Takeoff Panel (reuses DxfTakeoffPanel) */}
+      {showPdfTakeoff && pdfTakeoffResult && (
+        <DxfTakeoffPanel
+          result={pdfTakeoffResult}
+          analysis={pdfAnalysis || undefined}
+          onItemClick={(item) => {
+            if (!pdfAnalysis) return;
+            const paths: typeof pdfHighlightPaths = [];
+            const points: typeof pdfHighlightPoints = [];
+            for (const idx of item.sourceEntityIndices) {
+              const entity = pdfAnalysis.entities[idx];
+              if (!entity) continue;
+              if (entity.entityType === 'PDF_PATH' && entity.geometry.points?.length) {
+                const pathIdx = entity.properties?.pathIndex;
+                const srcPath = pathIdx != null && pdfAnalysisExtra ? pdfAnalysisExtra.extraction.paths[pathIdx] : null;
+                if (srcPath) {
+                  paths.push({ segments: srcPath.segments, color: srcPath.style.strokeColor });
+                } else {
+                  paths.push({ segments: [{ type: 'M', points: [entity.geometry.points[0]] }, ...entity.geometry.points.slice(1).map(p => ({ type: 'L' as const, points: [p] }))], color: entity.properties?.styleColor || '#f97316' });
+                }
+              } else if (entity.entityType === 'PDF_SYMBOL' && entity.geometry.center) {
+                points.push({ x: entity.geometry.center.x, y: entity.geometry.center.y, label: entity.properties?.symbolShape || '' });
+              } else if (entity.entityType === 'PDF_TEXT' && entity.geometry.points?.[0]) {
+                points.push({ x: entity.geometry.points[0].x, y: entity.geometry.points[0].y, label: 'T' });
+              }
+            }
+            setPdfHighlightPaths(paths);
+            setPdfHighlightPoints(points);
+            setPdfHighlightLabel(item.description);
+          }}
+          onClose={() => { setShowPdfTakeoff(false); setPdfHighlightPaths([]); setPdfHighlightPoints([]); setPdfHighlightLabel(''); }}
+          onOpenRules={() => setShowPdfRulesModal(true)}
+        />
+      )}
+
+      {/* PDF Takeoff Rules Modal (reuses DxfTakeoffRulesModal) */}
+      {showPdfRulesModal && currentUser?.company_id && (
+        <DxfTakeoffRulesModal
+          companyId={currentUser.company_id}
+          rules={pdfTakeoffRules}
+          onRulesChange={(rules) => {
+            setPdfTakeoffRules(rules);
+            if (pdfAnalysis) {
+              const result = applyRules(pdfAnalysis, rules);
+              setPdfTakeoffResult(result);
+            }
+          }}
+          onClose={() => setShowPdfRulesModal(false)}
+          onTestRules={pdfAnalysis ? () => {
+            const result = applyRules(pdfAnalysis!, pdfTakeoffRules);
+            setPdfTakeoffResult(result);
+            setShowPdfTakeoff(true);
+          } : undefined}
+        />
+      )}
+
+      {/* PDF Style Groups Panel */}
+      {showPdfStyleGroups && pdfStyleGroups.length > 0 && (
+        <PdfStyleGroupsPanel
+          styleGroups={pdfStyleGroups}
+          onToggleVisibility={(groupId) => {
+            setPdfStyleGroups(prev => prev.map(sg =>
+              sg.id === groupId ? { ...sg, visible: !sg.visible } : sg
+            ));
+          }}
+          onSetCategory={(groupId, category) => {
+            setPdfStyleGroups(prev => prev.map(sg =>
+              sg.id === groupId ? { ...sg, category } : sg
+            ));
+          }}
+          onHighlightGroup={(groupId) => {
+            const sg = pdfStyleGroups.find(g => g.id === groupId);
+            if (!sg) return;
+            const paths: typeof pdfHighlightPaths = [];
+            if (pdfAnalysisExtra) {
+              // Use extraction.paths (fresh analysis)
+              const indices = sg.pathIndices.slice(0, 200);
+              for (const pi of indices) {
+                const p = pdfAnalysisExtra.extraction.paths[pi];
+                if (p) paths.push({ segments: p.segments, color: sg.strokeColor });
+              }
+            } else if (pdfAnalysis) {
+              // Fallback: reconstruct from entity geometry (loaded from DB)
+              const entities = pdfAnalysis.entities.filter(e => e.layerName === sg.name && e.geometry.points?.length);
+              for (const entity of entities.slice(0, 200)) {
+                const pts = entity.geometry.points!;
+                paths.push({
+                  segments: [{ type: 'M', points: [pts[0]] }, ...pts.slice(1).map(p => ({ type: 'L' as const, points: [p] }))],
+                  color: sg.strokeColor,
+                });
+              }
+            }
+            setPdfHighlightPaths(paths);
+            setPdfHighlightPoints([]);
+            setPdfHighlightLabel(`${sg.name} (${sg.pathCount} ścieżek)`);
+          }}
+          onClose={() => setShowPdfStyleGroups(false)}
+        />
+      )}
+
+      {/* PDF Legend Panel */}
+      {showPdfLegend && (pdfLegend || pdfAnalysisExtra?.legend) && (
+        <PdfLegendPanel
+          legend={(pdfLegend || pdfAnalysisExtra?.legend)!}
+          styleGroups={pdfStyleGroups}
+          onApplyToGroups={(mappings) => {
+            const activeLegend = pdfLegend || pdfAnalysisExtra?.legend;
+            setPdfStyleGroups(prev => {
+              const updated = [...prev];
+              for (const m of mappings) {
+                // Find the legend entry to get its styleKey / sampleColor
+                const legendEntry = activeLegend?.entries.find(e => e.label === m.entryLabel);
+
+                for (const sg of updated) {
+                  // Priority 1: match by styleKey (set during legend extraction)
+                  if (legendEntry?.styleKey && sg.styleKey === legendEntry.styleKey) {
+                    sg.category = m.category;
+                    continue;
+                  }
+                  // Priority 2: match by sample color + line width
+                  if (legendEntry?.sampleColor &&
+                      sg.strokeColor === legendEntry.sampleColor &&
+                      Math.abs(sg.lineWidth - (legendEntry.sampleLineWidth || 0)) < 0.5) {
+                    sg.category = m.category;
+                    continue;
+                  }
+                  // Priority 3: match by color name in entry label
+                  const colorName = sg.strokeColor.toLowerCase();
+                  const groupColorWord = sg.name.match(/\(([^,]+)/)?.[1]?.trim().toLowerCase();
+                  if (groupColorWord && m.entryLabel.toLowerCase().includes(groupColorWord)) {
+                    sg.category = m.category;
+                  }
+                }
+              }
+              return updated;
+            });
+          }}
+          onClose={() => setShowPdfLegend(false)}
+        />
+      )}
+
+      {/* PDF Mapping Dictionary Panel */}
+      {showPdfMappingDict && currentUser?.company_id && (
+        <PdfMappingDictionaryPanel
+          companyId={currentUser.company_id}
+          onClose={() => setShowPdfMappingDict(false)}
+          onMappingsChanged={(mappings) => {
+            // Auto-generate rules from company mappings
+            const newRules = mappingsToRules(mappings);
+            setPdfTakeoffRules(prev => {
+              // Keep non-mapping rules, replace mapping-generated ones
+              const kept = prev.filter(r => !r.id.startsWith('mapping_'));
+              return [...kept, ...newRules];
+            });
+          }}
         />
       )}
 
