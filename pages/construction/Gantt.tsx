@@ -1555,6 +1555,21 @@ export const GanttPage: React.FC = () => {
     }
   }, [phaseForm.start_date, phaseForm.duration]);
 
+  const filteredFlatTasks = useMemo(() => {
+    let result = flatTasks;
+    if (search) result = result.filter(t => getTaskTitle(t).toLowerCase().includes(search.toLowerCase()));
+    if (filters.priorities.length > 0) result = result.filter(t => filters.priorities.includes(t.priority || 'normal'));
+    if (filters.statuses.length > 0) result = result.filter(t => {
+      const status = getDeadlineStatus(t);
+      if (filters.statuses.includes('overdue') && status === 'overdue') return true;
+      if (filters.statuses.includes('due-soon') && status === 'due-soon') return true;
+      if (filters.statuses.includes('ok') && (status === 'ok' || status === null)) return true;
+      return false;
+    });
+    if (filters.criticalOnly) result = result.filter(t => criticalPathIds.has(t.id));
+    return result;
+  }, [flatTasks, search, filters, criticalPathIds]);
+
   // ========== RENDER: PROJECT SELECTION VIEW ==========
   if (!selectedProject) {
     const filteredProjects = projects.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
@@ -1788,21 +1803,6 @@ export const GanttPage: React.FC = () => {
   }
 
   // ========== RENDER: GANTT VIEW ==========
-  const filteredFlatTasks = useMemo(() => {
-    let result = flatTasks;
-    if (search) result = result.filter(t => getTaskTitle(t).toLowerCase().includes(search.toLowerCase()));
-    if (filters.priorities.length > 0) result = result.filter(t => filters.priorities.includes(t.priority || 'normal'));
-    if (filters.statuses.length > 0) result = result.filter(t => {
-      const status = getDeadlineStatus(t);
-      if (filters.statuses.includes('overdue') && status === 'overdue') return true;
-      if (filters.statuses.includes('due-soon') && status === 'due-soon') return true;
-      if (filters.statuses.includes('ok') && (status === 'ok' || status === null)) return true;
-      return false;
-    });
-    if (filters.criticalOnly) result = result.filter(t => criticalPathIds.has(t.id));
-    return result;
-  }, [flatTasks, search, filters, criticalPathIds]);
-
   return (
     <div className="h-full flex flex-col bg-white">
       {/* Toast notifications */}
