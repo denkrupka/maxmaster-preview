@@ -268,6 +268,10 @@ export const OfferLandingPage: React.FC = () => {
       };
       setOffer(fullOffer);
 
+      // Auto-fill comment author name from representative or client
+      const repName = offerData.print_settings?.client_data?.representative_name || (clientRes.data as any)?.name || '';
+      if (repName) setCommentAuthorName(repName);
+
       // Load comments
       const { data: commentsData } = await supabase
         .from('offer_comments')
@@ -1296,14 +1300,18 @@ export const OfferLandingPage: React.FC = () => {
             <div className="p-6 pt-0 space-y-4">
               {/* Author name */}
               <div className="flex items-center gap-2">
-                <span className="text-xs text-slate-500">Twoje imię:</span>
-                <input
-                  type="text"
-                  value={commentAuthorName}
-                  onChange={e => setCommentAuthorName(e.target.value)}
-                  placeholder="Imię / Firma"
-                  className="flex-1 px-2 py-1 border border-slate-200 rounded text-sm"
-                />
+                <span className="text-xs text-slate-500">Komentujesz jako:</span>
+                {commentAuthorName ? (
+                  <span className="text-sm font-medium text-slate-700">{commentAuthorName}</span>
+                ) : (
+                  <input
+                    type="text"
+                    value={commentAuthorName}
+                    onChange={e => setCommentAuthorName(e.target.value)}
+                    placeholder="Imię / Firma"
+                    className="flex-1 px-2 py-1 border border-slate-200 rounded text-sm"
+                  />
+                )}
               </div>
               {/* Comment list */}
               <div className="space-y-3">
@@ -1314,7 +1322,7 @@ export const OfferLandingPage: React.FC = () => {
                       <div className="p-3">
                         <div className="flex items-center justify-between mb-1">
                           <span className={`text-xs font-medium ${comment.author_type === 'owner' ? 'text-blue-700' : 'text-amber-700'}`}>
-                            {comment.author_name || (comment.author_type === 'owner' ? 'Wykonawca' : 'Ja')}
+                            {comment.author_type === 'owner' ? (offer?.company?.name || comment.author_name || 'Wykonawca') : (comment.author_name || 'Ja')}
                           </span>
                           <span className="text-[10px] text-slate-400">
                             {new Date(comment.created_at).toLocaleString('pl-PL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
@@ -1332,7 +1340,7 @@ export const OfferLandingPage: React.FC = () => {
                         <div key={r.id} className="ml-4 p-2 border-t border-slate-100">
                           <div className="flex items-center justify-between mb-0.5">
                             <span className={`text-xs font-medium ${r.author_type === 'owner' ? 'text-blue-700' : 'text-amber-700'}`}>
-                              {r.author_name || (r.author_type === 'owner' ? 'Wykonawca' : 'Ja')}
+                              {r.author_type === 'owner' ? (offer?.company?.name || r.author_name || 'Wykonawca') : (r.author_name || 'Ja')}
                             </span>
                             <span className="text-[10px] text-slate-400">
                               {new Date(r.created_at).toLocaleString('pl-PL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}

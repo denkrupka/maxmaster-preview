@@ -2422,6 +2422,32 @@ export interface Offer {
   items?: OfferItem[];
 }
 
+export type OfferRequestType = 'robota' | 'materialy' | 'sprzet' | 'all';
+export type OfferRequestStatus = 'draft' | 'sent' | 'viewed' | 'responded' | 'accepted' | 'rejected';
+
+export interface OfferRequest {
+  id: string;
+  company_id: string;
+  offer_id: string;
+  subcontractor_id?: string;
+  name: string;
+  request_type: OfferRequestType;
+  status: OfferRequestStatus;
+  share_token?: string;
+  notes?: string;
+  print_settings: Record<string, any>;
+  response_data?: Record<string, any>;
+  sent_at?: string;
+  viewed_at?: string;
+  responded_at?: string;
+  created_by_id?: string;
+  created_at: string;
+  updated_at: string;
+  // Joined
+  offer?: Offer;
+  subcontractor?: Contractor;
+}
+
 export interface OfferSection {
   id: string;
   offer_id: string;

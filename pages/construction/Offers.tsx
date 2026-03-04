@@ -305,6 +305,8 @@ export const OffersPage: React.FC = () => {
   const [showBulkBar, setShowBulkBar] = useState(false);
   const [showBulkRabatModal, setShowBulkRabatModal] = useState(false);
   const [bulkRabatValue, setBulkRabatValue] = useState(0);
+  const [itemSearchQuery, setItemSearchQuery] = useState('');
+  const [itemFilterSection, setItemFilterSection] = useState('');
   // Preview & Send
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [previewTemplate, setPreviewTemplate] = useState<'netto' | 'brutto' | 'rabat' | 'no_prices' | 'full'>('netto');
@@ -317,6 +319,18 @@ export const OffersPage: React.FC = () => {
   const [sendingOffer, setSendingOffer] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
   const [sendManualContact, setSendManualContact] = useState({ first_name: '', last_name: '', email: '', phone: '' });
+
+  // Zapytania ofertowe (RFQ)
+  const [showCreateRequestModal, setShowCreateRequestModal] = useState(false);
+  const [requestType, setRequestType] = useState<'robota' | 'materialy' | 'sprzet' | 'all'>('all');
+  const [requestStep, setRequestStep] = useState<'type' | 'preview'>('type');
+  const [offerRequests, setOfferRequests] = useState<any[]>([]);
+  const [offersTab, setOffersTab] = useState<'offers' | 'requests'>('offers');
+  const [selectedRequest, setSelectedRequest] = useState<any>(null);
+  const [requestSubcontractorId, setRequestSubcontractorId] = useState('');
+  const [requestName, setRequestName] = useState('');
+  const [subcontractors, setSubcontractors] = useState<any[]>([]);
+  const [creatingRequest, setCreatingRequest] = useState(false);
 
   // Toast notification system
   interface ToastMessage { id: number; text: string; type: 'success' | 'error' | 'info'; }
@@ -529,6 +543,14 @@ export const OffersPage: React.FC = () => {
       if (projectsRes.data) setProjects(projectsRes.data);
       if (contractorsRes.data) setContractors(contractorsRes.data);
       if (kosztorysRes.data) setKosztorysEstimates(kosztorysRes.data);
+
+      // Load subcontractors and offer requests
+      const [subRes, reqRes] = await Promise.all([
+        supabase.from('contractors').select('*').eq('company_id', currentUser.company_id).eq('contractor_type', 'subcontractor').is('deleted_at', null),
+        supabase.from('offer_requests').select('*, offer:offers(name, number), subcontractor:contractors(name)').eq('company_id', currentUser.company_id).order('created_at', { ascending: false })
+      ]);
+      if (subRes.data) setSubcontractors(subRes.data);
+      if (reqRes.data) setOfferRequests(reqRes.data);
     } catch (err) {
       console.error('Error loading offers:', err);
     } finally {
@@ -4555,11 +4577,28 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                 <StatusBadge status={selectedOffer.status} />
                 <button
                   onClick={() => setShowSettingsModal(true)}
-                  className="p-1.5 border border-slate-200 rounded-lg hover:bg-slate-50"
-                  title="Ustawienia oferty"
+                  className={`p-1.5 border border-slate-200 rounded-lg ${selectedOffer.status === 'accepted' ? 'opacity-50 cursor-not-allowed' : 'hover:bg-slate-50'}`}
+                  title={selectedOffer.status === 'accepted' ? 'Ustawienia zablokowane — oferta zaakceptowana' : 'Ustawienia oferty'}
+                  disabled={selectedOffer.status === 'accepted'}
                 >
                   <Settings className="w-4 h-4 text-slate-500" />
                 </button>
+                {!editMode && selectedOffer.status !== 'draft' && (
+                  <button
+                    onClick={() => {
+                      setRequestType('all');
+                      setRequestStep('type');
+                      setRequestName(`Zapytanie — ${selectedOffer.name || selectedOffer.number || ''}`);
+                      setRequestSubcontractorId('');
+                      setShowCreateRequestModal(true);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 border border-indigo-200 bg-indigo-50 text-indigo-700 rounded-lg hover:bg-indigo-100 text-sm"
+                    title="Utwórz zapytanie ofertowe dla podwykonawcy"
+                  >
+                    <FileText className="w-4 h-4" />
+                    Zapytanie ofertowe
+                  </button>
+                )}
                 {selectedOffer.status === 'draft' && (
                   <div className="flex gap-2">
                     {!editMode ? (
@@ -4787,7 +4826,7 @@ tr{page-break-inside:avoid;page-break-after:auto;}
           )}
 
           {/* Info cards */}
-          <div className={`grid grid-cols-1 ${editMode ? 'md:grid-cols-4' : 'md:grid-cols-5'} gap-4 p-6 border-b border-slate-200`}>
+          <div className={`grid grid-cols-1 ${editMode ? 'md:grid-cols-4' : 'md:grid-cols-3 lg:grid-cols-6'} gap-4 p-6 border-b border-slate-200`}>
             {!editMode && (
               <div className="p-4 bg-slate-50 rounded-lg">
                 <p className="text-sm text-slate-500 mb-1">Klient</p>
@@ -4796,12 +4835,6 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                     <p className="font-medium text-slate-900">{(selectedOffer as any).client.name}</p>
                     {(selectedOffer as any).client.nip && <p className="text-xs text-slate-500">NIP: {(selectedOffer as any).client.nip}</p>}
                     {(selectedOffer as any).client.legal_address && <p className="text-xs text-slate-500">{(selectedOffer as any).client.legal_address}</p>}
-                    {(() => {
-                      const ps = selectedOffer?.print_settings?.client_data;
-                      const rep = offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0];
-                      const rn = rep ? `${rep.first_name || ''} ${rep.last_name || ''}`.trim() : ps?.representative_name || '';
-                      return rn ? <p className="text-xs text-slate-500 mt-1">Przedstawiciel: {rn}</p> : null;
-                    })()}
                   </div>
                 ) : offerClientData.client_name ? (
                   <div>
@@ -4814,25 +4847,27 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                 ) : (
                   <p className="font-medium text-slate-900">Nie przypisano</p>
                 )}
-                {/* Representative in view mode */}
-                {(() => {
-                  const ps = selectedOffer?.print_settings?.client_data;
-                  const rep = offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0];
-                  const repName = rep ? `${rep.first_name || ''} ${rep.last_name || ''}`.trim() : ps?.representative_name || '';
-                  const repEmail = rep?.email || ps?.representative_email || '';
-                  const repPhone = rep?.phone || ps?.representative_phone || '';
-                  if (!repName) return null;
-                  return (
-                    <div className="mt-2 pt-2 border-t border-slate-200">
-                      <p className="text-[10px] text-slate-400 uppercase tracking-wider">Przedstawiciel</p>
-                      <p className="text-xs font-medium text-slate-700">{repName}</p>
-                      {repEmail && <p className="text-[11px] text-slate-500">{repEmail}</p>}
-                      {repPhone && <p className="text-[11px] text-slate-500">{repPhone}</p>}
-                    </div>
-                  );
-                })()}
               </div>
             )}
+            {/* Przedstawiciel klienta tile */}
+            {!editMode && (() => {
+              const ps = selectedOffer?.print_settings?.client_data;
+              const rep = offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0];
+              const repName = rep ? `${rep.first_name || ''} ${rep.last_name || ''}`.trim() : ps?.representative_name || '';
+              const repPosition = rep?.position || ps?.representative_position || '';
+              const repEmail = rep?.email || ps?.representative_email || '';
+              const repPhone = rep?.phone || ps?.representative_phone || '';
+              if (!repName) return null;
+              return (
+                <div className="p-4 bg-slate-50 rounded-lg">
+                  <p className="text-sm text-slate-500 mb-1">Przedstawiciel klienta</p>
+                  <p className="font-medium text-slate-900">{repName}</p>
+                  {repPosition && <p className="text-xs text-slate-500">{repPosition}</p>}
+                  {repEmail && <p className="text-xs text-slate-500">{repEmail}</p>}
+                  {repPhone && <p className="text-xs text-slate-500">{repPhone}</p>}
+                </div>
+              );
+            })()}
             <div className="p-4 bg-slate-50 rounded-lg">
               <p className="text-sm text-slate-500 mb-1">Projekt</p>
               {editMode ? (
@@ -4846,10 +4881,35 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                     .filter(p => !offerData.client_id || (p as any).contractor_client_id === offerData.client_id || !(p as any).contractor_client_id)
                     .map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
+              ) : (selectedOffer as any).project?.name ? (
+                <p className="font-medium text-slate-900">{(selectedOffer as any).project.name}</p>
               ) : (
-                <p className="font-medium text-slate-900">
-                  {(selectedOffer as any).project?.name || 'Nie przypisano'}
-                </p>
+                <div>
+                  <p className="text-sm text-slate-400 mb-2">Nie przypisano</p>
+                  <button
+                    onClick={async () => {
+                      if (!currentUser) return;
+                      try {
+                        const { data: newProj } = await supabase.from('projects').insert({
+                          company_id: currentUser.company_id,
+                          name: selectedOffer.name || selectedOffer.number || 'Nowy projekt',
+                          status: 'active',
+                          contractor_client_id: (selectedOffer as any).client_id || null,
+                          color: '#3b82f6'
+                        }).select('*').single();
+                        if (newProj) {
+                          await supabase.from('offers').update({ project_id: newProj.id }).eq('id', selectedOffer.id);
+                          setProjects(prev => [...prev, newProj]);
+                          loadOfferDetails(selectedOffer.id);
+                        }
+                      } catch (err) { console.error('Error creating project:', err); }
+                    }}
+                    className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+                  >
+                    <Plus className="w-3 h-3" />
+                    Utwórz projekt
+                  </button>
+                </div>
               )}
             </div>
             <div className="p-4 bg-slate-50 rounded-lg">
@@ -5175,23 +5235,50 @@ tr{page-break-inside:avoid;page-break-after:auto;}
           <div className="p-6 border-b border-slate-200">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-lg font-semibold text-slate-900">Pozycje oferty</h2>
-              <div className="flex gap-2">
+              <div className="flex gap-2 items-center">
                 {sections.length > 0 && (
-                  <button
-                    onClick={() => {
-                      const allExpanded = sections.every(s => s.isExpanded);
-                      setSections(prev => {
-                        const toggleAll = (secs: LocalOfferSection[]): LocalOfferSection[] =>
-                          secs.map(s => ({ ...s, isExpanded: !allExpanded, children: s.children ? toggleAll(s.children) : [] }));
-                        return toggleAll(prev);
-                      });
-                    }}
-                    className="flex items-center gap-1 px-3 py-1.5 border border-slate-200 rounded-lg text-sm hover:bg-slate-50"
-                    title={sections.every(s => s.isExpanded) ? 'Zwiń wszystkie sekcje' : 'Rozwiń wszystkie sekcje'}
-                  >
-                    {sections.every(s => s.isExpanded) ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                    {sections.every(s => s.isExpanded) ? 'Zwiń' : 'Rozwiń'} wszystko
-                  </button>
+                  <>
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="text"
+                        value={itemSearchQuery}
+                        onChange={e => setItemSearchQuery(e.target.value)}
+                        placeholder="Szukaj pozycji..."
+                        className="pl-8 pr-2 py-1.5 border border-slate-200 rounded-lg text-sm w-48 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                      {itemSearchQuery && (
+                        <button onClick={() => setItemSearchQuery('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                    {sections.length > 1 && (
+                      <select
+                        value={itemFilterSection}
+                        onChange={e => setItemFilterSection(e.target.value)}
+                        className="px-2 py-1.5 border border-slate-200 rounded-lg text-sm"
+                      >
+                        <option value="">Wszystkie sekcje</option>
+                        {sections.map(s => <option key={s.id} value={s.id}>{s.name || 'Bez nazwy'}</option>)}
+                      </select>
+                    )}
+                    <button
+                      onClick={() => {
+                        const allExpanded = sections.every(s => s.isExpanded);
+                        setSections(prev => {
+                          const toggleAll = (secs: LocalOfferSection[]): LocalOfferSection[] =>
+                            secs.map(s => ({ ...s, isExpanded: !allExpanded, children: s.children ? toggleAll(s.children) : [] }));
+                          return toggleAll(prev);
+                        });
+                      }}
+                      className="flex items-center gap-1 px-3 py-1.5 border border-slate-200 rounded-lg text-sm hover:bg-slate-50"
+                      title={sections.every(s => s.isExpanded) ? 'Zwiń wszystkie sekcje' : 'Rozwiń wszystkie sekcje'}
+                    >
+                      {sections.every(s => s.isExpanded) ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                      {sections.every(s => s.isExpanded) ? 'Zwiń' : 'Rozwiń'} wszystko
+                    </button>
+                  </>
                 )}
                 {editMode && (
                   <>
@@ -5240,7 +5327,15 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                   </div>
                 )}
 
-                {sections.map((section, sIdx) => (
+                {sections
+                  .filter(section => !itemFilterSection || section.id === itemFilterSection)
+                  .filter(section => {
+                    if (!itemSearchQuery) return true;
+                    const q = itemSearchQuery.toLowerCase();
+                    if (section.name?.toLowerCase().includes(q)) return true;
+                    return section.items?.some((item: any) => item.name?.toLowerCase().includes(q) || item.description?.toLowerCase().includes(q));
+                  })
+                  .map((section, sIdx) => (
                   <React.Fragment key={section.id}>
                     {renderSection(section, 0)}
                     {/* Divider after each section */}
@@ -5402,10 +5497,6 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                   <span>-{formatCurrency(totals.totalDiscount)}</span>
                 </div>
               )}
-              <div className="flex justify-between">
-                <span className="text-slate-600 font-bold">Netto po rabacie:</span>
-                <span className="font-bold text-blue-600">{formatCurrency(totals.nettoAfterDiscount)}</span>
-              </div>
               {/* Surcharges from warunki */}
               {(() => {
                 const ptRule = paymentTermRules.find(r => String(r.value) === paymentTerm);
@@ -5415,21 +5506,17 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                 if (ptRule && ptRule.surcharge !== 0 && paymentTermApply) surcharges.push({ label: `Termin płatności (${paymentTerm} dni)`, pct: ptRule.surcharge, val: totals.nettoAfterDiscount * (ptRule.surcharge / 100) });
                 if (wrRule && wrRule.surcharge !== 0 && warrantyApply) surcharges.push({ label: `Gwarancja (${warrantyPeriod} mies.)`, pct: wrRule.surcharge, val: totals.nettoAfterDiscount * (wrRule.surcharge / 100) });
                 if (ifRule && ifRule.surcharge !== 0 && invoiceFreqApply) surcharges.push({ label: `Fakturowanie (co ${invoiceFrequency} dni)`, pct: ifRule.surcharge, val: totals.nettoAfterDiscount * (ifRule.surcharge / 100) });
-                return surcharges.length > 0 ? (
-                  <>
-                    {surcharges.map((s, i) => (
-                      <div key={i} className={`flex justify-between text-sm ${s.pct > 0 ? 'text-red-500' : 'text-green-600'}`}>
-                        <span>{s.label} ({s.pct > 0 ? '+' : ''}{s.pct}%):</span>
-                        <span>{s.pct > 0 ? '+' : ''}{formatCurrency(s.val)}</span>
-                      </div>
-                    ))}
-                    <div className="flex justify-between font-semibold">
-                      <span className="text-slate-700">Netto po rabacie:</span>
-                      <span className="text-blue-700">{formatCurrency(totals.nettoAfterSurcharges)}</span>
-                    </div>
-                  </>
-                ) : null;
+                return surcharges.length > 0 ? surcharges.map((s, i) => (
+                  <div key={i} className={`flex justify-between text-sm ${s.pct > 0 ? 'text-red-500' : 'text-green-600'}`}>
+                    <span>{s.label} ({s.pct > 0 ? '+' : ''}{s.pct}%):</span>
+                    <span>{s.pct > 0 ? '+' : ''}{formatCurrency(s.val)}</span>
+                  </div>
+                )) : null;
               })()}
+              <div className="flex justify-between font-semibold">
+                <span className="text-slate-700">Netto po rabacie:</span>
+                <span className="text-blue-700">{formatCurrency(totals.nettoAfterSurcharges)}</span>
+              </div>
               {totals.relatedCostsTotal > 0 && (
                 <div className="flex justify-between text-sm text-slate-500">
                   <span>Koszty powiązane:</span>
@@ -5785,7 +5872,7 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                               <span className="w-2 h-2 rounded-full bg-blue-500 shrink-0" />
                             )}
                             <span className={`text-xs font-medium ${comment.author_type === 'owner' ? 'text-blue-700' : 'text-amber-700'}`}>
-                              {comment.author_name || (comment.author_type === 'owner' ? 'Ty' : 'Odbiorca')}
+                              {comment.author_type === 'owner' ? (state.currentCompany?.name || comment.author_name || 'Ty') : (comment.author_name || 'Odbiorca')}
                             </span>
                           </div>
                           <span className="text-[10px] text-slate-400">
@@ -5831,7 +5918,7 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                         <div key={reply.id} className="ml-4 p-2.5 border-t border-slate-100">
                           <div className="flex items-center justify-between mb-1">
                             <span className={`text-xs font-medium ${reply.author_type === 'owner' ? 'text-blue-700' : 'text-amber-700'}`}>
-                              {reply.author_name || (reply.author_type === 'owner' ? 'Ty' : 'Odbiorca')}
+                              {reply.author_type === 'owner' ? (state.currentCompany?.name || reply.author_name || 'Ty') : (reply.author_name || 'Odbiorca')}
                             </span>
                             <span className="text-[10px] text-slate-400">
                               {new Date(reply.created_at).toLocaleString('pl-PL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
@@ -5970,127 +6057,355 @@ tr{page-break-inside:avoid;page-break-after:auto;}
   // ============================================
   // RENDER: LIST VIEW
   // ============================================
+  const RequestStatusBadge = ({ status }: { status: string }) => {
+    const cfg: Record<string, { bg: string; text: string; label: string }> = {
+      draft: { bg: 'bg-slate-100', text: 'text-slate-700', label: 'Szkic' },
+      sent: { bg: 'bg-blue-100', text: 'text-blue-700', label: 'Wysłane' },
+      viewed: { bg: 'bg-cyan-100', text: 'text-cyan-700', label: 'Wyświetlone' },
+      responded: { bg: 'bg-amber-100', text: 'text-amber-700', label: 'Odpowiedziane' },
+      accepted: { bg: 'bg-green-100', text: 'text-green-700', label: 'Zaakceptowane' },
+      rejected: { bg: 'bg-red-100', text: 'text-red-700', label: 'Odrzucone' },
+    };
+    const c = cfg[status] || cfg.draft;
+    return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${c.bg} ${c.text}`}>{c.label}</span>;
+  };
+
+  const RequestTypeBadge = ({ type }: { type: string }) => {
+    const cfg: Record<string, { bg: string; text: string; label: string }> = {
+      robota: { bg: 'bg-blue-50', text: 'text-blue-700', label: 'Robota' },
+      materialy: { bg: 'bg-amber-50', text: 'text-amber-700', label: 'Materiały' },
+      sprzet: { bg: 'bg-green-50', text: 'text-green-700', label: 'Sprzęt' },
+      all: { bg: 'bg-indigo-50', text: 'text-indigo-700', label: 'Cały zakres' },
+    };
+    const c = cfg[type] || cfg.all;
+    return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${c.bg} ${c.text}`}>{c.label}</span>;
+  };
+
   const renderListView = () => (
     <div className="p-6">
-      <div className="mb-6 flex justify-end">
-        <button
-          onClick={() => { resetOfferForm(); setShowCreateModal(true); }}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
-        >
-          <Plus className="w-5 h-5" />
-          Nowa oferta
-        </button>
-      </div>
-
-
-      {/* Filters & List */}
-      <div className="bg-white rounded-xl border border-slate-200">
-        <div className="p-4 border-b border-slate-200 flex gap-4">
-          <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-            <input
-              type="text"
-              placeholder="Szukaj oferty..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            />
-          </div>
-          <select
-            value={statusFilter}
-            onChange={e => setStatusFilter(e.target.value as OfferStatus | 'all')}
-            className="px-4 py-2 border border-slate-200 rounded-lg"
+      {/* Tabs */}
+      <div className="mb-6 flex items-center justify-between">
+        <div className="flex border-b border-slate-200">
+          <button
+            onClick={() => setOffersTab('offers')}
+            className={`px-5 py-2.5 text-sm font-medium border-b-2 transition ${offersTab === 'offers' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
           >
-            <option value="all">Wszystkie statusy</option>
-            <option value="draft">Wersja robocza</option>
-            <option value="sent">Wysłane</option>
-            <option value="accepted">Zaakceptowane</option>
-            <option value="rejected">Odrzucone</option>
-          </select>
+            Oferty dla klientów
+            {offers.length > 0 && <span className="ml-1.5 text-xs text-slate-400">({offers.length})</span>}
+          </button>
+          <button
+            onClick={() => setOffersTab('requests')}
+            className={`px-5 py-2.5 text-sm font-medium border-b-2 transition ${offersTab === 'requests' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+          >
+            Zapytania dla podwykonawców
+            {offerRequests.length > 0 && <span className="ml-1.5 text-xs text-slate-400">({offerRequests.length})</span>}
+          </button>
         </div>
-
-        {loading ? (
-          <div className="flex items-center justify-center h-64">
-            <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
-          </div>
-        ) : filteredOffers.length === 0 ? (
-          <div className="text-center py-12">
-            <FileText className="w-16 h-16 text-slate-200 mx-auto mb-4" />
-            <p className="text-lg font-medium text-slate-600 mb-1">Brak ofert</p>
-            <p className="text-sm text-slate-400 mb-4">Utwórz swoją pierwszą ofertę, aby rozpocząć ofertowanie.</p>
-            <button
-              onClick={() => { resetOfferForm(); setShowCreateModal(true); }}
-              className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white hover:bg-blue-700 rounded-lg transition text-sm font-medium"
-            >
-              <Plus className="w-4 h-4" />
-              Utwórz ofertę
-            </button>
-          </div>
+        {offersTab === 'offers' ? (
+          <button
+            onClick={() => { resetOfferForm(); setShowCreateModal(true); }}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+          >
+            <Plus className="w-5 h-5" />
+            Nowa oferta
+          </button>
         ) : (
-          <table className="min-w-full divide-y divide-slate-200">
-            <thead className="bg-slate-50">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Nr</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Nazwa</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Klient</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Status</th>
-                <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase">Wartość netto</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Ważna do</th>
-                <th className="px-4 py-3 text-center text-xs font-medium text-slate-500 uppercase">Akcje</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200">
-              {filteredOffers.map(offer => (
-                <tr
-                  key={offer.id}
-                  className="hover:bg-slate-50 cursor-pointer"
-                  onClick={() => { setSelectedOffer(offer); loadOfferDetails(offer.id); }}
-                >
-                  <td className="px-4 py-3 text-sm font-medium text-slate-900">{offer.number || '-'}</td>
-                  <td className="px-4 py-3 text-sm text-slate-700">{offer.name}</td>
-                  <td className="px-4 py-3 text-sm text-slate-600">{(offer as any).client?.name || '-'}</td>
-                  <td className="px-4 py-3">
-                    <StatusBadge status={offer.status} />
-                  </td>
-                  <td className="px-4 py-3 text-sm font-medium text-slate-900 text-right">
-                    {formatCurrency(offer.final_amount)}
-                  </td>
-                  <td className="px-4 py-3 text-sm text-slate-500">
-                    {offer.valid_until ? formatDate(offer.valid_until) : '-'}
-                  </td>
-                  <td className="px-4 py-3 text-center" onClick={e => e.stopPropagation()}>
-                    <div className="flex items-center justify-center gap-1">
-                      <button
-                        onClick={() => handleOpenEditOffer(offer)}
-                        className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded"
-                        title="Edytuj"
-                      >
-                        <Pencil className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => handleDuplicateOffer(offer)}
-                        className="p-1.5 text-slate-400 hover:text-green-600 hover:bg-green-50 rounded"
-                        title="Duplikuj ofertę"
-                      >
-                        <Copy className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => handleDeleteOffer(offer)}
-                        className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded"
-                        title="Usuń"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <button
+            onClick={() => {
+              // Open create request modal — need to select an offer first
+              setRequestType('all');
+              setRequestStep('type');
+              setRequestName('');
+              setRequestSubcontractorId('');
+              setShowCreateRequestModal(true);
+            }}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition"
+          >
+            <Plus className="w-5 h-5" />
+            Nowe zapytanie
+          </button>
         )}
       </div>
+
+      {offersTab === 'offers' ? (
+        <>
+          {/* Filters & List */}
+          <div className="bg-white rounded-xl border border-slate-200">
+            <div className="p-4 border-b border-slate-200 flex gap-4">
+              <div className="flex-1 relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Szukaj oferty..."
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <select
+                value={statusFilter}
+                onChange={e => setStatusFilter(e.target.value as OfferStatus | 'all')}
+                className="px-4 py-2 border border-slate-200 rounded-lg"
+              >
+                <option value="all">Wszystkie statusy</option>
+                <option value="draft">Wersja robocza</option>
+                <option value="sent">Wysłane</option>
+                <option value="accepted">Zaakceptowane</option>
+                <option value="rejected">Odrzucone</option>
+              </select>
+            </div>
+
+            {loading ? (
+              <div className="flex items-center justify-center h-64">
+                <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
+              </div>
+            ) : filteredOffers.length === 0 ? (
+              <div className="text-center py-12">
+                <FileText className="w-16 h-16 text-slate-200 mx-auto mb-4" />
+                <p className="text-lg font-medium text-slate-600 mb-1">Brak ofert</p>
+                <p className="text-sm text-slate-400 mb-4">Utwórz swoją pierwszą ofertę, aby rozpocząć ofertowanie.</p>
+                <button
+                  onClick={() => { resetOfferForm(); setShowCreateModal(true); }}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white hover:bg-blue-700 rounded-lg transition text-sm font-medium"
+                >
+                  <Plus className="w-4 h-4" />
+                  Utwórz ofertę
+                </button>
+              </div>
+            ) : (
+              <table className="min-w-full divide-y divide-slate-200">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Nr</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Nazwa</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Klient</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Status</th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase">Wartość netto</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Ważna do</th>
+                    <th className="px-4 py-3 text-center text-xs font-medium text-slate-500 uppercase">Akcje</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {filteredOffers.map(offer => (
+                    <tr
+                      key={offer.id}
+                      className="hover:bg-slate-50 cursor-pointer"
+                      onClick={() => { setSelectedOffer(offer); loadOfferDetails(offer.id); }}
+                    >
+                      <td className="px-4 py-3 text-sm font-medium text-slate-900">{offer.number || '-'}</td>
+                      <td className="px-4 py-3 text-sm text-slate-700">{offer.name}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{(offer as any).client?.name || '-'}</td>
+                      <td className="px-4 py-3">
+                        <StatusBadge status={offer.status} />
+                      </td>
+                      <td className="px-4 py-3 text-sm font-medium text-slate-900 text-right">
+                        {formatCurrency(offer.final_amount)}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-slate-500">
+                        {offer.valid_until ? formatDate(offer.valid_until) : '-'}
+                      </td>
+                      <td className="px-4 py-3 text-center" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center justify-center gap-1">
+                          <button
+                            onClick={() => handleOpenEditOffer(offer)}
+                            className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded"
+                            title="Edytuj"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handleDuplicateOffer(offer)}
+                            className="p-1.5 text-slate-400 hover:text-green-600 hover:bg-green-50 rounded"
+                            title="Duplikuj ofertę"
+                          >
+                            <Copy className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteOffer(offer)}
+                            className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded"
+                            title="Usuń"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
+      ) : (
+        /* Requests tab */
+        <div className="bg-white rounded-xl border border-slate-200">
+          {offerRequests.length === 0 ? (
+            <div className="text-center py-12">
+              <FileText className="w-16 h-16 text-slate-200 mx-auto mb-4" />
+              <p className="text-lg font-medium text-slate-600 mb-1">Brak zapytań ofertowych</p>
+              <p className="text-sm text-slate-400 mb-4">Utwórz zapytanie z widoku szczegółów oferty.</p>
+            </div>
+          ) : (
+            <table className="min-w-full divide-y divide-slate-200">
+              <thead className="bg-slate-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Nazwa</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Typ zapytania</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Podwykonawca</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Oferta źródłowa</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Status</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Data</th>
+                  <th className="px-4 py-3 text-center text-xs font-medium text-slate-500 uppercase">Akcje</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {offerRequests.map(req => (
+                  <tr
+                    key={req.id}
+                    className="hover:bg-slate-50 cursor-pointer"
+                    onClick={() => setSelectedRequest(req)}
+                  >
+                    <td className="px-4 py-3 text-sm font-medium text-slate-900">{req.name || '-'}</td>
+                    <td className="px-4 py-3"><RequestTypeBadge type={req.request_type} /></td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{req.subcontractor?.name || '-'}</td>
+                    <td className="px-4 py-3 text-sm text-slate-500">{req.offer?.name || req.offer?.number || '-'}</td>
+                    <td className="px-4 py-3"><RequestStatusBadge status={req.status} /></td>
+                    <td className="px-4 py-3 text-sm text-slate-500">
+                      {new Date(req.created_at).toLocaleDateString('pl-PL')}
+                    </td>
+                    <td className="px-4 py-3 text-center" onClick={e => e.stopPropagation()}>
+                      <div className="flex items-center justify-center gap-1">
+                        <button
+                          onClick={() => {
+                            const url = `${window.location.origin}/#/offer-request/${req.share_token}`;
+                            navigator.clipboard.writeText(url);
+                            showToast('Link skopiowany', 'success');
+                          }}
+                          className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded"
+                          title="Kopiuj link"
+                        >
+                          <LinkIcon className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={async () => {
+                            if (!confirm('Usunąć zapytanie?')) return;
+                            await supabase.from('offer_requests').delete().eq('id', req.id);
+                            setOfferRequests(prev => prev.filter(r => r.id !== req.id));
+                            showToast('Zapytanie usunięte', 'info');
+                          }}
+                          className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded"
+                          title="Usuń"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
     </div>
   );
+
+  // Request detail modal
+  const renderRequestDetail = () => {
+    if (!selectedRequest) return null;
+    const items = selectedRequest.print_settings?.items || [];
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4">
+        <div className="bg-white rounded-xl w-full max-w-3xl max-h-[85vh] flex flex-col">
+          <div className="p-4 border-b border-slate-200 flex justify-between items-center">
+            <div>
+              <h2 className="text-lg font-semibold">{selectedRequest.name}</h2>
+              <div className="flex items-center gap-2 mt-1">
+                <RequestTypeBadge type={selectedRequest.request_type} />
+                <RequestStatusBadge status={selectedRequest.status} />
+              </div>
+            </div>
+            <button onClick={() => setSelectedRequest(null)} className="p-1 hover:bg-slate-100 rounded">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+          <div className="p-6 overflow-y-auto flex-1 space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-slate-50 rounded-lg p-3">
+                <p className="text-xs text-slate-500 mb-1">Oferta źródłowa</p>
+                <p className="text-sm font-medium">{selectedRequest.offer?.name || selectedRequest.offer?.number || '-'}</p>
+              </div>
+              <div className="bg-slate-50 rounded-lg p-3">
+                <p className="text-xs text-slate-500 mb-1">Podwykonawca</p>
+                <p className="text-sm font-medium">{selectedRequest.subcontractor?.name || 'Nie przypisano'}</p>
+              </div>
+            </div>
+
+            {selectedRequest.response_data && (
+              <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                <p className="text-sm font-medium text-green-800 mb-2">Odpowiedź podwykonawcy</p>
+                <pre className="text-xs text-green-700 whitespace-pre-wrap">{JSON.stringify(selectedRequest.response_data, null, 2)}</pre>
+              </div>
+            )}
+
+            <div className="border border-slate-200 rounded-lg overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="text-left p-2 text-slate-600">Lp.</th>
+                    <th className="text-left p-2 text-slate-600">Sekcja</th>
+                    <th className="text-left p-2 text-slate-600">Nazwa</th>
+                    <th className="text-left p-2 text-slate-600">Jedn.</th>
+                    <th className="text-right p-2 text-slate-600">Ilość</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((item: any, i: number) => (
+                    <tr key={item.id || i} className="border-t border-slate-100">
+                      <td className="p-2 text-slate-500">{i + 1}</td>
+                      <td className="p-2 text-slate-500">{item.section_name || '-'}</td>
+                      <td className="p-2 font-medium text-slate-900">{item.name}</td>
+                      <td className="p-2 text-slate-500">{item.unit || 'szt.'}</td>
+                      <td className="p-2 text-right text-slate-700">{item.quantity}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div className="p-4 border-t border-slate-200 flex justify-between">
+            <button
+              onClick={() => {
+                const url = `${window.location.origin}/#/offer-request/${selectedRequest.share_token}`;
+                navigator.clipboard.writeText(url);
+                showToast('Link skopiowany do schowka', 'success');
+              }}
+              className="flex items-center gap-1.5 px-4 py-2 border border-slate-200 rounded-lg text-sm hover:bg-slate-50"
+            >
+              <LinkIcon className="w-4 h-4" />
+              Kopiuj link
+            </button>
+            {selectedRequest.status === 'draft' && (
+              <button
+                onClick={async () => {
+                  await supabase.from('offer_requests').update({ status: 'sent', sent_at: new Date().toISOString() }).eq('id', selectedRequest.id);
+                  setOfferRequests(prev => prev.map(r => r.id === selectedRequest.id ? { ...r, status: 'sent', sent_at: new Date().toISOString() } : r));
+                  setSelectedRequest((prev: any) => prev ? { ...prev, status: 'sent' } : null);
+                  const url = `${window.location.origin}/#/offer-request/${selectedRequest.share_token}`;
+                  await navigator.clipboard.writeText(url);
+                  showToast('Zapytanie oznaczone jako wysłane — link skopiowany', 'success');
+                }}
+                className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm"
+              >
+                <Send className="w-4 h-4" />
+                Wyślij
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   // ============================================
   // MAIN RENDER
@@ -6098,6 +6413,7 @@ tr{page-break-inside:avoid;page-break-after:auto;}
   return (
     <>
       {selectedOffer ? renderOfferDetail() : renderListView()}
+      {selectedRequest && renderRequestDetail()}
       {showCreateModal && renderCreateModal()}
       {showImportFromEstimate && renderImportFromEstimateModal()}
 
@@ -6820,10 +7136,10 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                             [],
                             ['WYKONAWCA'],
                             ['Firma:', company?.name || ''],
-                            ['NIP:', company?.nip || ''],
-                            ['Adres:', [company?.street, company?.building_number, company?.postal_code, company?.city].filter(Boolean).join(', ')],
-                            ['Telefon:', company?.phone || ''],
-                            ['Email:', company?.email || ''],
+                            ['NIP:', (company as any)?.nip || (company as any)?.tax_id || ''],
+                            ['Adres:', [(company as any)?.street, (company as any)?.building_number, (company as any)?.postal_code, (company as any)?.city].filter(Boolean).join(', ')],
+                            ['Telefon:', (company as any)?.phone || (company as any)?.contact_phone || ''],
+                            ['Email:', (company as any)?.email || (company as any)?.contact_email || ''],
                             [],
                             ['ZAMAWIAJĄCY'],
                             ['Firma:', client?.name || offerClientData.client_name || ''],
@@ -7686,6 +8002,287 @@ tr{page-break-inside:avoid;page-break-after:auto;}
               >
                 {confirmModal.confirmLabel || 'Potwierdź'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Offer Request (Zapytanie ofertowe) Modal */}
+      {showCreateRequestModal && selectedOffer && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[70] p-4">
+          <div className="bg-white rounded-xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+            <div className="p-4 border-b border-slate-200 flex justify-between items-center">
+              <h2 className="text-lg font-semibold">Utwórz zapytanie ofertowe</h2>
+              <button onClick={() => setShowCreateRequestModal(false)} className="p-1 hover:bg-slate-100 rounded">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 overflow-y-auto flex-1 space-y-6">
+              {requestStep === 'type' && (
+                <>
+                  {/* Request name */}
+                  <div>
+                    <label className="text-sm font-medium text-slate-700 mb-1 block">Nazwa zapytania</label>
+                    <input
+                      type="text"
+                      value={requestName}
+                      onChange={e => setRequestName(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
+                      placeholder="Nazwa zapytania ofertowego"
+                    />
+                  </div>
+
+                  {/* Request type selection */}
+                  <div>
+                    <label className="text-sm font-medium text-slate-700 mb-2 block">Typ zapytania</label>
+                    <div className="grid grid-cols-2 gap-3">
+                      {([
+                        { value: 'robota' as const, label: 'Robota', desc: 'Tylko robocizna', icon: Hammer, color: 'blue' },
+                        { value: 'materialy' as const, label: 'Materiały', desc: 'Tylko materiały', icon: Package, color: 'amber' },
+                        { value: 'sprzet' as const, label: 'Sprzęt', desc: 'Tylko sprzęt', icon: Wrench, color: 'green' },
+                        { value: 'all' as const, label: 'Cały zakres', desc: 'Wszystkie pozycje', icon: Briefcase, color: 'indigo' },
+                      ]).map(opt => (
+                        <button
+                          key={opt.value}
+                          onClick={() => setRequestType(opt.value)}
+                          className={`p-4 rounded-lg border-2 text-left transition ${requestType === opt.value ? `border-${opt.color}-500 bg-${opt.color}-50` : 'border-slate-200 hover:border-slate-300'}`}
+                        >
+                          <div className="flex items-center gap-2 mb-1">
+                            <opt.icon className={`w-5 h-5 ${requestType === opt.value ? `text-${opt.color}-600` : 'text-slate-400'}`} />
+                            <span className="font-medium text-slate-900">{opt.label}</span>
+                          </div>
+                          <p className="text-xs text-slate-500">{opt.desc}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Subcontractor selection */}
+                  <div>
+                    <label className="text-sm font-medium text-slate-700 mb-1 block">Podwykonawca</label>
+                    <select
+                      value={requestSubcontractorId}
+                      onChange={e => setRequestSubcontractorId(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
+                    >
+                      <option value="">-- Wybierz podwykonawcę (opcjonalnie) --</option>
+                      {subcontractors.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </div>
+
+                  {/* Preview of filtered items count */}
+                  <div className="bg-slate-50 rounded-lg p-4">
+                    <p className="text-sm text-slate-600">
+                      Pozycje w zapytaniu: {' '}
+                      <span className="font-bold text-slate-900">
+                        {(() => {
+                          if (requestType === 'all') return sections.reduce((acc, s) => acc + (s.items?.length || 0), 0);
+                          const typeMap: Record<string, string> = { robota: 'labor', materialy: 'material', sprzet: 'equipment' };
+                          const compType = typeMap[requestType];
+                          return sections.reduce((acc, s) => acc + (s.items || []).filter((item: any) =>
+                            (item.components || []).some((c: any) => c.type === compType)
+                          ).length, 0);
+                        })()}
+                      </span>
+                    </p>
+                  </div>
+                </>
+              )}
+
+              {requestStep === 'preview' && (
+                <div className="space-y-4">
+                  <div className="bg-slate-50 rounded-lg p-4 space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-sm text-slate-500">Oferta źródłowa:</span>
+                      <span className="text-sm font-medium">{selectedOffer.name || selectedOffer.number}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-sm text-slate-500">Typ zapytania:</span>
+                      <span className="text-sm font-medium">
+                        {{ robota: 'Robota', materialy: 'Materiały', sprzet: 'Sprzęt', all: 'Cały zakres' }[requestType]}
+                      </span>
+                    </div>
+                    {requestSubcontractorId && (
+                      <div className="flex justify-between">
+                        <span className="text-sm text-slate-500">Podwykonawca:</span>
+                        <span className="text-sm font-medium">{subcontractors.find(s => s.id === requestSubcontractorId)?.name || ''}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Filtered items preview */}
+                  <div className="border border-slate-200 rounded-lg overflow-hidden max-h-[40vh] overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-slate-50 sticky top-0">
+                        <tr>
+                          <th className="text-left p-2 text-slate-600">Lp.</th>
+                          <th className="text-left p-2 text-slate-600">Sekcja</th>
+                          <th className="text-left p-2 text-slate-600">Nazwa</th>
+                          <th className="text-left p-2 text-slate-600">Jedn.</th>
+                          <th className="text-right p-2 text-slate-600">Ilość</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          const typeMap: Record<string, string> = { robota: 'labor', materialy: 'material', sprzet: 'equipment' };
+                          const compType = requestType !== 'all' ? typeMap[requestType] : null;
+                          let lp = 0;
+                          return sections.flatMap(sec =>
+                            (sec.items || [])
+                              .filter((item: any) => !compType || (item.components || []).some((c: any) => c.type === compType))
+                              .map((item: any) => {
+                                lp++;
+                                return (
+                                  <tr key={item.id} className="border-t border-slate-100">
+                                    <td className="p-2 text-slate-500">{lp}</td>
+                                    <td className="p-2 text-slate-500">{sec.name}</td>
+                                    <td className="p-2 font-medium text-slate-900">{item.name}</td>
+                                    <td className="p-2 text-slate-500">{item.unit || 'szt.'}</td>
+                                    <td className="p-2 text-right text-slate-700">{item.quantity}</td>
+                                  </tr>
+                                );
+                              })
+                          );
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="p-4 border-t border-slate-200 flex justify-between">
+              {requestStep === 'preview' ? (
+                <>
+                  <button
+                    onClick={() => setRequestStep('type')}
+                    className="px-4 py-2 border border-slate-200 rounded-lg text-sm hover:bg-slate-50"
+                  >
+                    Wstecz
+                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={async () => {
+                        if (!currentUser || !selectedOffer) return;
+                        setCreatingRequest(true);
+                        try {
+                          const token = crypto.randomUUID().replace(/-/g, '').substring(0, 16);
+                          const typeMap: Record<string, string> = { robota: 'labor', materialy: 'material', sprzet: 'equipment' };
+                          const compType = requestType !== 'all' ? typeMap[requestType] : null;
+                          const filteredItems = sections.flatMap(sec =>
+                            (sec.items || [])
+                              .filter((item: any) => !compType || (item.components || []).some((c: any) => c.type === compType))
+                              .map((item: any) => ({ ...item, section_name: sec.name }))
+                          );
+                          const { data: newReq, error } = await supabase.from('offer_requests').insert({
+                            company_id: currentUser.company_id,
+                            offer_id: selectedOffer.id,
+                            subcontractor_id: requestSubcontractorId || null,
+                            name: requestName || `Zapytanie — ${selectedOffer.name}`,
+                            request_type: requestType,
+                            status: 'draft',
+                            share_token: token,
+                            created_by_id: currentUser.id,
+                            print_settings: {
+                              items: filteredItems.map(i => ({ id: i.id, name: i.name, unit: i.unit, quantity: i.quantity, section_name: i.section_name })),
+                              offer_name: selectedOffer.name,
+                              offer_number: selectedOffer.number,
+                              company_data: {
+                                name: state.currentCompany?.name || '',
+                                nip: (state.currentCompany as any)?.nip || (state.currentCompany as any)?.tax_id || '',
+                              }
+                            }
+                          }).select('*, offer:offers(name, number), subcontractor:contractors(name)').single();
+                          if (error) throw error;
+                          if (newReq) {
+                            setOfferRequests(prev => [newReq, ...prev]);
+                            showToast('Zapytanie ofertowe utworzone', 'success');
+                            setShowCreateRequestModal(false);
+                          }
+                        } catch (err) {
+                          console.error('Error creating request:', err);
+                          showToast('Błąd tworzenia zapytania', 'error');
+                        } finally {
+                          setCreatingRequest(false);
+                        }
+                      }}
+                      disabled={creatingRequest}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm disabled:opacity-50"
+                    >
+                      {creatingRequest ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                      Zapisz jako szkic
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (!currentUser || !selectedOffer) return;
+                        setCreatingRequest(true);
+                        try {
+                          const token = crypto.randomUUID().replace(/-/g, '').substring(0, 16);
+                          const typeMap: Record<string, string> = { robota: 'labor', materialy: 'material', sprzet: 'equipment' };
+                          const compType = requestType !== 'all' ? typeMap[requestType] : null;
+                          const filteredItems = sections.flatMap(sec =>
+                            (sec.items || [])
+                              .filter((item: any) => !compType || (item.components || []).some((c: any) => c.type === compType))
+                              .map((item: any) => ({ ...item, section_name: sec.name }))
+                          );
+                          const { data: newReq, error } = await supabase.from('offer_requests').insert({
+                            company_id: currentUser.company_id,
+                            offer_id: selectedOffer.id,
+                            subcontractor_id: requestSubcontractorId || null,
+                            name: requestName || `Zapytanie — ${selectedOffer.name}`,
+                            request_type: requestType,
+                            status: 'sent',
+                            share_token: token,
+                            sent_at: new Date().toISOString(),
+                            created_by_id: currentUser.id,
+                            print_settings: {
+                              items: filteredItems.map(i => ({ id: i.id, name: i.name, unit: i.unit, quantity: i.quantity, section_name: i.section_name })),
+                              offer_name: selectedOffer.name,
+                              offer_number: selectedOffer.number,
+                              company_data: {
+                                name: state.currentCompany?.name || '',
+                                nip: (state.currentCompany as any)?.nip || (state.currentCompany as any)?.tax_id || '',
+                              }
+                            }
+                          }).select('*, offer:offers(name, number), subcontractor:contractors(name)').single();
+                          if (error) throw error;
+                          if (newReq) {
+                            setOfferRequests(prev => [newReq, ...prev]);
+                            const url = `${window.location.origin}/#/offer-request/${token}`;
+                            await navigator.clipboard.writeText(url);
+                            showToast('Zapytanie wysłane — link skopiowany do schowka', 'success');
+                            setShowCreateRequestModal(false);
+                          }
+                        } catch (err) {
+                          console.error('Error creating request:', err);
+                          showToast('Błąd tworzenia zapytania', 'error');
+                        } finally {
+                          setCreatingRequest(false);
+                        }
+                      }}
+                      disabled={creatingRequest}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm disabled:opacity-50"
+                    >
+                      {creatingRequest ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                      Wyślij
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={() => setShowCreateRequestModal(false)}
+                    className="px-4 py-2 border border-slate-200 rounded-lg text-sm hover:bg-slate-50"
+                  >
+                    Anuluj
+                  </button>
+                  <button
+                    onClick={() => setRequestStep('preview')}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm"
+                  >
+                    Dalej — podgląd
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>
