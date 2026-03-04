@@ -353,8 +353,11 @@ export const GanttPage: React.FC = () => {
   useEffect(() => {
     if (!evidenceTaskId) { setTaskEvidence([]); return; }
     (async () => {
-      const { data } = await supabase.from('gantt_evidence').select('*').eq('gantt_task_id', evidenceTaskId).order('created_at', { ascending: false });
-      if (data) setTaskEvidence(data as any);
+      try {
+        const { data, error } = await supabase.from('gantt_evidence').select('*').eq('gantt_task_id', evidenceTaskId).order('created_at', { ascending: false });
+        if (error) { showError('Błąd ładowania dowodów: ' + error.message); return; }
+        if (data) setTaskEvidence(data as any);
+      } catch (err: any) { showError('Błąd ładowania dowodów: ' + (err?.message || err)); }
     })();
   }, [evidenceTaskId]);
 
@@ -3677,17 +3680,19 @@ export const GanttPage: React.FC = () => {
                 <p className="text-xs text-slate-500 mb-3">Prześlij zdjęcie, protokół lub podpis jako dowód realizacji</p>
                 <button onClick={async () => {
                   try {
-                    await supabase.from('gantt_evidence').insert({
+                    const { error: evErr } = await supabase.from('gantt_evidence').insert({
                       gantt_task_id: evidenceTaskId,
                       evidence_type: 'photo',
                       description: `Dowód dodany ${new Date().toLocaleString('pl-PL')}`,
                       file_url: '',
-                      created_by_id: currentUser?.id
+                      uploaded_by_id: currentUser?.id
                     });
+                    if (evErr) throw evErr;
                     showSuccess('Dowód dodany (placeholder — upload pliku wymaga konfiguracji Storage).');
                     // Reload evidence list
-                    const { data: evData } = await supabase.from('gantt_evidence').select('*').eq('gantt_task_id', evidenceTaskId).order('created_at', { ascending: false });
-                    if (evData) setTaskEvidence(evData as any);
+                    const { data: evData, error: evLoadErr } = await supabase.from('gantt_evidence').select('*').eq('gantt_task_id', evidenceTaskId).order('created_at', { ascending: false });
+                    if (evLoadErr) { showError('Błąd ładowania dowodów: ' + evLoadErr.message); }
+                    else if (evData) setTaskEvidence(evData as any);
                   } catch (err: any) { showError('Błąd: ' + (err?.message || err)); }
                 }}
                   className="px-4 py-2 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 font-medium">

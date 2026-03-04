@@ -104,6 +104,9 @@ export interface GanttEvidence {
   description?: string;
   verified: boolean;
   verified_by_id?: string;
+  verified_at?: string;
+  uploaded_by_id?: string;
+  created_at?: string;
 }
 
 export interface GanttAcceptedAct {

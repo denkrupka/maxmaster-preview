@@ -17,6 +17,7 @@ import { SubscriptionExpiredAdminPage } from './pages/SubscriptionExpiredAdmin';
 import { SubscriptionExpiredUserPage } from './pages/SubscriptionExpiredUser';
 import { ModuleAccessDeniedPage } from './pages/ModuleAccessDenied';
 import { OfferLandingPage } from './pages/public/OfferLanding';
+import { OfferRequestLandingPage } from './pages/public/OfferRequestLanding';
 import { AdminUsersPage } from './pages/admin/Users';
 
 // SuperAdmin Pages
@@ -422,7 +423,8 @@ export default function App() {
           <Route path="/candidate/register" element={<CandidateRegisterPage />} />
           <Route path="/register" element={<CompanyRegisterPage />} />
           <Route path="/offer/:token" element={<OfferLandingPage />} />
-          
+          <Route path="/offer-request/:token" element={<OfferRequestLandingPage />} />
+
           {/* SuperAdmin Routes */}
           <Route path="/superadmin/dashboard" element={<ProtectedRoute allowedRoles={[Role.SUPERADMIN]}><SuperAdminDashboard /></ProtectedRoute>} />
           <Route path="/superadmin/users" element={<ProtectedRoute allowedRoles={[Role.SUPERADMIN]}><SuperAdminUsersPage /></ProtectedRoute>} />
