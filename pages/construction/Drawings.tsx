@@ -702,12 +702,10 @@ export const DrawingsPage: React.FC = () => {
                 }
                 const analysisId = rows[0].id;
                 setPdfAnalysis(savedAnalysis);
-                if (pdfTakeoffRules.length === 0) {
-                  setPdfTakeoffRules(getDefaultPdfElectricalRules());
-                }
-                // Auto-apply rules
-                const defaultRules = pdfTakeoffRules.length > 0 ? pdfTakeoffRules : getDefaultPdfElectricalRules();
-                const result = applyRules(savedAnalysis, defaultRules);
+                // Compute rules: use existing or create defaults
+                const rulesToUse = pdfTakeoffRules.length > 0 ? pdfTakeoffRules : getDefaultPdfElectricalRules();
+                setPdfTakeoffRules(rulesToUse);
+                const result = applyRules(savedAnalysis, rulesToUse);
                 setPdfTakeoffResult(result);
 
                 try {
@@ -3100,6 +3098,7 @@ export const DrawingsPage: React.FC = () => {
         <DxfTakeoffPanel
           result={pdfTakeoffResult}
           analysis={pdfAnalysis || undefined}
+          sourceType="PDF"
           onItemClick={(item) => {
             if (!pdfAnalysis) return;
             const paths: typeof pdfHighlightPaths = [];
@@ -3135,6 +3134,7 @@ export const DrawingsPage: React.FC = () => {
         <DxfTakeoffRulesModal
           companyId={currentUser.company_id}
           rules={pdfTakeoffRules}
+          sourceType="PDF"
           onRulesChange={(rules) => {
             setPdfTakeoffRules(rules);
             if (pdfAnalysis) {

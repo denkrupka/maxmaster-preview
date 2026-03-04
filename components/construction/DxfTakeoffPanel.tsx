@@ -7,12 +7,13 @@ import type { DxfAnalysis } from '../../lib/dxfAnalyzer';
 interface DxfTakeoffPanelProps {
   result: TakeoffResult;
   analysis?: DxfAnalysis;
+  sourceType?: 'DXF' | 'PDF';
   onItemClick: (item: TakeoffItem) => void;
   onClose: () => void;
   onOpenRules: () => void;
 }
 
-export default function DxfTakeoffPanel({ result, analysis, onItemClick, onClose, onOpenRules }: DxfTakeoffPanelProps) {
+export default function DxfTakeoffPanel({ result, analysis, sourceType = 'DXF', onItemClick, onClose, onOpenRules }: DxfTakeoffPanelProps) {
   const [filterCategory, setFilterCategory] = useState<string>('');
   const [filterRoom, setFilterRoom] = useState<string>('');
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
@@ -97,7 +98,7 @@ export default function DxfTakeoffPanel({ result, analysis, onItemClick, onClose
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-1.5 border-b bg-gray-50">
         <div className="flex items-center gap-3">
-          <span className="text-sm font-semibold">Przedmiar z DXF</span>
+          <span className="text-sm font-semibold">Przedmiar z {sourceType}</span>
           <span className="text-xs text-gray-500">
             {result.items.length} pozycji | {result.matchedEntityCount} dopasowanych | {result.unmatchedEntityCount} niedopasowanych
           </span>

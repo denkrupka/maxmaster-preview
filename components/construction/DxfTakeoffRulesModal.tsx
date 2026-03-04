@@ -7,12 +7,13 @@ import { supabase } from '../../lib/supabase';
 interface DxfTakeoffRulesModalProps {
   companyId: string;
   rules: TakeoffRule[];
+  sourceType?: 'DXF' | 'PDF';
   onRulesChange: (rules: TakeoffRule[]) => void;
   onClose: () => void;
   onTestRules?: () => void;
 }
 
-export default function DxfTakeoffRulesModal({ companyId, rules, onRulesChange, onClose, onTestRules }: DxfTakeoffRulesModalProps) {
+export default function DxfTakeoffRulesModal({ companyId, rules, sourceType = 'DXF', onRulesChange, onClose, onTestRules }: DxfTakeoffRulesModalProps) {
   const [localRules, setLocalRules] = useState<TakeoffRule[]>(rules);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -114,7 +115,7 @@ export default function DxfTakeoffRulesModal({ companyId, rules, onRulesChange, 
       <div className="bg-white rounded-xl shadow-2xl w-[800px] max-h-[80vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b">
-          <h3 className="font-semibold">Reguły przedmiaru DXF</h3>
+          <h3 className="font-semibold">Reguły przedmiaru {sourceType}</h3>
           <button onClick={onClose} className="p-1 hover:bg-gray-100 rounded"><X size={18} /></button>
         </div>
 

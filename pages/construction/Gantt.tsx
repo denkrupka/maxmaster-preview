@@ -528,7 +528,7 @@ export const GanttPage: React.FC = () => {
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [selectedProject, showHelp, contextMenu, showPhaseModal, showDepModal, showFilterPanel, inlineEdit, showSettingsMenu, selectedTaskId, hoveredRowId, undoStack, redoStack]);
+  }, [selectedProject, showHelp, contextMenu, showPhaseModal, showDepModal, showFilterPanel, inlineEdit, showSettingsMenu, selectedTaskId, hoveredRowId, undoStack, redoStack, showEvidenceModal, showRFIModal, showBaselineModal, showInsights, showAdvancedPanel]);
 
   useEffect(() => { if (currentUser) loadProjects(); }, [currentUser]);
 
@@ -683,10 +683,15 @@ export const GanttPage: React.FC = () => {
     } catch (err: any) { showError('Błąd: ' + (err?.message || err)); }
   };
 
-  // Initialize default norms
+  // Initialize default norms (with duplicate guard)
   const handleInitDefaultNorms = async () => {
     if (!currentUser) return;
     try {
+      const existing = await supabase.from('gantt_norms').select('id').eq('company_id', currentUser.company_id).limit(1);
+      if (existing.data && existing.data.length > 0) {
+        showError('Normy zostały już zainicjowane. Usuń istniejące normy przed ponowną inicjalizacją.');
+        return;
+      }
       for (const norm of DEFAULT_NORMS) {
         await supabase.from('gantt_norms').insert({ ...norm, company_id: currentUser.company_id });
       }
@@ -768,6 +773,7 @@ export const GanttPage: React.FC = () => {
         }
       }
       showSuccess(`Naryk ${orderNumber} utworzony z ${weekTasks.length} zadaniami.`);
+      loadAdvancedData();
     } catch (err: any) { showError('Błąd: ' + (err?.message || err)); }
   };
 
@@ -3331,7 +3337,7 @@ export const GanttPage: React.FC = () => {
                 className="w-20 px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
               <input type="color" value={zoneForm.color} onChange={e => setZoneForm({...zoneForm, color: e.target.value})}
                 className="w-8 h-7 rounded border border-slate-200 cursor-pointer" />
-              <button onClick={() => { handleSaveZone(); setZoneForm({ name: '', zone_type: 'floor', floor_number: 0, color: '#3b82f6' }); }}
+              <button onClick={() => handleSaveZone()}
                 disabled={!zoneForm.name.trim()}
                 className="flex-1 px-2 py-1.5 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium">
                 <Plus className="w-3 h-3 inline mr-1" />Dodaj
@@ -3435,7 +3441,7 @@ export const GanttPage: React.FC = () => {
           <div className="p-3 border-b border-slate-200 flex justify-between items-center">
             <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm"><Wrench className="w-4 h-4 text-teal-500" /> Narydy pracy ({workOrders.length})</h3>
             <div className="flex items-center gap-1">
-              <button onClick={() => { handleGenerateWorkOrders(); loadAdvancedData(); }}
+              <button onClick={() => handleGenerateWorkOrders()}
                 className="p-1 hover:bg-teal-100 rounded text-teal-600" title="Generuj naryk na ten tydzień"><Plus className="w-4 h-4" /></button>
               <button onClick={() => setShowAdvancedPanel(null)} className="p-1 hover:bg-slate-100 rounded"><X className="w-4 h-4 text-slate-400" /></button>
             </div>

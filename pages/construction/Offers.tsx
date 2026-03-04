@@ -4576,7 +4576,7 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                   <p className="text-slate-500 mt-1">{selectedOffer.number || 'Brak numeru'}</p>
                 )}
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
                 <StatusBadge status={selectedOffer.status} />
                 <button
                   onClick={() => setShowSettingsModal(true)}
@@ -6196,7 +6196,7 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                     <tr
                       key={offer.id}
                       className="hover:bg-slate-50 cursor-pointer"
-                      onClick={() => { setSelectedOffer(offer); loadOfferDetails(offer.id); }}
+                      onClick={() => { setSelectedOffer(offer); setItemSearchQuery(''); setItemFilterSection(''); loadOfferDetails(offer.id); }}
                     >
                       <td className="px-4 py-3 text-sm font-medium text-slate-900">{offer.number || '-'}</td>
                       <td className="px-4 py-3 text-sm text-slate-700">{offer.name}</td>
@@ -6249,7 +6249,7 @@ tr{page-break-inside:avoid;page-break-after:auto;}
             <div className="text-center py-12">
               <FileText className="w-16 h-16 text-slate-200 mx-auto mb-4" />
               <p className="text-lg font-medium text-slate-600 mb-1">Brak zapytań ofertowych</p>
-              <p className="text-sm text-slate-400 mb-4">Utwórz zapytanie z widoku szczegółów oferty.</p>
+              <p className="text-sm text-slate-400 mb-4">Kliknij „Nowe zapytanie" powyżej, aby utworzyć zapytanie ofertowe.</p>
             </div>
           ) : (
             <table className="min-w-full divide-y divide-slate-200">
