@@ -346,9 +346,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.log('Initializing auth...');
         isInitializingRef.current = true;
 
-        // Load all data first
-        await refreshData();
-
         // Check if Doradca is viewing as another user (from new window)
         const viewAsUserData = localStorage.getItem('doradca_view_as_user');
         if (viewAsUserData) {
@@ -370,6 +367,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             }));
             console.log('Auth initialization complete (view as user mode)');
             isInitializingRef.current = false;
+            // Load remaining data in background
+            refreshData().catch(err => console.error('Background refresh error:', err));
             return; // Skip normal auth flow
           } catch (parseError) {
             console.error('Error parsing view as user data:', parseError);
@@ -377,7 +376,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
         }
 
-        // Check for existing auth session on mount
+        // Check for existing auth session FIRST (fast operation)
+        // This lets the user navigate away from login page quickly
         const { data: { session } } = await supabase.auth.getSession();
 
         if (session?.user) {
@@ -429,6 +429,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             }
           }
         }
+
+        // Load all data AFTER session check (so user navigates away from login quickly)
+        await refreshData();
 
         console.log('Auth initialization complete');
         isInitializingRef.current = false;
@@ -482,6 +485,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const login = async (email: string, password: string) => {
     console.log('Login: Attempting authentication for', email);
+
+    // Wait for initialization to complete before attempting login
+    // to avoid concurrent Supabase request contention
+    if (isInitializingRef.current) {
+      console.log('Login: Waiting for auth initialization to complete...');
+      await new Promise<void>((resolve) => {
+        const check = setInterval(() => {
+          if (!isInitializingRef.current) {
+            clearInterval(check);
+            resolve();
+          }
+        }, 100);
+        // Safety timeout - don't wait forever
+        setTimeout(() => { clearInterval(check); resolve(); }, 10000);
+      });
+      // If user was already set during init, no need to login again
+      if (state.currentUser) {
+        console.log('Login: User already authenticated during initialization, skipping');
+        return;
+      }
+    }
 
     // First check if user exists and is not blocked (before authenticating)
     const { data: dbUser } = await supabase

@@ -89,7 +89,7 @@ Odpowiedz WYŁĄCZNIE w formacie JSON:
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6-20250514',
         max_tokens: 4096,
         messages: [{
           role: 'user',
@@ -107,14 +107,20 @@ Odpowiedz WYŁĄCZNIE w formacie JSON:
     const data = await response.json()
     const content = data.content?.[0]?.text || ''
 
-    // Extract JSON from response
+    // Extract JSON from response (handle markdown code fences)
     let result: ClassificationResult
     try {
-      const jsonMatch = content.match(/\{[\s\S]*\}/)
+      let jsonStr = content
+      // Strip markdown code fences if present
+      const fenceMatch = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/)
+      if (fenceMatch) {
+        jsonStr = fenceMatch[1]
+      }
+      const jsonMatch = jsonStr.match(/\{[\s\S]*\}/)
       if (!jsonMatch) throw new Error('No JSON in response')
       result = JSON.parse(jsonMatch[0])
-    } catch {
-      console.error('Failed to parse Claude response:', content)
+    } catch (parseErr) {
+      console.error('Failed to parse Claude response:', content.substring(0, 500))
       throw new Error('Failed to parse AI classification result')
     }
 

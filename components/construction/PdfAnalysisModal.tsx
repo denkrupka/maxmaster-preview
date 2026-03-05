@@ -84,7 +84,7 @@ export default function PdfAnalysisModal({
         },
       });
 
-      if (fnError) throw fnError;
+      if (fnError) throw new Error(typeof fnError === 'string' ? fnError : fnError.message || 'Edge Function returned a non-2xx status code');
       if (data?.error) throw new Error(data.error);
 
       // Apply AI categories to style groups

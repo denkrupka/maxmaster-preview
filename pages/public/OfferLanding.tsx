@@ -4,7 +4,7 @@ import { supabase } from '../../lib/supabase';
 import {
   FileText, CheckCircle, XCircle, Clock, Building2, Calendar,
   Download, Loader2, ExternalLink, Shield, Star, Phone, Mail,
-  ChevronDown, ChevronRight, MapPin, MessageSquare
+  ChevronDown, ChevronRight, MapPin, MessageSquare, Search, X, Printer
 } from 'lucide-react';
 
 interface PublicOffer {
@@ -93,6 +93,7 @@ export const OfferLandingPage: React.FC = () => {
   const [actionError, setActionError] = useState<string | null>(null);
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
+  const [itemSearchQuery, setItemSearchQuery] = useState('');
 
   // SMS verification state
   const [showSmsModal, setShowSmsModal] = useState(false);
@@ -629,6 +630,24 @@ export const OfferLandingPage: React.FC = () => {
   const surchargeAmount = nettoAfterDiscount * (surchargePercent / 100);
   const nettoAfterSurcharges = nettoAfterDiscount + surchargeAmount;
 
+  // Related costs total (for summary display)
+  const relatedCostsTotal = (() => {
+    const costs: any[] = offer.print_settings?.related_costs || [];
+    const visibleCosts = costs.filter((c: any) => c.value > 0);
+    const calcMonths = (c: any) => {
+      if (c.frequency !== 'monthly') return 1;
+      const from = c.date_from || offer.work_start_date;
+      const to = c.date_to || offer.work_end_date;
+      if (!from || !to) return 1;
+      const d1 = new Date(from);
+      const d2 = new Date(to);
+      const m = (d2.getFullYear() - d1.getFullYear()) * 12 + (d2.getMonth() - d1.getMonth()) + (d2.getDate() > d1.getDate() ? 1 : 0);
+      return Math.max(1, Math.ceil(m));
+    };
+    return visibleCosts.reduce((s: number, c: any) => s + (c.mode === 'percent' ? nettoAfterDiscount * (c.value / 100) : c.value * calcMonths(c)), 0);
+  })();
+  const lacznieNetto = totalNetto + surchargeAmount;
+
   const vatAmount = offer.sections.reduce((sum, s) =>
     sum + s.items.reduce((si, i) => {
       const itemTotal = i.quantity * i.unit_price;
@@ -639,56 +658,140 @@ export const OfferLandingPage: React.FC = () => {
   const vatOnSurcharges = surchargeAmount * 0.23;
   const brutto = nettoAfterSurcharges + vatAmount + vatOnSurcharges;
 
+  const fmtCur = (v: number) => v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+
+  const generatePrintHTML = () => {
+    const companyName = offer.company?.name || '';
+    const companyNip = offer.company?.nip || '';
+    const companyAddr = [offer.company?.street, offer.company?.building_number, offer.company?.postal_code, offer.company?.city].filter(Boolean).join(', ');
+    const companyPhone = offer.company?.phone || '';
+    const companyEmail = offer.company?.email || '';
+    const clientName = offer.client?.name || offer.print_settings?.client_data?.client_name || '';
+    const clientNip = offer.client?.nip || offer.print_settings?.client_data?.nip || '';
+    const clientAddr = offer.client?.legal_address || [offer.print_settings?.client_data?.company_street, offer.print_settings?.client_data?.company_street_number, offer.print_settings?.client_data?.company_postal_code, offer.print_settings?.client_data?.company_city].filter(Boolean).join(', ');
+
+    let sectionsHTML = '';
+    offer.sections.forEach(sec => {
+      const secTotal = sec.items.reduce((s: number, i: any) => {
+        const val = i.quantity * i.unit_price;
+        return s + val - val * ((i.discount_percent || 0) / 100);
+      }, 0);
+      sectionsHTML += `<div style="font-size:14px;font-weight:600;color:#2c3e50;margin:16px 0 6px;padding-bottom:3px;border-bottom:2px solid #2c3e50;">${sec.name}<span style="float:right;font-size:12px;color:#475569;">${fmtCur(secTotal)} zł</span></div>`;
+      sectionsHTML += `<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px;">
+        <thead><tr style="background:#2c3e50;color:white;">
+          <th style="padding:8px 6px;text-align:left;font-weight:600;">Produkty/Usługi</th>
+          <th style="padding:8px 6px;text-align:right;font-weight:600;">Ilość</th>
+          <th style="padding:8px 6px;text-align:right;font-weight:600;">Cena netto [zł]</th>
+          <th style="padding:8px 6px;text-align:right;font-weight:600;">Wartość netto [zł]</th>
+        </tr></thead><tbody>`;
+      sec.items.forEach((item: any) => {
+        const val = item.quantity * item.unit_price;
+        const disc = val * ((item.discount_percent || 0) / 100);
+        sectionsHTML += `<tr style="border-bottom:1px solid #e2e8f0;">
+          <td style="padding:10px 8px;">${item.name}${item.is_optional ? ' <span style="background:#fef9c3;color:#a16207;font-size:10px;padding:1px 4px;border-radius:3px;">opcja</span>' : ''}</td>
+          <td style="padding:10px 8px;text-align:right;">${item.quantity}</td>
+          <td style="padding:10px 8px;text-align:right;">${fmtCur(item.unit_price)}</td>
+          <td style="padding:10px 8px;text-align:right;font-weight:500;">${fmtCur(val - disc)}</td>
+        </tr>`;
+      });
+      sectionsHTML += '</tbody></table>';
+    });
+
+    // Totals
+    let totalsHTML = `<div style="margin-top:24px;padding-top:12px;border-top:2px solid #2c3e50;">
+      <h3 style="font-size:14px;font-weight:600;margin:0 0 8px;color:#2c3e50;">Podsumowanie</h3>
+      <table style="width:300px;margin-left:auto;font-size:13px;">
+        <tr><td style="padding:3px 0;">Suma pozycji netto:</td><td style="padding:3px 0;text-align:right;font-weight:500;">${fmtCur(totalNetto)} zł</td></tr>
+        ${relatedCostsTotal > 0 ? `<tr style="color:#64748b;"><td style="padding:3px 0;">Koszty powiązane:</td><td style="padding:3px 0;text-align:right;">${fmtCur(relatedCostsTotal)} zł</td></tr>` : ''}
+        ${surchargePercent !== 0 ? `<tr style="color:${surchargePercent > 0 ? '#dc2626' : '#16a34a'};"><td style="padding:3px 0;">Warunki istotne (${surchargePercent > 0 ? '+' : ''}${surchargePercent}%):</td><td style="padding:3px 0;text-align:right;">${surchargePercent > 0 ? '+' : ''}${fmtCur(surchargeAmount)} zł</td></tr>` : ''}
+        <tr><td style="padding:3px 0;font-weight:600;">Łącznie netto:</td><td style="padding:3px 0;text-align:right;font-weight:600;">${fmtCur(lacznieNetto)} zł</td></tr>
+        ${totalDiscount > 0 ? `<tr style="color:#dc2626;"><td style="padding:3px 0;">Rabat:</td><td style="padding:3px 0;text-align:right;">-${fmtCur(totalDiscount)} zł</td></tr>
+        <tr><td style="padding:3px 0;font-weight:600;">Netto po rabacie:</td><td style="padding:3px 0;text-align:right;font-weight:600;">${fmtCur(nettoAfterSurcharges)} zł</td></tr>` : ''}
+        <tr><td style="padding:3px 0;">VAT:</td><td style="padding:3px 0;text-align:right;">${fmtCur(vatAmount + vatOnSurcharges)} zł</td></tr>
+        <tr style="font-weight:bold;font-size:15px;border-top:1px solid #cbd5e1;"><td style="padding:6px 0;">Brutto:</td><td style="padding:6px 0;text-align:right;">${fmtCur(brutto)} zł</td></tr>
+      </table>
+    </div>`;
+
+    return `<!DOCTYPE html><html lang="pl"><head><meta charset="UTF-8"><title>Oferta ${offer.number}</title>
+<style>body{font-family:Arial,Helvetica,sans-serif;margin:0;padding:20px 28px;color:#1e293b;font-size:13px;}
+@media print{body{padding:0;}@page{margin:12mm 15mm;size:A4;}}
+.info-table{width:100%;border-collapse:collapse;margin-bottom:24px;}
+.info-table td{padding:10px 12px;vertical-align:top;border:1px solid #e2e8f0;}
+.info-table .label{background:#2c3e50;color:white;font-weight:600;text-align:center;padding:8px;}
+table{page-break-inside:auto;}tr{page-break-inside:avoid;page-break-after:auto;}
+</style></head><body>
+<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px;">
+  <div>
+    <h2 style="margin:0 0 4px;font-size:18px;">${offer.name}</h2>
+    <p style="margin:0;color:#64748b;font-size:12px;">Data wystawienia oferty: ${formatDate(issueDate)}</p>
+    <p style="margin:0;color:#64748b;font-size:12px;">Oferta ważna do: ${formatDate(offer.valid_until)}</p>
+    ${offer.object_name ? `<p style="margin:4px 0 0;color:#64748b;font-size:12px;">Obiekt: ${offer.object_name}</p>` : ''}
+    ${offer.object_address ? `<p style="margin:0;color:#64748b;font-size:12px;">Adres obiektu: ${offer.object_address}</p>` : ''}
+    ${offer.work_start_date || offer.work_end_date ? `<p style="margin:0;color:#64748b;font-size:12px;">Terminy Realizacji: ${offer.work_start_date ? formatDate(offer.work_start_date) : '?'} — ${offer.work_end_date ? formatDate(offer.work_end_date) : '?'}</p>` : ''}
+  </div>
+  ${offer.company?.logo_url ? `<img src="${offer.company.logo_url}" alt="" style="max-height:50px;" />` : ''}
+</div>
+<table class="info-table">
+  <tr><td class="label" style="width:50%;">Zamawiający</td><td class="label" style="width:50%;">Wykonawca</td></tr>
+  <tr>
+    <td>${clientName ? `<strong>${clientName}</strong><br/>${clientNip ? `NIP: ${clientNip}<br/>` : ''}${clientAddr || ''}` : '<em>Brak danych</em>'}</td>
+    <td><strong>${companyName}</strong><br/>${companyNip ? `NIP: ${companyNip}<br/>` : ''}${companyAddr ? `${companyAddr}<br/>` : ''}${companyPhone ? `tel. ${companyPhone}<br/>` : ''}${companyEmail ? `email: ${companyEmail}` : ''}</td>
+  </tr>
+</table>
+${sectionsHTML}
+${totalsHTML}
+${offer.notes ? `<div style="margin-top:24px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:4px;font-size:12px;"><strong>Uwagi:</strong><br/><span style="white-space:pre-wrap;">${offer.notes}</span></div>` : ''}
+</body></html>`;
+  };
+
+  const handlePrint = () => {
+    const html = generatePrintHTML();
+    const w = window.open('', '_blank');
+    if (w) {
+      w.document.write(html);
+      w.document.close();
+      setTimeout(() => w.print(), 500);
+    }
+  };
+
+  const handleDownloadPDF = async () => {
+    const html = generatePrintHTML();
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'position:fixed;left:-9999px;width:800px;height:1200px;';
+    document.body.appendChild(iframe);
+    const iframeDoc = iframe.contentDocument!;
+    iframeDoc.open();
+    iframeDoc.write(html);
+    iframeDoc.close();
+    await new Promise(r => setTimeout(r, 800));
+    try {
+      const { default: jsPDF } = await import('jspdf');
+      const { default: html2canvas } = await import('html2canvas');
+      const body = iframeDoc.body;
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const canvas = await html2canvas(body, { scale: 3, useCORS: true, width: body.scrollWidth, windowWidth: body.scrollWidth, logging: false, backgroundColor: '#ffffff' });
+      const imgData = canvas.toDataURL('image/png');
+      const contentW = 190;
+      const imgH = (canvas.height * contentW) / canvas.width;
+      let yOff = 0;
+      const usableH = 277;
+      while (yOff < imgH) {
+        if (yOff > 0) pdf.addPage();
+        pdf.addImage(imgData, 'PNG', 10, 10 - yOff, contentW, imgH);
+        yOff += usableH;
+      }
+      pdf.save(`${offer.number || 'oferta'}.pdf`);
+    } catch {
+      // Fallback: open print dialog
+      handlePrint();
+    }
+    document.body.removeChild(iframe);
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50">
-      {/* Hero header */}
-      <div className="bg-gradient-to-r from-blue-600 to-blue-800 text-white">
-        <div className="max-w-4xl mx-auto px-6 py-8">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              {offer.company?.logo_url ? (
-                <img
-                  src={offer.company.logo_url}
-                  alt={offer.company.name}
-                  className="w-14 h-14 rounded-xl bg-white/10 object-contain p-1"
-                />
-              ) : (
-                <div className="w-14 h-14 rounded-xl bg-white/10 flex items-center justify-center">
-                  <Building2 className="w-7 h-7" />
-                </div>
-              )}
-              <div>
-                <h1 className="text-2xl font-bold">{offer.company?.name || 'Firma'}</h1>
-                {offer.company?.nip && <p className="text-blue-200 text-sm">NIP: {offer.company.nip}</p>}
-              </div>
-            </div>
-            <div className="text-right">
-              <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium ${
-                accepted || offer.status === 'accepted' ? 'bg-green-500/20 text-green-100' :
-                rejected || offer.status === 'rejected' ? 'bg-red-500/20 text-red-200' :
-                offer.status === 'negotiation' || negotiationSubmitted ? 'bg-amber-500/20 text-amber-100' :
-                isExpired ? 'bg-red-500/20 text-red-200' :
-                'bg-white/20 text-white'
-              }`}>
-                {accepted || offer.status === 'accepted' ? (
-                  <><CheckCircle className="w-4 h-4" /> Zaakceptowana</>
-                ) : rejected || offer.status === 'rejected' ? (
-                  <><XCircle className="w-4 h-4" /> Odrzucona</>
-                ) : offer.status === 'negotiation' || negotiationSubmitted ? (
-                  <><Clock className="w-4 h-4" /> W negocjacji</>
-                ) : isExpired ? (
-                  <><Clock className="w-4 h-4" /> Wygasła</>
-                ) : (
-                  <><Clock className="w-4 h-4" /> Aktywna</>
-                )}
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-
       {/* Main content */}
-      <div className="max-w-4xl mx-auto px-6 -mt-4">
+      <div className="max-w-4xl mx-auto px-6 pt-6">
         {/* Offer card */}
         <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
           {/* Offer header */}
@@ -701,36 +804,68 @@ export const OfferLandingPage: React.FC = () => {
                   <p className="text-slate-500 mt-2">Dla: <span className="font-medium text-slate-700">{offer.client.name}</span></p>
                 )}
               </div>
-              <div className="text-right text-sm text-slate-500 space-y-1">
-                <div className="flex items-center gap-2 justify-end">
-                  <Calendar className="w-4 h-4" />
-                  <span>Wystawiona: {formatDate(issueDate)}</span>
-                </div>
-                <div className="flex items-center gap-2 justify-end">
-                  <Clock className="w-4 h-4" />
-                  <span>Ważna do: <span className={isExpired ? 'text-red-500 font-medium' : 'font-medium text-slate-700'}>{formatDate(offer.valid_until)}</span></span>
-                </div>
-                {offer.object_name && (
-                  <div className="flex items-center gap-2 justify-end">
-                    <Building2 className="w-4 h-4" />
-                    <span>Obiekt: <span className="font-medium text-slate-700">{offer.object_name}</span></span>
-                  </div>
-                )}
-                {offer.object_address && (
-                  <div className="flex items-center gap-2 justify-end">
-                    <MapPin className="w-4 h-4" />
-                    <span>{offer.object_address}</span>
-                  </div>
-                )}
-                {(offer.work_start_date || offer.work_end_date) && (
+              <div className="flex flex-col items-end gap-2">
+                <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium ${
+                  accepted || offer.status === 'accepted' ? 'bg-green-100 text-green-700' :
+                  rejected || offer.status === 'rejected' ? 'bg-red-100 text-red-700' :
+                  offer.status === 'negotiation' || negotiationSubmitted ? 'bg-amber-100 text-amber-700' :
+                  isExpired ? 'bg-red-100 text-red-700' :
+                  'bg-blue-100 text-blue-700'
+                }`}>
+                  {accepted || offer.status === 'accepted' ? (
+                    <><CheckCircle className="w-4 h-4" /> Zaakceptowana</>
+                  ) : rejected || offer.status === 'rejected' ? (
+                    <><XCircle className="w-4 h-4" /> Odrzucona</>
+                  ) : offer.status === 'negotiation' || negotiationSubmitted ? (
+                    <><Clock className="w-4 h-4" /> W negocjacji</>
+                  ) : isExpired ? (
+                    <><Clock className="w-4 h-4" /> Wygasła</>
+                  ) : (
+                    <><Clock className="w-4 h-4" /> Aktywna</>
+                  )}
+                </span>
+                <div className="text-right text-sm text-slate-500 space-y-1">
                   <div className="flex items-center gap-2 justify-end">
                     <Calendar className="w-4 h-4" />
-                    <span>Termin: {offer.work_start_date ? formatDate(offer.work_start_date) : '?'} — {offer.work_end_date ? formatDate(offer.work_end_date) : '?'}</span>
+                    <span>Wystawiona: {formatDate(issueDate)}</span>
                   </div>
-                )}
+                  <div className="flex items-center gap-2 justify-end">
+                    <Clock className="w-4 h-4" />
+                    <span>Ważna do: <span className={isExpired ? 'text-red-500 font-medium' : 'font-medium text-slate-700'}>{formatDate(offer.valid_until)}</span></span>
+                  </div>
+                  {offer.object_name && (
+                    <div className="flex items-center gap-2 justify-end">
+                      <Building2 className="w-4 h-4" />
+                      <span>Obiekt: <span className="font-medium text-slate-700">{offer.object_name}</span></span>
+                    </div>
+                  )}
+                  {offer.object_address && (
+                    <div className="flex items-center gap-2 justify-end">
+                      <MapPin className="w-4 h-4" />
+                      <span>{offer.object_address}</span>
+                    </div>
+                  )}
+                  {(offer.work_start_date || offer.work_end_date) && (
+                    <div className="flex items-center gap-2 justify-end">
+                      <Calendar className="w-4 h-4" />
+                      <span>Terminy Realizacji: {offer.work_start_date ? formatDate(offer.work_start_date) : '?'} — {offer.work_end_date ? formatDate(offer.work_end_date) : '?'}</span>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
+
+          {/* Company logo */}
+          {offer.company?.logo_url && (
+            <div className="flex justify-center py-5 border-b border-slate-100">
+              <img
+                src={offer.company.logo_url}
+                alt={offer.company.name}
+                className="max-h-16 object-contain"
+              />
+            </div>
+          )}
 
           {/* Zamawiający / Wykonawca */}
           <div className="px-8 py-6 border-b border-slate-100">
@@ -791,6 +926,42 @@ export const OfferLandingPage: React.FC = () => {
 
           {/* Sections & Items */}
           <div className="p-4 sm:p-8">
+            {/* Search bar + export buttons */}
+            <div className="flex items-center gap-3 mb-4">
+              <div className="relative flex-1 max-w-sm">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Szukaj pozycji..."
+                  value={itemSearchQuery}
+                  onChange={e => setItemSearchQuery(e.target.value)}
+                  className="w-full pl-9 pr-8 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+                {itemSearchQuery && (
+                  <button onClick={() => setItemSearchQuery('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-2 ml-auto">
+                <button
+                  onClick={handlePrint}
+                  className="flex items-center gap-1.5 px-3 py-2 text-sm text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50 transition"
+                  title="Drukuj ofertę"
+                >
+                  <Printer className="w-4 h-4" />
+                  <span className="hidden sm:inline">Drukuj</span>
+                </button>
+                <button
+                  onClick={handleDownloadPDF}
+                  className="flex items-center gap-1.5 px-3 py-2 text-sm text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50 transition"
+                  title="Pobierz PDF"
+                >
+                  <Download className="w-4 h-4" />
+                  <span className="hidden sm:inline">PDF</span>
+                </button>
+              </div>
+            </div>
             {offer.sections.length > 1 && (
               <div className="flex justify-end mb-4">
                 <button
@@ -808,7 +979,12 @@ export const OfferLandingPage: React.FC = () => {
                 </button>
               </div>
             )}
-            {offer.sections.map(section => {
+            {offer.sections.filter(section => {
+              if (!itemSearchQuery) return true;
+              const q = itemSearchQuery.toLowerCase();
+              if (section.name?.toLowerCase().includes(q)) return true;
+              return section.items?.some(i => i.name?.toLowerCase().includes(q) || i.description?.toLowerCase().includes(q));
+            }).map(section => {
               const sectionTotal = section.items.reduce((s, i) => {
                 const val = i.quantity * i.unit_price;
                 return s + val - val * ((i.discount_percent || 0) / 100);
@@ -861,7 +1037,11 @@ export const OfferLandingPage: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {section.items.map((item, idx) => {
+                    {section.items.filter(item => {
+                      if (!itemSearchQuery) return true;
+                      const q = itemSearchQuery.toLowerCase();
+                      return item.name?.toLowerCase().includes(q) || item.description?.toLowerCase().includes(q);
+                    }).map((item, idx) => {
                       const itemTotal = item.quantity * item.unit_price;
                       const itemDiscount = itemTotal * ((item.discount_percent || 0) / 100);
                       const hasRMS = offer.print_settings?.show_components_in_print && item.components && item.components.length > 0;
@@ -1092,8 +1272,24 @@ export const OfferLandingPage: React.FC = () => {
           <div className="p-8 bg-gradient-to-r from-slate-50 to-blue-50/30 border-t border-slate-100">
             <div className="max-w-xs ml-auto space-y-2">
               <div className="flex justify-between text-sm">
-                <span className="text-slate-600">Suma netto:</span>
+                <span className="text-slate-600">Suma pozycji netto:</span>
                 <span className="font-medium">{formatCurrency(totalNetto)}</span>
+              </div>
+              {relatedCostsTotal > 0 && (
+                <div className="flex justify-between text-sm text-slate-500">
+                  <span>Koszty powiązane:</span>
+                  <span>{formatCurrency(relatedCostsTotal)}</span>
+                </div>
+              )}
+              {surchargePercent !== 0 && (
+                <div className={`flex justify-between text-sm ${surchargePercent > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                  <span>Warunki istotne ({surchargePercent > 0 ? '+' : ''}{surchargePercent}%):</span>
+                  <span>{surchargePercent > 0 ? '+' : ''}{formatCurrency(surchargeAmount)}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-sm font-semibold">
+                <span className="text-slate-700">Łącznie netto:</span>
+                <span>{formatCurrency(lacznieNetto)}</span>
               </div>
               {totalDiscount > 0 && (
                 <div className="flex justify-between text-sm text-red-600">
@@ -1102,37 +1298,11 @@ export const OfferLandingPage: React.FC = () => {
                 </div>
               )}
               {totalDiscount > 0 && (
-                <div className="flex justify-between text-sm">
-                  <span className="text-slate-600">Netto po rabacie:</span>
-                  <span className="font-medium">{formatCurrency(nettoAfterDiscount)}</span>
+                <div className="flex justify-between text-sm font-semibold">
+                  <span className="text-slate-700">Netto po rabacie:</span>
+                  <span>{formatCurrency(nettoAfterSurcharges)}</span>
                 </div>
               )}
-              {/* Surcharges from warunki (respecting apply flags) */}
-              {(() => {
-                const warunki = offer.print_settings?.warunki;
-                if (!warunki) return null;
-                const ptRule = (warunki.payment_term_rules || []).find((r: any) => String(r.value) === String(warunki.payment_term));
-                const wrRule = (warunki.warranty_rules || []).find((r: any) => String(r.value) === String(warunki.warranty_period));
-                const ifRule = (warunki.invoice_freq_rules || []).find((r: any) => String(r.value) === String(warunki.invoice_frequency));
-                const totalSurcharge =
-                  (warunki.payment_term_apply !== false ? (ptRule?.surcharge || 0) : 0) +
-                  (warunki.warranty_apply !== false ? (wrRule?.surcharge || 0) : 0) +
-                  (warunki.invoice_freq_apply !== false ? (ifRule?.surcharge || 0) : 0);
-                if (totalSurcharge === 0) return null;
-                const surchargeVal = nettoAfterDiscount * (totalSurcharge / 100);
-                return (
-                  <>
-                    <div className={`flex justify-between text-sm ${totalSurcharge > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                      <span>Warunki istotne ({totalSurcharge > 0 ? '+' : ''}{totalSurcharge}%):</span>
-                      <span>{totalSurcharge > 0 ? '+' : ''}{formatCurrency(surchargeVal)}</span>
-                    </div>
-                    <div className="flex justify-between text-sm font-semibold">
-                      <span className="text-slate-600">Netto po rabacie:</span>
-                      <span>{formatCurrency(nettoAfterDiscount + surchargeVal)}</span>
-                    </div>
-                  </>
-                );
-              })()}
               <div className="flex justify-between text-sm">
                 <span className="text-slate-600">VAT:</span>
                 <span className="font-medium">{formatCurrency(vatAmount + vatOnSurcharges)}</span>

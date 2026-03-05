@@ -8,10 +8,10 @@ import {
   PenTool, Minus, ChevronDown, FolderPlus, ChevronLeft,
   CloudUpload, MousePointer, FileDown, AlertTriangle,
   Camera, MessageSquare, Scissors, Link2, History,
-  Save, Undo2, ScanLine, Filter, MapPin, Image,
+  Save, Undo2, Filter, MapPin, Image,
   ExternalLink, Crosshair, LayoutList, BookOpen,
   Hash, CloudLightning, MessageCircleWarning,
-  Magnet, FileSearch, BarChart3, Printer, FileType2, Info
+  Magnet, FileSearch, BarChart3, Printer, FileType2, Info, Sparkles
 } from 'lucide-react';
 import { useAppContext } from '../../context/AppContext';
 import { supabase } from '../../lib/supabase';
@@ -1695,7 +1695,7 @@ export const DrawingsPage: React.FC = () => {
       <div className="flex-1 flex overflow-hidden">
 
         {/* LEFT PANEL */}
-        <div className="w-[340px] min-w-[280px] border-r border-slate-200 bg-white flex flex-col overflow-hidden flex-shrink-0">
+        <div className="w-[300px] min-w-[240px] border-r border-slate-200 bg-white flex flex-col overflow-hidden flex-shrink-0">
           <div className="px-3 py-2.5 border-b border-slate-200 flex items-center justify-between flex-shrink-0 bg-slate-50">
             <span className="font-semibold text-slate-700 text-sm">Plany i rzuty</span>
             <div className="flex items-center gap-0.5">
@@ -1816,7 +1816,7 @@ export const DrawingsPage: React.FC = () => {
           {viewingPlan ? (
             <div className={`flex-1 flex flex-col overflow-hidden ${isFullscreen ? 'fixed inset-0 z-[80] bg-white' : ''}`}>
               {/* Viewer toolbar */}
-              <div className="px-3 py-1.5 border-b border-slate-200 flex items-center gap-1 flex-shrink-0 bg-slate-50" onClick={e => e.stopPropagation()}>
+              <div className="px-3 py-1.5 border-b border-slate-200 flex items-center gap-1 flex-shrink-0 bg-slate-50 overflow-x-auto" onClick={e => e.stopPropagation()}>
                 <button onClick={() => setZoom(z => Math.min(z + 25, 500))} className="p-1.5 hover:bg-white rounded-lg text-slate-600" title="Powiększ (Ctrl + kółko myszy)"><ZoomIn className="w-4 h-4" /></button>
                 <span className="text-xs text-slate-500 w-10 text-center font-mono">{zoom}%</span>
                 <button onClick={() => setZoom(z => Math.max(z - 25, 25))} className="p-1.5 hover:bg-white rounded-lg text-slate-600" title="Pomniejsz (Ctrl + kółko myszy)"><ZoomOut className="w-4 h-4" /></button>
@@ -1898,8 +1898,8 @@ export const DrawingsPage: React.FC = () => {
                   <>
                     <div className="w-px h-5 bg-slate-200 mx-0.5" />
                     <button onClick={() => setShowPdfAnalysis(true)}
-                      className="p-1.5 rounded-lg transition hover:bg-white text-slate-600" title="Analiza PDF (wektorowa/rastrowa)">
-                      <BarChart3 className="w-4 h-4" />
+                      className="p-1.5 rounded-lg transition hover:bg-white text-slate-600" title="Analiza AI rysunku PDF">
+                      <Sparkles className="w-4 h-4" />
                     </button>
                     {pdfAnalysis && (
                       <>
@@ -2230,7 +2230,7 @@ export const DrawingsPage: React.FC = () => {
               </div>
 
               {/* Bottom annotation toolbar */}
-              <div className="px-3 py-1.5 border-t border-slate-200 bg-white flex items-center gap-0.5 flex-shrink-0" onClick={e => e.stopPropagation()}>
+              <div className="px-3 py-1.5 border-t border-slate-200 bg-white flex items-center gap-0.5 flex-shrink-0 overflow-x-auto" onClick={e => e.stopPropagation()}>
                 {/* Pointer */}
                 <button onClick={() => { setActiveTool('pointer'); setPolylinePoints([]); setPolylineCursorPt(null); setRulerSingleStart(null); setRulerSingleCursorPt(null); setCountItems([]); setDxfCountMatches([]); setDxfCountLabel(''); }}
                   className={`p-2 rounded-lg transition ${activeTool === 'pointer' ? 'bg-blue-100 text-blue-700 shadow-inner' : 'hover:bg-slate-100 text-slate-600'}`} title="Zaznacz (V)">
@@ -2378,12 +2378,6 @@ export const DrawingsPage: React.FC = () => {
                 <button onClick={() => setActiveTool('screenshot')}
                   className={`p-2 rounded-lg transition ${activeTool === 'screenshot' ? 'bg-purple-100 text-purple-700 shadow-inner' : 'hover:bg-slate-100 text-slate-600'}`} title="Zrzut ekranu — zaznacz obszar">
                   <Scissors className="w-5 h-5" />
-                </button>
-
-                {/* OCR */}
-                <button onClick={() => notify('OCR — funkcja w przygotowaniu', 'success')}
-                  className="p-2 rounded-lg hover:bg-slate-100 text-slate-400 transition" title="Rozpoznawanie tekstu (OCR) — wkrótce">
-                  <ScanLine className="w-5 h-5" />
                 </button>
 
                 {/* Eraser */}

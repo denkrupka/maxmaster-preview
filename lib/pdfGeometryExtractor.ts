@@ -142,6 +142,13 @@ function isClosed(segments: PdfPathSegment[]): boolean {
   return segments.length > 0 && segments[segments.length - 1].type === 'Z';
 }
 
+// ==================== HELPERS (yield) ====================
+
+/** Yield control back to the browser to keep UI responsive */
+function yieldToUI(): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
 // ==================== MAIN EXTRACTOR ====================
 
 /** Extract all geometry from a single PDF page */
@@ -198,8 +205,10 @@ export async function extractPageGeometry(page: PDFPageProxy): Promise<PdfPageEx
     currentSegments = [];
   }
 
-  // Process operators
+  // Process operators (yield every 50k ops to keep UI responsive)
+  const YIELD_INTERVAL = 50000;
   for (let i = 0; i < fnArray.length; i++) {
+    if (i > 0 && i % YIELD_INTERVAL === 0) await yieldToUI();
     const fn = fnArray[i];
     const args = argsArray[i];
 
