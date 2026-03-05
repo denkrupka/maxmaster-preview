@@ -6424,28 +6424,70 @@ tr{page-break-inside:avoid;page-break-after:auto;}
               <LinkIcon className="w-4 h-4" />
               Kopiuj link
             </button>
-            {selectedRequest.status === 'draft' && (
-              <button
-                onClick={async () => {
-                  try {
-                    const { error } = await supabase.from('offer_requests').update({ status: 'sent', sent_at: new Date().toISOString() }).eq('id', selectedRequest.id);
-                    if (error) throw error;
-                    setOfferRequests(prev => prev.map(r => r.id === selectedRequest.id ? { ...r, status: 'sent', sent_at: new Date().toISOString() } : r));
-                    setSelectedRequest((prev: any) => prev ? { ...prev, status: 'sent' } : null);
-                    const url = `${window.location.origin}/#/offer-request/${selectedRequest.share_token}`;
-                    await navigator.clipboard.writeText(url);
-                    showToast('Zapytanie oznaczone jako wysłane — link skopiowany', 'success');
-                  } catch (err) {
-                    console.error('Error sending request:', err);
-                    showToast('Błąd wysyłania zapytania', 'error');
-                  }
-                }}
-                className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm"
-              >
-                <Send className="w-4 h-4" />
-                Wyślij
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              {selectedRequest.status === 'draft' && (
+                <button
+                  onClick={async () => {
+                    try {
+                      const { error } = await supabase.from('offer_requests').update({ status: 'sent', sent_at: new Date().toISOString() }).eq('id', selectedRequest.id);
+                      if (error) throw error;
+                      setOfferRequests(prev => prev.map(r => r.id === selectedRequest.id ? { ...r, status: 'sent', sent_at: new Date().toISOString() } : r));
+                      setSelectedRequest((prev: any) => prev ? { ...prev, status: 'sent' } : null);
+                      const url = `${window.location.origin}/#/offer-request/${selectedRequest.share_token}`;
+                      await navigator.clipboard.writeText(url);
+                      showToast('Zapytanie oznaczone jako wysłane — link skopiowany', 'success');
+                    } catch (err) {
+                      console.error('Error sending request:', err);
+                      showToast('Błąd wysyłania zapytania', 'error');
+                    }
+                  }}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm"
+                >
+                  <Send className="w-4 h-4" />
+                  Wyślij
+                </button>
+              )}
+              {selectedRequest.status === 'responded' && (
+                <>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const { error } = await supabase.from('offer_requests').update({ status: 'rejected' }).eq('id', selectedRequest.id);
+                        if (error) throw error;
+                        setOfferRequests(prev => prev.map(r => r.id === selectedRequest.id ? { ...r, status: 'rejected' } : r));
+                        setSelectedRequest((prev: any) => prev ? { ...prev, status: 'rejected' } : null);
+                        showToast('Oferta podwykonawcy odrzucona', 'info');
+                      } catch (err) {
+                        console.error('Error rejecting request:', err);
+                        showToast('Błąd odrzucania', 'error');
+                      }
+                    }}
+                    className="flex items-center gap-1.5 px-4 py-2 border border-red-200 text-red-600 rounded-lg hover:bg-red-50 text-sm"
+                  >
+                    <XCircle className="w-4 h-4" />
+                    Odrzuć
+                  </button>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const { error } = await supabase.from('offer_requests').update({ status: 'accepted' }).eq('id', selectedRequest.id);
+                        if (error) throw error;
+                        setOfferRequests(prev => prev.map(r => r.id === selectedRequest.id ? { ...r, status: 'accepted' } : r));
+                        setSelectedRequest((prev: any) => prev ? { ...prev, status: 'accepted' } : null);
+                        showToast('Oferta podwykonawcy zaakceptowana', 'success');
+                      } catch (err) {
+                        console.error('Error accepting request:', err);
+                        showToast('Błąd akceptacji', 'error');
+                      }
+                    }}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"
+                  >
+                    <CheckCircle className="w-4 h-4" />
+                    Zaakceptuj
+                  </button>
+                </>
+              )}
+            </div>
           </div>
         </div>
       </div>
