@@ -550,7 +550,7 @@ export const GanttPage: React.FC = () => {
     }
   }, [loading, projects]);
 
-  useEffect(() => { if (selectedProject) { loadGanttData(); loadAdvancedData(); } }, [selectedProject]);
+  useEffect(() => { if (selectedProject) { loadGanttData(); } }, [selectedProject]);
 
   // Auto-scroll to today or first task when project loads
   useEffect(() => {
@@ -600,25 +600,30 @@ export const GanttPage: React.FC = () => {
         setWorkingDays(workingDaysFromMask(wdRes.data.working_days_mask || 31));
       }
       setHarmonogramStart(selectedProject.start_date?.split('T')[0] || new Date().toISOString().split('T')[0]);
-      // Load advanced data in parallel (non-blocking)
-      loadAdvancedData();
+      // Load advanced data with fresh task IDs (allFlatTasks hasn't re-rendered yet)
+      const freshIds = (tasksRes.data || []).map((t: any) => t.id);
+      loadAdvancedData(freshIds);
     } catch (err: any) { showError('Błąd ładowania danych harmonogramu: ' + (err?.message || err)); }
     finally { setLoading(false); }
   };
 
-  const loadAdvancedData = async () => {
+  const loadAdvancedData = async (freshTaskIds?: string[]) => {
     if (!selectedProject) return;
     const pid = selectedProject.id;
+    const taskIds = freshTaskIds || allFlatTasks.map(t => t.id);
     try {
-      const [baselinesRes, zonesRes, normsRes, cfRes, matsRes, rfisRes, actsRes] = await Promise.all([
+      const queries: Promise<any>[] = [
         supabase.from('gantt_baselines').select('*').eq('project_id', pid).order('created_at', { ascending: false }),
         supabase.from('gantt_zones').select('*').eq('project_id', pid).order('sort_order'),
         supabase.from('gantt_norms').select('*').eq('company_id', currentUser?.company_id || ''),
         supabase.from('gantt_condition_factors').select('*').eq('company_id', currentUser?.company_id || '').order('sort_order'),
-        supabase.from('gantt_materials').select('*').in('gantt_task_id', allFlatTasks.map(t => t.id).slice(0, 100)),
+        taskIds.length > 0
+          ? supabase.from('gantt_materials').select('*').in('gantt_task_id', taskIds.slice(0, 200))
+          : Promise.resolve({ data: [] }),
         supabase.from('gantt_rfis').select('*').eq('project_id', pid).order('created_at', { ascending: false }),
         supabase.from('gantt_accepted_acts').select('*').eq('project_id', pid).order('act_date', { ascending: false })
-      ]);
+      ];
+      const [baselinesRes, zonesRes, normsRes, cfRes, matsRes, rfisRes, actsRes] = await Promise.all(queries);
       if (baselinesRes.data) setBaselines(baselinesRes.data);
       if (zonesRes.data) setZones(zonesRes.data);
       if (normsRes.data) setNorms(normsRes.data);
