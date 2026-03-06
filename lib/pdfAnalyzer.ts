@@ -704,35 +704,60 @@ export function detectLegend(
   pageHeight: number,
   styleGroups?: PdfStyleGroup[],
 ): PdfLegend | null {
-  // Look for large rectangles that could be legend borders
-  const candidateRects = paths.filter(p => {
-    if (!p.isClosed) return false;
-    const w = p.bbox.maxX - p.bbox.minX;
-    const h = p.bbox.maxY - p.bbox.minY;
-    return w > pageWidth * 0.1 && w < pageWidth * 0.5
-      && h > pageHeight * 0.1 && h < pageHeight * 0.7;
-  });
-
-  if (candidateRects.length === 0) return null;
-
-  // Score by text density + bonus for "LEGENDA" text nearby
+  // Strategy 1: Find "LEGENDA" text and look for enclosing rectangle
+  const legendText = texts.find(t => /LEGENDA/i.test(t.text.trim()));
   let bestRect: PdfPath | null = null;
-  let bestScore = 0;
 
-  for (const rect of candidateRects) {
-    const textsInside = texts.filter(t =>
-      t.x >= rect.bbox.minX && t.x <= rect.bbox.maxX &&
-      t.y >= rect.bbox.minY && t.y <= rect.bbox.maxY
-    );
-    let score = textsInside.length;
-    if (textsInside.some(t => /LEGENDA/i.test(t.text))) score += 20;
-    if (score > bestScore) {
-      bestScore = score;
-      bestRect = rect;
+  if (legendText) {
+    // Find the smallest enclosing closed rectangle around "LEGENDA" text
+    let bestArea = Infinity;
+    for (const p of paths) {
+      if (!p.isClosed) continue;
+      const w = p.bbox.maxX - p.bbox.minX;
+      const h = p.bbox.maxY - p.bbox.minY;
+      // Must be reasonably sized (not tiny decorations, not the whole page)
+      if (w < 50 || h < 50) continue;
+      const area = w * h;
+      if (area > pageWidth * pageHeight * 0.8) continue;
+      // Must contain the LEGENDA text
+      if (legendText.x >= p.bbox.minX - 5 && legendText.x <= p.bbox.maxX + 5 &&
+          legendText.y >= p.bbox.minY - 5 && legendText.y <= p.bbox.maxY + 5) {
+        // Pick the smallest enclosing rect (closest to legend boundary)
+        if (area < bestArea) {
+          bestArea = area;
+          bestRect = p;
+        }
+      }
     }
   }
 
-  if (!bestRect || bestScore < 3) return null;
+  // Strategy 2 (fallback): Look for large rectangles with high text density
+  if (!bestRect) {
+    const candidateRects = paths.filter(p => {
+      if (!p.isClosed) return false;
+      const w = p.bbox.maxX - p.bbox.minX;
+      const h = p.bbox.maxY - p.bbox.minY;
+      return w > pageWidth * 0.05 && w < pageWidth * 0.7
+        && h > pageHeight * 0.05 && h < pageHeight * 0.85;
+    });
+
+    let bestScore = 0;
+    for (const rect of candidateRects) {
+      const textsInside = texts.filter(t =>
+        t.x >= rect.bbox.minX && t.x <= rect.bbox.maxX &&
+        t.y >= rect.bbox.minY && t.y <= rect.bbox.maxY
+      );
+      let score = textsInside.length;
+      if (textsInside.some(t => /LEGENDA/i.test(t.text))) score += 20;
+      if (score > bestScore) {
+        bestScore = score;
+        bestRect = rect;
+      }
+    }
+    if (bestScore < 3) bestRect = null;
+  }
+
+  if (!bestRect) return null;
 
   const lb = bestRect.bbox;
 
@@ -990,6 +1015,7 @@ export function detectRooms(
   pageWidth: number,
   pageHeight: number,
   minRoomSizePx: number = 60,
+  legendBbox?: { minX: number; minY: number; maxX: number; maxY: number } | null,
 ): PdfDetectedRoom[] {
   const rooms: PdfDetectedRoom[] = [];
   const minArea = minRoomSizePx * minRoomSizePx;
@@ -1007,6 +1033,14 @@ export function detectRooms(
     const area = w * h;
     if (area < minArea || area > maxArea) continue;
 
+    // Skip paths that overlap with legend area
+    if (legendBbox) {
+      const cx = (p.bbox.minX + p.bbox.maxX) / 2;
+      const cy = (p.bbox.minY + p.bbox.maxY) / 2;
+      if (cx >= legendBbox.minX - 20 && cx <= legendBbox.maxX + 20 &&
+          cy >= legendBbox.minY - 20 && cy <= legendBbox.maxY + 20) continue;
+    }
+
     // Must have 3+ line segments (polygon)
     const lineSegs = p.segments.filter(s => s.type === 'L');
     if (lineSegs.length < 3) continue;
@@ -1020,12 +1054,13 @@ export function detectRooms(
     }
     if (polygon.length < 3) continue;
 
-    // Find room name from text inside the bounding box
+    // Only create room if text inside matches a known room name pattern
     const name = findRoomName(p.bbox, texts);
+    if (!name) continue; // Skip polygons without a recognizable room name
 
     rooms.push({
       id: `room_${rooms.length + 1}`,
-      name: name || `Pomieszczenie ${rooms.length + 1}`,
+      name,
       polygon,
       bbox: { ...p.bbox },
       area,
@@ -1038,13 +1073,12 @@ export function detectRooms(
   return deduplicateRooms(rooms);
 }
 
-/** Find room name from text items inside or near a bounding box */
+/** Find room name from text items inside or near a bounding box.
+ *  Only returns names matching known room-name patterns — no arbitrary text fallback. */
 function findRoomName(
   bbox: { minX: number; minY: number; maxX: number; maxY: number },
   texts: PdfExtractedText[],
 ): string | null {
-  const cx = (bbox.minX + bbox.maxX) / 2;
-  const cy = (bbox.minY + bbox.maxY) / 2;
   const margin = 10;
 
   // Texts inside the room
@@ -1053,20 +1087,10 @@ function findRoomName(
     t.y >= bbox.minY - margin && t.y <= bbox.maxY + margin
   );
 
-  // Prefer text matching room name patterns
+  // Only return text that matches known room name patterns
   for (const t of insideTexts) {
     for (const pattern of ROOM_PATTERNS) {
       if (pattern.test(t.text)) return t.text.trim();
-    }
-  }
-
-  // Fallback: largest font text inside the room (likely the room label)
-  if (insideTexts.length > 0) {
-    const sorted = [...insideTexts].sort((a, b) => b.fontSize - a.fontSize);
-    const candidate = sorted[0];
-    // Only use if it's a short label (not a long description)
-    if (candidate.text.trim().length <= 30 && candidate.text.trim().length >= 2) {
-      return candidate.text.trim();
     }
   }
 
@@ -1192,6 +1216,8 @@ export async function analyzePdfPage(
     const routes = findConnectedRoutes(extraction.paths, sg.pathIndices, sg.id, routeTolerance);
     for (const r of routes) {
       r.totalLengthM = r.totalLengthM * scaleInfo.scaleFactor;
+      // Use human-readable style group name instead of sg_XX ID
+      r.layer = sg.category || sg.name;
     }
     allRoutes.push(...routes);
     await yieldUI();
@@ -1213,9 +1239,15 @@ export async function analyzePdfPage(
   }
   await yieldUI();
 
-  // 7. Room/zone detection
+  // 7. Room/zone detection (exclude legend area from room candidates)
   onProgress?.('Wykrywanie pomieszczeń...');
-  const rooms = detectRooms(extraction.paths, extraction.texts, extraction.pageWidth, extraction.pageHeight);
+  const legendExcludeBbox = legend ? {
+    minX: legend.boundingBox.x,
+    minY: legend.boundingBox.y,
+    maxX: legend.boundingBox.x + legend.boundingBox.width,
+    maxY: legend.boundingBox.y + legend.boundingBox.height,
+  } : null;
+  const rooms = detectRooms(extraction.paths, extraction.texts, extraction.pageWidth, extraction.pageHeight, 60, legendExcludeBbox);
   assignToRooms(rooms, symbols, allRoutes);
 
   // 8. Convert to DxfAnalysis format

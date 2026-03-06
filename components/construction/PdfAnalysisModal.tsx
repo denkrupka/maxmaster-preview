@@ -291,7 +291,7 @@ export default function PdfAnalysisModal({
                 </div>
               )}
 
-              {/* Rooms */}
+              {/* Rooms — only show if detected */}
               {extra.rooms.length > 0 && (
                 <div>
                   <div className="text-xs font-medium mb-1 flex items-center gap-1">
@@ -310,23 +310,36 @@ export default function PdfAnalysisModal({
                 </div>
               )}
 
-              {/* Top routes */}
-              {analysis.lineGroups.length > 0 && (
-                <div>
-                  <div className="text-xs font-medium mb-1 flex items-center gap-1">
-                    <GitBranch size={12} className="text-purple-500" />
-                    Top trasy ({analysis.lineGroups.length}):
+              {/* Top routes by style group — deduplicated by layer name */}
+              {analysis.lineGroups.length > 0 && (() => {
+                // Aggregate routes by layer (style group) — show total length per group
+                const groupedRoutes = new Map<string, { count: number; totalLength: number }>();
+                for (const r of analysis.lineGroups) {
+                  const key = r.layer;
+                  const existing = groupedRoutes.get(key) || { count: 0, totalLength: 0 };
+                  existing.count++;
+                  existing.totalLength += r.totalLengthM;
+                  groupedRoutes.set(key, existing);
+                }
+                const sorted = [...groupedRoutes.entries()].sort((a, b) => b[1].totalLength - a[1].totalLength).slice(0, 8);
+                return (
+                  <div>
+                    <div className="text-xs font-medium mb-1 flex items-center gap-1">
+                      <GitBranch size={12} className="text-purple-500" />
+                      Grupy stylów — trasy ({analysis.lineGroups.length}):
+                    </div>
+                    <div className="space-y-0.5 max-h-28 overflow-y-auto">
+                      {sorted.map(([layer, info], i) => (
+                        <div key={i} className="flex items-center gap-2 text-xs px-2 py-0.5 bg-gray-50 rounded">
+                          <span className="flex-1 truncate text-[10px]">{layer}</span>
+                          <span className="text-gray-400 text-[10px]">{info.count} tras</span>
+                          <span className="text-gray-500 font-medium">{info.totalLength.toFixed(1)}m</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <div className="space-y-0.5 max-h-20 overflow-y-auto">
-                    {analysis.lineGroups.slice(0, 5).map((r, i) => (
-                      <div key={r.id} className="flex items-center gap-2 text-xs px-2 py-0.5 bg-gray-50 rounded">
-                        <span className="flex-1 truncate font-mono text-[10px]">{r.layer}</span>
-                        <span className="text-gray-500">{r.totalLengthM.toFixed(1)}m</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+                );
+              })()}
             </>
           )}
 

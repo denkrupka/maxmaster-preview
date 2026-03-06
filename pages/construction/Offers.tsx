@@ -4993,9 +4993,49 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                         type="button"
                         disabled={!newRepData.first_name.trim() || !newRepData.last_name.trim()}
                         onClick={async () => {
-                          const clientId = offerData.client_id || (selectedOffer as any)?.client_id;
-                          if (!clientId) { console.error('No client_id found'); return; }
+                          if (!currentUser) return;
                           try {
+                            let clientId = offerData.client_id || (selectedOffer as any)?.client_id || '';
+
+                            // If no client_id, find or create contractor from offerClientData
+                            if (!clientId && offerClientData.client_name.trim()) {
+                              const nipNorm = offerClientData.nip ? offerClientData.nip.replace(/\D/g, '') : '';
+                              // Try find by NIP
+                              if (nipNorm) {
+                                const { data: byNip } = await supabase.from('contractors').select('id')
+                                  .eq('company_id', currentUser.company_id).eq('nip', nipNorm).is('deleted_at', null).limit(1);
+                                if (byNip?.length) clientId = byNip[0].id;
+                              }
+                              // Try find by name
+                              if (!clientId) {
+                                const { data: byName } = await supabase.from('contractors').select('id')
+                                  .eq('company_id', currentUser.company_id).ilike('name', offerClientData.client_name.trim()).is('deleted_at', null).limit(1);
+                                if (byName?.length) clientId = byName[0].id;
+                              }
+                              // Create new contractor
+                              if (!clientId) {
+                                const address = [offerClientData.company_street, offerClientData.company_street_number, offerClientData.company_postal_code, offerClientData.company_city].filter(Boolean).join(', ') || null;
+                                const { data: newC } = await supabase.from('contractors').insert({
+                                  company_id: currentUser.company_id,
+                                  name: offerClientData.client_name.trim(),
+                                  nip: nipNorm || null,
+                                  contractor_entity_type: 'company',
+                                  contractor_type: 'customer',
+                                  legal_address: address,
+                                  actual_address: address,
+                                  created_by_id: currentUser.id
+                                }).select('id').single();
+                                if (newC) {
+                                  clientId = newC.id;
+                                  setOfferData(prev => ({ ...prev, client_id: newC.id }));
+                                }
+                              } else {
+                                setOfferData(prev => ({ ...prev, client_id: clientId }));
+                              }
+                            }
+
+                            if (!clientId) { console.error('Could not resolve client_id'); return; }
+
                             const { data: saved } = await supabase
                               .from('contractor_client_contacts')
                               .insert({
