@@ -495,6 +495,8 @@ export const OffersPage: React.FC = () => {
   const [offerShowAddContactForm, setOfferShowAddContactForm] = useState(false);
   const [offerSelectedContactId, setOfferSelectedContactId] = useState('');
   const [offerClientSelected, setOfferClientSelected] = useState(false);
+  const [showAddRepInline, setShowAddRepInline] = useState(false);
+  const [newRepData, setNewRepData] = useState({ first_name: '', last_name: '', phone: '', email: '', position: '', is_main_contact: true });
 
   // Object/Materials/Assignment state (kosztorys-style)
   const [offerUsers, setOfferUsers] = useState<UserType[]>([]);
@@ -4880,43 +4882,157 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                 </div>
               );
             })()}
-            {/* Przedstawiciel Zamawiającego — edit mode: contact selector */}
+            {/* Przedstawiciel Zamawiającego — edit mode: contact selector or add form */}
             {editMode && (
               <div className="p-4 bg-slate-50 rounded-lg">
                 <label className="block text-sm font-medium text-slate-700 mb-1">Przedstawiciel</label>
-                {offerClientContacts.length > 0 ? (
-                  <select
-                    value={sendRepresentativeId}
-                    onChange={e => setSendRepresentativeId(e.target.value)}
-                    className="w-full px-2 py-1 border border-slate-200 rounded text-sm"
+                {offerClientContacts.length > 0 && !showAddRepInline ? (
+                  <>
+                    <select
+                      value={sendRepresentativeId}
+                      onChange={e => setSendRepresentativeId(e.target.value)}
+                      className="w-full px-2 py-1 border border-slate-200 rounded text-sm"
+                    >
+                      <option value="">-- Wybierz --</option>
+                      {offerClientContacts.map((c: any) => (
+                        <option key={c.id} value={c.id}>
+                          {c.is_main_contact ? '★ ' : ''}{c.first_name} {c.last_name}{c.position ? ` — ${c.position}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                    {(() => {
+                      const rep = offerClientContacts.find((c: any) => c.id === sendRepresentativeId);
+                      if (!rep) return null;
+                      return (
+                        <div className="mt-2 text-xs text-slate-500 space-y-0.5">
+                          {rep.position && <p>{rep.position}</p>}
+                          {rep.phone && <p>{rep.phone}</p>}
+                          {rep.email && <p>{rep.email}</p>}
+                          {rep.is_main_contact && (
+                            <span className="inline-flex items-center gap-1 text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full">
+                              <Star className="w-3 h-3" />
+                              Główny kontakt
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
+                    <button
+                      type="button"
+                      onClick={() => { setShowAddRepInline(true); setNewRepData({ first_name: '', last_name: '', phone: '', email: '', position: '', is_main_contact: false }); }}
+                      className="mt-2 flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
+                    >
+                      <UserPlus className="w-3 h-3" />
+                      Dodaj nowego
+                    </button>
+                  </>
+                ) : !showAddRepInline ? (
+                  <button
+                    type="button"
+                    onClick={() => { setShowAddRepInline(true); setNewRepData({ first_name: '', last_name: '', phone: '', email: '', position: '', is_main_contact: true }); }}
+                    className="mt-1 flex items-center gap-1 px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
                   >
-                    <option value="">-- Wybierz --</option>
-                    {offerClientContacts.map((c: any) => (
-                      <option key={c.id} value={c.id}>
-                        {c.is_main_contact ? '★ ' : ''}{c.first_name} {c.last_name}{c.position ? ` — ${c.position}` : ''}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <p className="text-xs text-slate-400 italic mt-1">Brak kontaktów</p>
-                )}
-                {(() => {
-                  const rep = offerClientContacts.find((c: any) => c.id === sendRepresentativeId);
-                  if (!rep) return null;
-                  return (
-                    <div className="mt-2 text-xs text-slate-500 space-y-0.5">
-                      {rep.position && <p>{rep.position}</p>}
-                      {rep.phone && <p>{rep.phone}</p>}
-                      {rep.email && <p>{rep.email}</p>}
-                      {rep.is_main_contact && (
-                        <span className="inline-flex items-center gap-1 text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full">
-                          <Star className="w-3 h-3" />
-                          Główny kontakt
-                        </span>
-                      )}
+                    <UserPlus className="w-3 h-3" />
+                    Dodaj przedstawiciela
+                  </button>
+                ) : null}
+                {showAddRepInline && (
+                  <div className="mt-2 space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="text"
+                        value={newRepData.first_name}
+                        onChange={e => setNewRepData(p => ({ ...p, first_name: e.target.value }))}
+                        className="px-2 py-1.5 border border-slate-200 rounded text-sm"
+                        placeholder="Imię *"
+                      />
+                      <input
+                        type="text"
+                        value={newRepData.last_name}
+                        onChange={e => setNewRepData(p => ({ ...p, last_name: e.target.value }))}
+                        className="px-2 py-1.5 border border-slate-200 rounded text-sm"
+                        placeholder="Nazwisko *"
+                      />
                     </div>
-                  );
-                })()}
+                    <input
+                      type="tel"
+                      value={newRepData.phone}
+                      onChange={e => setNewRepData(p => ({ ...p, phone: formatPhoneNumber(e.target.value) }))}
+                      className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"
+                      placeholder="Telefon"
+                      maxLength={16}
+                    />
+                    <input
+                      type="email"
+                      value={newRepData.email}
+                      onChange={e => setNewRepData(p => ({ ...p, email: e.target.value }))}
+                      className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"
+                      placeholder="E-mail"
+                    />
+                    <input
+                      type="text"
+                      value={newRepData.position}
+                      onChange={e => setNewRepData(p => ({ ...p, position: e.target.value }))}
+                      className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"
+                      placeholder="Stanowisko"
+                    />
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={newRepData.is_main_contact}
+                        onChange={e => setNewRepData(p => ({ ...p, is_main_contact: e.target.checked }))}
+                        className="w-3.5 h-3.5 text-amber-600 rounded"
+                      />
+                      <span className="text-xs text-slate-600 flex items-center gap-1">
+                        <Star className="w-3 h-3 text-amber-500" />
+                        Główny kontakt
+                      </span>
+                    </label>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={!newRepData.first_name.trim() || !newRepData.last_name.trim()}
+                        onClick={async () => {
+                          const clientId = offerData.client_id;
+                          if (!clientId) return;
+                          try {
+                            const { data: saved } = await supabase
+                              .from('contractor_client_contacts')
+                              .insert({
+                                client_id: clientId,
+                                first_name: newRepData.first_name.trim(),
+                                last_name: newRepData.last_name.trim(),
+                                phone: newRepData.phone || null,
+                                email: newRepData.email || null,
+                                position: newRepData.position || null,
+                                is_main_contact: newRepData.is_main_contact
+                              })
+                              .select()
+                              .single();
+                            if (saved) {
+                              setOfferClientContacts(prev => [...prev, saved]);
+                              setSendRepresentativeId(saved.id);
+                              setShowAddRepInline(false);
+                              setNewRepData({ first_name: '', last_name: '', phone: '', email: '', position: '', is_main_contact: true });
+                            }
+                          } catch (err) {
+                            console.error('Error saving contact:', err);
+                          }
+                        }}
+                        className="flex-1 px-2 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                      >
+                        Zapisz
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowAddRepInline(false)}
+                        className="px-2 py-1.5 text-xs text-slate-600 bg-slate-200 rounded hover:bg-slate-300"
+                      >
+                        Anuluj
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
             <div className="p-4 bg-slate-50 rounded-lg">
@@ -4987,28 +5103,6 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                 />
               ) : (
                 <p className="font-medium text-slate-900">{formatDate(selectedOffer.valid_until)}</p>
-              )}
-            </div>
-            <div className="p-4 bg-slate-50 rounded-lg">
-              <p className="text-sm text-slate-500 mb-1">Tryb kalkulacji</p>
-              {editMode ? (
-                <button
-                  onClick={() => setCalculationMode(prev => prev === 'markup' ? 'fixed' : 'markup')}
-                  className="flex items-center gap-2 w-full"
-                >
-                  {calculationMode === 'markup' ? (
-                    <ToggleLeft className="w-6 h-6 text-blue-600" />
-                  ) : (
-                    <ToggleRight className="w-6 h-6 text-green-600" />
-                  )}
-                  <span className="text-sm font-medium text-slate-900">
-                    {calculationMode === 'markup' ? 'Narzut' : 'Wartość stała'}
-                  </span>
-                </button>
-              ) : (
-                <p className="font-medium text-slate-900">
-                  {calculationMode === 'markup' ? 'Narzut' : 'Wartość stała'}
-                </p>
               )}
             </div>
           </div>
@@ -5285,7 +5379,33 @@ tr{page-break-inside:avoid;page-break-after:auto;}
           {/* Sections & Items */}
           <div className="p-6 border-b border-slate-200">
             <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-semibold text-slate-900">Pozycje oferty</h2>
+              <div className="flex items-center gap-4">
+                <h2 className="text-lg font-semibold text-slate-900">Pozycje oferty</h2>
+                {editMode ? (
+                  <button
+                    onClick={() => setCalculationMode(prev => prev === 'markup' ? 'fixed' : 'markup')}
+                    className="flex items-center gap-1.5 px-3 py-1 bg-slate-100 rounded-lg hover:bg-slate-200 transition"
+                  >
+                    {calculationMode === 'markup' ? (
+                      <ToggleLeft className="w-5 h-5 text-blue-600" />
+                    ) : (
+                      <ToggleRight className="w-5 h-5 text-green-600" />
+                    )}
+                    <span className="text-sm font-medium text-slate-700">
+                      {calculationMode === 'markup' ? 'Narzut' : 'Wartość stała'}
+                    </span>
+                  </button>
+                ) : (
+                  <span className="flex items-center gap-1.5 px-3 py-1 bg-slate-100 rounded-lg text-sm font-medium text-slate-700">
+                    {calculationMode === 'markup' ? (
+                      <ToggleLeft className="w-5 h-5 text-blue-600" />
+                    ) : (
+                      <ToggleRight className="w-5 h-5 text-green-600" />
+                    )}
+                    {calculationMode === 'markup' ? 'Narzut' : 'Wartość stała'}
+                  </span>
+                )}
+              </div>
               <div className="flex gap-2 items-center">
                 {sections.length > 0 && (
                   <>

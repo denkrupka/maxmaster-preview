@@ -334,6 +334,7 @@ export const GanttPage: React.FC = () => {
   const [showEvidenceModal, setShowEvidenceModal] = useState(false);
   const [evidenceTaskId, setEvidenceTaskId] = useState<string | null>(null);
   const [taskEvidence, setTaskEvidence] = useState<GanttEvidence[]>([]);
+  const [evidenceForm, setEvidenceForm] = useState({ evidence_type: 'photo' as string, description: '', file_url: '' });
 
   // Work Orders
   const [workOrders, setWorkOrders] = useState<GanttWorkOrder[]>([]);
@@ -2304,10 +2305,6 @@ export const GanttPage: React.FC = () => {
                 className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2">
                 <ClipboardList className="w-4 h-4" /> Generuj naryk pracy
               </button>
-              <button onClick={() => { loadAdvancedData(); setShowSettingsMenu(false); }}
-                className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2">
-                <Layers className="w-4 h-4" /> Odśwież dane zaawansowane
-              </button>
               <div className="border-t border-slate-100 my-1" />
               <div className="px-4 py-1.5 text-xs font-semibold text-slate-400 uppercase">Import / Eksport</div>
               <button onClick={() => { handleExportJSON(); setShowSettingsMenu(false); }}
@@ -3482,6 +3479,33 @@ export const GanttPage: React.FC = () => {
                         <div className="mt-1 text-[10px] text-slate-500">{wo.items.length} zadań przypisanych</div>
                       )}
                       {wo.notes && <div className="mt-1 text-[10px] text-slate-400 line-clamp-2">{wo.notes}</div>}
+                      <div className="flex items-center gap-1 mt-1.5">
+                        {wo.status === 'draft' && (
+                          <button onClick={async () => {
+                            await supabase.from('gantt_work_orders').update({ status: 'issued' }).eq('id', wo.id);
+                            loadAdvancedData(); showSuccess('Naryk wydany.');
+                          }} className="px-1.5 py-0.5 text-[9px] bg-blue-100 text-blue-700 rounded hover:bg-blue-200 font-medium">Wydaj</button>
+                        )}
+                        {wo.status === 'issued' && (
+                          <button onClick={async () => {
+                            await supabase.from('gantt_work_orders').update({ status: 'in_progress' }).eq('id', wo.id);
+                            loadAdvancedData(); showSuccess('Naryk w trakcie realizacji.');
+                          }} className="px-1.5 py-0.5 text-[9px] bg-amber-100 text-amber-700 rounded hover:bg-amber-200 font-medium">Rozpocznij</button>
+                        )}
+                        {wo.status === 'in_progress' && (
+                          <button onClick={async () => {
+                            await supabase.from('gantt_work_orders').update({ status: 'completed' }).eq('id', wo.id);
+                            loadAdvancedData(); showSuccess('Naryk zakończony.');
+                          }} className="px-1.5 py-0.5 text-[9px] bg-green-100 text-green-700 rounded hover:bg-green-200 font-medium">Zakończ</button>
+                        )}
+                        {wo.status !== 'cancelled' && wo.status !== 'completed' && (
+                          <button onClick={async () => {
+                            if (!confirm('Anulować naryk?')) return;
+                            await supabase.from('gantt_work_orders').update({ status: 'cancelled' }).eq('id', wo.id);
+                            loadAdvancedData();
+                          }} className="px-1.5 py-0.5 text-[9px] text-red-500 hover:bg-red-50 rounded">Anuluj</button>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
@@ -3595,8 +3619,39 @@ export const GanttPage: React.FC = () => {
                       </div>
                       <div className="text-xs font-medium text-slate-700">{rfi.subject}</div>
                       <div className="text-[10px] text-slate-400 mt-0.5 line-clamp-2">{rfi.question}</div>
+                      {(rfi as any).answer && <div className="text-[10px] text-green-700 mt-1 bg-green-50 p-1.5 rounded"><strong>Odpowiedź:</strong> {(rfi as any).answer}</div>}
                       {rfi.due_date && <div className="text-[10px] text-slate-400 mt-1">Termin: {new Date(rfi.due_date).toLocaleDateString('pl-PL')}</div>}
                       {rfi.impact_days && <div className="text-[10px] text-red-500 mt-0.5">Wpływ: +{rfi.impact_days} dni opóźnienia</div>}
+                      <div className="flex items-center gap-1 mt-1.5">
+                        {rfi.status === 'open' && (
+                          <>
+                            <button onClick={async () => {
+                              const answer = prompt('Odpowiedź na RFI:');
+                              if (!answer?.trim()) return;
+                              await supabase.from('gantt_rfis').update({ status: 'answered', answer: answer.trim(), answered_at: new Date().toISOString(), answered_by_id: currentUser?.id }).eq('id', rfi.id);
+                              loadAdvancedData(); showSuccess('RFI odpowiedzone.');
+                            }} className="px-1.5 py-0.5 text-[9px] bg-green-100 text-green-700 rounded hover:bg-green-200 font-medium">Odpowiedz</button>
+                            <button onClick={async () => {
+                              await supabase.from('gantt_rfis').update({ status: 'pending' }).eq('id', rfi.id);
+                              loadAdvancedData();
+                            }} className="px-1.5 py-0.5 text-[9px] text-amber-600 hover:bg-amber-50 rounded">Oczekujące</button>
+                          </>
+                        )}
+                        {rfi.status === 'pending' && (
+                          <button onClick={async () => {
+                            const answer = prompt('Odpowiedź na RFI:');
+                            if (!answer?.trim()) return;
+                            await supabase.from('gantt_rfis').update({ status: 'answered', answer: answer.trim(), answered_at: new Date().toISOString(), answered_by_id: currentUser?.id }).eq('id', rfi.id);
+                            loadAdvancedData(); showSuccess('RFI odpowiedzone.');
+                          }} className="px-1.5 py-0.5 text-[9px] bg-green-100 text-green-700 rounded hover:bg-green-200 font-medium">Odpowiedz</button>
+                        )}
+                        {rfi.status === 'answered' && (
+                          <button onClick={async () => {
+                            await supabase.from('gantt_rfis').update({ status: 'closed' }).eq('id', rfi.id);
+                            loadAdvancedData(); showSuccess('RFI zamknięte.');
+                          }} className="px-1.5 py-0.5 text-[9px] bg-slate-100 text-slate-700 rounded hover:bg-slate-200 font-medium">Zamknij</button>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
@@ -3676,41 +3731,77 @@ export const GanttPage: React.FC = () => {
                 Zadanie: <strong>{getTaskTitle(allFlatTasks.find(t => t.id === evidenceTaskId) as GanttTaskWithChildren)}</strong>
               </div>
               {taskEvidence.length > 0 && (
-                <div className="space-y-1.5">
+                <div className="space-y-1.5 max-h-40 overflow-y-auto">
                   {taskEvidence.map(ev => (
                     <div key={ev.id} className="flex items-center gap-2 p-2 rounded-lg border border-slate-100 text-xs">
                       <Camera className="w-4 h-4 text-slate-400 flex-shrink-0" />
                       <div className="flex-1 min-w-0">
                         <div className="font-medium text-slate-700">{ev.evidence_type} — {ev.description || 'Bez opisu'}</div>
-                        <div className="text-slate-400">{ev.file_name || ev.evidence_type}</div>
+                        {ev.file_url && <a href={ev.file_url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline truncate block">{ev.file_url}</a>}
+                        <div className="text-slate-400">{new Date(ev.created_at).toLocaleString('pl-PL')}</div>
                       </div>
-                      {ev.verified && <Check className="w-4 h-4 text-green-500 flex-shrink-0" />}
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        {ev.verified ? <Check className="w-4 h-4 text-green-500" title="Zweryfikowano" /> : (
+                          <button onClick={async () => {
+                            await supabase.from('gantt_evidence').update({ verified: true }).eq('id', ev.id);
+                            const { data: evData } = await supabase.from('gantt_evidence').select('*').eq('gantt_task_id', evidenceTaskId!).order('created_at', { ascending: false });
+                            if (evData) setTaskEvidence(evData as any);
+                            showSuccess('Dowód zweryfikowany.');
+                          }} className="p-0.5 hover:bg-green-100 rounded text-green-600" title="Zweryfikuj"><CheckCircle2 className="w-3.5 h-3.5" /></button>
+                        )}
+                        <button onClick={async () => {
+                          if (!confirm('Usunąć ten dowód?')) return;
+                          await supabase.from('gantt_evidence').delete().eq('id', ev.id);
+                          const { data: evData } = await supabase.from('gantt_evidence').select('*').eq('gantt_task_id', evidenceTaskId!).order('created_at', { ascending: false });
+                          if (evData) setTaskEvidence(evData as any);
+                        }} className="p-0.5 hover:bg-red-100 rounded text-red-400" title="Usuń"><Trash2 className="w-3 h-3" /></button>
+                      </div>
                     </div>
                   ))}
                 </div>
               )}
-              <div className="bg-slate-50 rounded-lg p-4 text-center">
-                <Camera className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-                <p className="text-xs text-slate-500 mb-3">Prześlij zdjęcie, protokół lub podpis jako dowód realizacji</p>
+              <div className="bg-slate-50 rounded-lg p-4 space-y-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Typ dowodu</label>
+                  <select value={evidenceForm.evidence_type} onChange={e => setEvidenceForm({...evidenceForm, evidence_type: e.target.value})}
+                    className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg">
+                    <option value="photo">Zdjęcie</option>
+                    <option value="protocol">Protokół</option>
+                    <option value="signature">Podpis</option>
+                    <option value="report">Raport</option>
+                    <option value="other">Inny</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Opis *</label>
+                  <input type="text" value={evidenceForm.description} onChange={e => setEvidenceForm({...evidenceForm, description: e.target.value})}
+                    placeholder="np. Zdjęcie stanu po malowaniu ścian" className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Link do pliku (Google Drive, Dropbox, itp.)</label>
+                  <input type="url" value={evidenceForm.file_url} onChange={e => setEvidenceForm({...evidenceForm, file_url: e.target.value})}
+                    placeholder="https://drive.google.com/..." className="w-full px-2 py-1.5 text-xs border border-slate-200 rounded-lg" />
+                </div>
                 <button onClick={async () => {
+                  if (!evidenceForm.description.trim()) { showError('Podaj opis dowodu.'); return; }
                   try {
                     const { error: evErr } = await supabase.from('gantt_evidence').insert({
                       gantt_task_id: evidenceTaskId,
-                      evidence_type: 'photo',
-                      description: `Dowód dodany ${new Date().toLocaleString('pl-PL')}`,
-                      file_url: '',
+                      evidence_type: evidenceForm.evidence_type,
+                      description: evidenceForm.description.trim(),
+                      file_url: evidenceForm.file_url.trim() || null,
                       uploaded_by_id: currentUser?.id
                     });
                     if (evErr) throw evErr;
-                    showSuccess('Dowód dodany (placeholder — upload pliku wymaga konfiguracji Storage).');
-                    // Reload evidence list
-                    const { data: evData, error: evLoadErr } = await supabase.from('gantt_evidence').select('*').eq('gantt_task_id', evidenceTaskId).order('created_at', { ascending: false });
-                    if (evLoadErr) { showError('Błąd ładowania dowodów: ' + evLoadErr.message); }
-                    else if (evData) setTaskEvidence(evData as any);
+                    showSuccess('Dowód dodany.');
+                    setEvidenceForm({ evidence_type: 'photo', description: '', file_url: '' });
+                    const { data: evData } = await supabase.from('gantt_evidence').select('*').eq('gantt_task_id', evidenceTaskId!).order('created_at', { ascending: false });
+                    if (evData) setTaskEvidence(evData as any);
                   } catch (err: any) { showError('Błąd: ' + (err?.message || err)); }
                 }}
-                  className="px-4 py-2 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 font-medium">
-                  <Upload className="w-3.5 h-3.5 inline mr-1" /> Dodaj dowód
+                  disabled={!evidenceForm.description.trim()}
+                  className="w-full px-4 py-2 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium flex items-center justify-center gap-1.5">
+                  <Plus className="w-3.5 h-3.5" /> Dodaj dowód
                 </button>
               </div>
             </div>
