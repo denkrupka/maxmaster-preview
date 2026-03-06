@@ -1293,6 +1293,163 @@ function applyLegendToGroups(legend: PdfLegend, groups: PdfStyleGroup[]) {
   }
 }
 
+// ==================== AI LEGEND MATCHING ====================
+
+/** CSS/hex color name to approximate hex for matching */
+const COLOR_NAME_MAP: Record<string, string[]> = {
+  red: ['#ff0000', '#cc0000', '#ee0000', '#dd0000', '#ff3333'],
+  blue: ['#0000ff', '#0000cc', '#0000ee', '#3333ff', '#0066ff', '#0000dd'],
+  green: ['#00ff00', '#00cc00', '#008000', '#00aa00', '#009900'],
+  black: ['#000000', '#111111', '#222222', '#333333'],
+  magenta: ['#ff00ff', '#cc00cc', '#ee00ee', '#ff33ff'],
+  cyan: ['#00ffff', '#00cccc', '#00eeee'],
+  yellow: ['#ffff00', '#cccc00'],
+  orange: ['#ff6600', '#ff8800', '#ff9900'],
+  pink: ['#ff00ff', '#ff66ff', '#ff33ff', '#cc00cc'],
+  purple: ['#800080', '#660066', '#9900cc'],
+  brown: ['#8b4513', '#a0522d', '#663300'],
+  gray: ['#808080', '#999999', '#666666', '#aaaaaa'],
+  grey: ['#808080', '#999999', '#666666', '#aaaaaa'],
+  white: ['#ffffff', '#eeeeee'],
+};
+
+function colorDistance(hex1: string, hex2: string): number {
+  const parse = (h: string) => {
+    const c = h.replace('#', '');
+    return [parseInt(c.slice(0, 2), 16), parseInt(c.slice(2, 4), 16), parseInt(c.slice(4, 6), 16)];
+  };
+  try {
+    const [r1, g1, b1] = parse(hex1);
+    const [r2, g2, b2] = parse(hex2);
+    return Math.sqrt((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2);
+  } catch {
+    return 999;
+  }
+}
+
+function findClosestStyleGroup(
+  aiColor: string,
+  aiLineWidth: string | undefined,
+  aiLineStyle: string | undefined,
+  groups: PdfStyleGroup[],
+  usedGroupIds: Set<string>,
+): PdfStyleGroup | null {
+  // Resolve AI color name to hex candidates
+  let targetHexes: string[];
+  const lowerColor = aiColor.toLowerCase().trim();
+  if (lowerColor.startsWith('#') && lowerColor.length >= 7) {
+    targetHexes = [lowerColor];
+  } else {
+    targetHexes = COLOR_NAME_MAP[lowerColor] || [];
+    // Also try if it's a Polish color name
+    const polishMap: Record<string, string> = {
+      czerwony: 'red', niebieski: 'blue', zielony: 'green', czarny: 'black',
+      fioletowy: 'purple', żółty: 'yellow', pomarańczowy: 'orange', różowy: 'pink',
+      biały: 'white', szary: 'gray', brązowy: 'brown', magenta: 'magenta', cyjan: 'cyan',
+    };
+    if (polishMap[lowerColor]) {
+      targetHexes = COLOR_NAME_MAP[polishMap[lowerColor]] || [];
+    }
+  }
+
+  if (targetHexes.length === 0) return null;
+
+  // Width filter
+  let widthRange: [number, number] | null = null;
+  if (aiLineWidth === 'thin') widthRange = [0, 1.0];
+  else if (aiLineWidth === 'medium') widthRange = [0.8, 2.5];
+  else if (aiLineWidth === 'thick') widthRange = [2.0, 20];
+
+  // Dash filter
+  const wantDashed = aiLineStyle === 'dashed' || aiLineStyle === 'dotted';
+
+  let bestGroup: PdfStyleGroup | null = null;
+  let bestDist = Infinity;
+
+  for (const g of groups) {
+    if (usedGroupIds.has(g.id)) continue;
+
+    // Width check
+    if (widthRange && (g.lineWidth < widthRange[0] || g.lineWidth > widthRange[1])) continue;
+
+    // Dash check
+    const isDashed = g.dashPattern && g.dashPattern.length > 0;
+    if (wantDashed && !isDashed) continue;
+
+    // Color distance — find minimum distance to any target hex
+    let minDist = Infinity;
+    for (const hex of targetHexes) {
+      const d = colorDistance(g.strokeColor, hex);
+      if (d < minDist) minDist = d;
+    }
+
+    // Threshold: allow some color variation (max ~80 distance)
+    if (minDist < 80 && minDist < bestDist) {
+      bestDist = minDist;
+      bestGroup = g;
+    }
+  }
+
+  return bestGroup;
+}
+
+/** Match AI-analyzed legend entries to geometric style groups and update legend in place.
+ *  Exported for use from PdfAnalysisModal. */
+export function matchAiLegendToGeometry(
+  aiEntries: Array<{
+    label: string;
+    description: string;
+    entryType: string;
+    color: string;
+    lineStyle?: string;
+    lineWidth?: string;
+    category: string;
+  }>,
+  legend: PdfLegend,
+  styleGroups: PdfStyleGroup[],
+  paths: PdfPath[],
+): void {
+  const usedGroupIds = new Set<string>();
+
+  // Replace geometric legend entries with AI entries, preserving geometric measurements
+  legend.entries = aiEntries.map(ai => {
+    const matchedGroup = findClosestStyleGroup(ai.color, ai.lineWidth, ai.lineStyle, styleGroups, usedGroupIds);
+    if (matchedGroup) usedGroupIds.add(matchedGroup.id);
+
+    const entry: PdfLegendEntry = {
+      label: ai.label,
+      description: ai.description,
+      category: ai.category,
+      sampleColor: matchedGroup?.strokeColor || undefined,
+      sampleLineWidth: matchedGroup?.lineWidth,
+      styleKey: matchedGroup?.styleKey,
+    };
+
+    // For line-type entries — compute total length from matched style group
+    if (ai.entryType === 'line' && matchedGroup) {
+      entry.totalLengthM = matchedGroup.totalLengthM;
+      entry.matchedPathCount = matchedGroup.pathCount;
+      matchedGroup.category = ai.label;
+    }
+
+    // For symbol-type entries — count matching small paths (existing geometric logic)
+    if (ai.entryType === 'symbol' && matchedGroup) {
+      // Count small closed paths in this style group as symbols
+      let symbolCount = 0;
+      for (const pi of matchedGroup.pathIndices) {
+        const p = paths[pi];
+        const w = p.bbox.maxX - p.bbox.minX;
+        const h = p.bbox.maxY - p.bbox.minY;
+        if (w < 50 && h < 50 && w > 1 && h > 1) symbolCount++;
+      }
+      entry.matchCount = symbolCount > 0 ? symbolCount : matchedGroup.pathCount;
+      matchedGroup.category = ai.label;
+    }
+
+    return entry;
+  });
+}
+
 /** Convert PDF analysis results to DxfAnalysis-compatible format */
 function toDxfAnalysis(
   extraction: PdfPageExtraction,

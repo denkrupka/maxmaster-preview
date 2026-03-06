@@ -1,12 +1,69 @@
 import React, { useState } from 'react';
-import { X, Play, Loader2, CheckCircle, AlertTriangle, BookOpen, GitBranch, FileImage, Save } from 'lucide-react';
-import type { PDFDocumentProxy } from 'pdfjs-dist';
+import { X, Play, Loader2, CheckCircle, AlertTriangle, BookOpen, GitBranch, FileImage, Save, Sparkles } from 'lucide-react';
+import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import { extractPageGeometry, classifyFromOpList } from '../../lib/pdfGeometryExtractor';
-import { analyzePdfPage, type PdfAnalysisExtra } from '../../lib/pdfAnalyzer';
+import { analyzePdfPage, type PdfAnalysisExtra, matchAiLegendToGeometry } from '../../lib/pdfAnalyzer';
 import { analyzeRasterPdf } from '../../lib/pdfRasterAnalyzer';
-import type { PdfClassification, PdfAnalysisStep } from '../../lib/pdfTypes';
+import type { PdfClassification, PdfAnalysisStep, PdfLegend } from '../../lib/pdfTypes';
 import type { DxfAnalysis } from '../../lib/dxfAnalyzer';
 import { supabase } from '../../lib/supabase';
+
+/** Render a specific region of a PDF page to base64 JPEG */
+async function renderLegendRegion(
+  page: PDFPageProxy,
+  legendBbox: { x: number; y: number; width: number; height: number },
+  padding: number = 10,
+): Promise<string> {
+  // Render full page at 2x scale, then crop legend region
+  const scale = 2;
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  const ctx = canvas.getContext('2d')!;
+  await page.render({ canvasContext: ctx, viewport }).promise;
+
+  // Crop legend region (coordinates are in PDF units, scale them)
+  const sx = Math.max(0, (legendBbox.x - padding) * scale);
+  const sy = Math.max(0, (legendBbox.y - padding) * scale);
+  const sw = Math.min(canvas.width - sx, (legendBbox.width + padding * 2) * scale);
+  const sh = Math.min(canvas.height - sy, (legendBbox.height + padding * 2) * scale);
+
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width = sw;
+  cropCanvas.height = sh;
+  const cropCtx = cropCanvas.getContext('2d')!;
+  cropCtx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+
+  const dataUrl = cropCanvas.toDataURL('image/jpeg', 0.9);
+  return dataUrl.replace(/^data:image\/jpeg;base64,/, '');
+}
+
+/** Call Supabase Edge Function to analyze legend image with AI */
+async function analyzeLegendWithAI(
+  legendBase64: string,
+  styleGroupsSummary: string,
+): Promise<{ entries: Array<{
+  label: string;
+  description: string;
+  entryType: 'symbol' | 'line' | 'area';
+  color: string;
+  lineStyle?: string;
+  lineWidth?: string;
+  category: string;
+}>; drawingType?: string }> {
+  const { data, error } = await supabase.functions.invoke('pdf-analyze-legend', {
+    body: {
+      legendImageBase64: legendBase64,
+      mimeType: 'image/jpeg',
+      styleGroupsSummary,
+    },
+  });
+
+  if (error) throw new Error(`AI legend analysis failed: ${error.message}`);
+  if (data?.error) throw new Error(data.error);
+  return data.data || data;
+}
 
 interface PdfAnalysisModalProps {
   pdfDoc: PDFDocumentProxy;
@@ -28,6 +85,7 @@ export default function PdfAnalysisModal({
   const [error, setError] = useState('');
   const [extractionProgress, setExtractionProgress] = useState(0);
   const [analysisSubStep, setAnalysisSubStep] = useState('');
+  const [aiUsed, setAiUsed] = useState(false);
 
   const runAnalysis = async () => {
     setStep('classifying');
@@ -66,6 +124,40 @@ export default function PdfAnalysisModal({
           { calibrationScaleRatio: scaleRatio },
           (sub) => setAnalysisSubStep(sub),
         );
+
+        // AI Legend Analysis — if legend bbox found, render it and send to Gemini
+        if (analysisExtra.legend) {
+          try {
+            setAnalysisSubStep('AI analizuje legendę...');
+            await new Promise(r => setTimeout(r, 0));
+
+            const legendBase64 = await renderLegendRegion(page, analysisExtra.legend.boundingBox);
+
+            // Build style groups summary for AI context
+            const topGroups = [...analysisExtra.styleGroups]
+              .sort((a, b) => b.totalLengthPx - a.totalLengthPx)
+              .slice(0, 15)
+              .map(sg => `${sg.name}: ${sg.pathCount} sciezek, ${sg.totalLengthM.toFixed(1)}m`)
+              .join('\n');
+
+            const aiResult = await analyzeLegendWithAI(legendBase64, topGroups);
+
+            // Merge AI results with geometric data
+            if (aiResult.entries && aiResult.entries.length > 0) {
+              matchAiLegendToGeometry(
+                aiResult.entries,
+                analysisExtra.legend,
+                analysisExtra.styleGroups,
+                analysisExtra.extraction.paths,
+              );
+              setAiUsed(true);
+            }
+          } catch (aiErr: any) {
+            console.warn('AI legend analysis failed, using geometric fallback:', aiErr.message);
+            // Non-fatal — geometric results are still valid
+          }
+        }
+
         setAnalysis(result);
         setExtra(analysisExtra);
         setStep('analyzed');
@@ -258,6 +350,11 @@ export default function PdfAnalysisModal({
                     <span className="text-xs font-semibold text-amber-800">
                       Legenda — {extra.legend!.entries.length} wpisów
                     </span>
+                    {aiUsed && (
+                      <span className="flex items-center gap-1 px-1.5 py-0.5 bg-violet-100 text-violet-700 rounded-full text-[9px] font-medium">
+                        <Sparkles size={10} /> AI
+                      </span>
+                    )}
                     {totalMatched > 0 && (
                       <span className="ml-auto text-xs text-green-700 font-medium">
                         {totalMatched} symboli dopasowanych
