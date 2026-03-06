@@ -3568,19 +3568,53 @@ export const GanttPage: React.FC = () => {
                           {act.status === 'accepted' ? 'Przyjęty' : act.status === 'rejected' ? 'Odrzucony' : act.status === 'draft' ? 'Szkic' : 'Złożony'}
                         </span>
                         {act.status === 'draft' && (
+                          <>
+                            <button onClick={async () => {
+                              await supabase.from('gantt_accepted_acts').update({ status: 'submitted' }).eq('id', act.id);
+                              loadAdvancedData();
+                              showSuccess('Akt złożony do akceptacji.');
+                            }} className="p-0.5 hover:bg-violet-100 rounded" title="Złóż do akceptacji">
+                              <ArrowRight className="w-3 h-3 text-violet-500" />
+                            </button>
+                            <button onClick={async () => {
+                              if (!confirm('Usunąć szkic aktu?')) return;
+                              await supabase.from('gantt_accepted_acts').delete().eq('id', act.id);
+                              loadAdvancedData();
+                            }} className="p-0.5 hover:bg-red-100 rounded" title="Usuń szkic">
+                              <X className="w-3 h-3 text-red-400" />
+                            </button>
+                          </>
+                        )}
+                        {act.status === 'submitted' && (
+                          <>
+                            <button onClick={async () => {
+                              await supabase.from('gantt_accepted_acts').update({ status: 'accepted', accepted_by: user?.id, accepted_at: new Date().toISOString() }).eq('id', act.id);
+                              loadAdvancedData();
+                              showSuccess('Akt przyjęty.');
+                            }} className="px-1.5 py-0.5 text-[9px] bg-green-100 text-green-700 rounded hover:bg-green-200 font-medium">Przyjmij</button>
+                            <button onClick={async () => {
+                              const reason = prompt('Powód odrzucenia:');
+                              if (!reason) return;
+                              await supabase.from('gantt_accepted_acts').update({ status: 'rejected', notes: reason }).eq('id', act.id);
+                              loadAdvancedData();
+                              showSuccess('Akt odrzucony.');
+                            }} className="px-1.5 py-0.5 text-[9px] bg-red-100 text-red-700 rounded hover:bg-red-200 font-medium">Odrzuć</button>
+                          </>
+                        )}
+                        {act.status === 'rejected' && (
                           <button onClick={async () => {
-                            await supabase.from('gantt_accepted_acts').update({ status: 'submitted' }).eq('id', act.id);
+                            await supabase.from('gantt_accepted_acts').update({ status: 'draft', notes: null }).eq('id', act.id);
                             loadAdvancedData();
-                            showSuccess('Akt złożony do akceptacji.');
-                          }} className="p-0.5 hover:bg-violet-100 rounded" title="Złóż do akceptacji">
-                            <ArrowRight className="w-3 h-3 text-violet-500" />
-                          </button>
+                            showSuccess('Akt przywrócony do szkicu.');
+                          }} className="px-1.5 py-0.5 text-[9px] bg-slate-100 text-slate-600 rounded hover:bg-slate-200 font-medium">Do szkicu</button>
                         )}
                       </div>
                     </div>
                     {act.description && <div className="text-[10px] text-slate-500 mb-0.5">{act.description}</div>}
                     <div className="text-[10px] text-slate-400">Data: {new Date(act.act_date).toLocaleDateString('pl-PL')}</div>
                     {act.total_amount > 0 && <div className="text-[10px] text-slate-600 font-medium mt-0.5">{act.total_amount.toLocaleString('pl-PL')} PLN</div>}
+                    {act.status === 'rejected' && act.notes && <div className="text-[10px] text-red-500 mt-1 bg-red-50 rounded p-1">Powód: {act.notes}</div>}
+                    {act.status === 'accepted' && act.accepted_at && <div className="text-[10px] text-green-600 mt-1">Przyjęto: {new Date(act.accepted_at).toLocaleDateString('pl-PL')}</div>}
                   </div>
                 ))}
               </div>
