@@ -122,6 +122,14 @@ export default function PdfAnalysisModal({
     setStep('saving');
     setError('');
     try {
+      // Save only lightweight summary — full analysis with 200k+ entities would crash the DB
+      const analysisSummary = {
+        totalLayers: analysis.totalLayers,
+        totalBlocks: analysis.totalBlocks,
+        totalEntities: analysis.totalEntities,
+        blocks: analysis.blocks,
+        lineGroupCount: analysis.lineGroups.length,
+      };
       const { data: row, error: aErr } = await supabase.from('pdf_analyses').insert({
         company_id: companyId,
         drawing_id: drawingId,
@@ -136,7 +144,7 @@ export default function PdfAnalysisModal({
         detected_scale: extra?.scaleInfo.scaleText,
         scale_factor: extra?.scaleInfo.scaleFactor,
         ai_classification_status: aiClassified ? 'completed' : 'none',
-        analysis_result: analysis,
+        analysis_result: analysisSummary,
       }).select().single();
 
       if (aErr) throw aErr;
