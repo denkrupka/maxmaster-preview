@@ -697,36 +697,36 @@ export const DrawingsPage: React.FC = () => {
               .limit(1)
               .then(async ({ data: rows, error: dbError }) => {
                 if (dbError) { console.error('PDF analysis load error:', dbError); return; }
-                if (!rows || rows.length === 0 || !rows[0].analysis_result) return;
-                const savedAnalysis = rows[0].analysis_result as DxfAnalysis;
-                // Validate loaded structure
-                if (!savedAnalysis.entities || !Array.isArray(savedAnalysis.entities)) {
-                  console.error('Invalid analysis structure from DB');
-                  return;
-                }
+                if (!rows || rows.length === 0) return;
                 const analysisId = rows[0].id;
-                setPdfAnalysis(savedAnalysis);
-                // Compute rules: use existing or create defaults
-                const rulesToUse = pdfTakeoffRules.length > 0 ? pdfTakeoffRules : getDefaultPdfElectricalRules();
-                setPdfTakeoffRules(rulesToUse);
-                const result = applyRules(savedAnalysis, rulesToUse);
-                setPdfTakeoffResult(result);
+                const savedAnalysis = rows[0].analysis_result as DxfAnalysis | null;
+
+                // If full analysis with entities is available, restore takeoff
+                if (savedAnalysis?.entities && Array.isArray(savedAnalysis.entities)) {
+                  setPdfAnalysis(savedAnalysis);
+                  const rulesToUse = pdfTakeoffRules.length > 0 ? pdfTakeoffRules : getDefaultPdfElectricalRules();
+                  setPdfTakeoffRules(rulesToUse);
+                  const result = applyRules(savedAnalysis, rulesToUse);
+                  setPdfTakeoffResult(result);
+                }
 
                 try {
-                  // Load style groups from DB
+                  // Load style groups from DB (includes AI classification results)
                   const { data: sgRows } = await supabase.from('pdf_style_groups')
                     .select('*')
                     .eq('analysis_id', analysisId)
                     .order('path_count', { ascending: false });
                   if (sgRows && sgRows.length > 0) {
-                    // Build entity-to-group index once for efficiency
+                    // Build entity-to-group index if full analysis available
                     const entityGroupMap = new Map<string, number[]>();
-                    for (let i = 0; i < savedAnalysis.entities.length; i++) {
-                      const ln = savedAnalysis.entities[i].layerName;
-                      const pi = savedAnalysis.entities[i].properties?.pathIndex;
-                      if (ln && pi != null) {
-                        if (!entityGroupMap.has(ln)) entityGroupMap.set(ln, []);
-                        entityGroupMap.get(ln)!.push(pi);
+                    if (savedAnalysis?.entities) {
+                      for (let i = 0; i < savedAnalysis.entities.length; i++) {
+                        const ln = savedAnalysis.entities[i].layerName;
+                        const pi = savedAnalysis.entities[i].properties?.pathIndex;
+                        if (ln && pi != null) {
+                          if (!entityGroupMap.has(ln)) entityGroupMap.set(ln, []);
+                          entityGroupMap.get(ln)!.push(pi);
+                        }
                       }
                     }
                     const groups: PdfStyleGroup[] = sgRows.map(r => ({
