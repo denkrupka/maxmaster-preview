@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Play, Brain, Loader2, CheckCircle, AlertTriangle, Layers, Box, GitBranch, FileImage, Home } from 'lucide-react';
+import { X, Play, Loader2, CheckCircle, AlertTriangle, BookOpen, GitBranch, FileImage, Home, Save } from 'lucide-react';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { extractPageGeometry, classifyFromOpList } from '../../lib/pdfGeometryExtractor';
 import { analyzePdfPage, type PdfAnalysisExtra } from '../../lib/pdfAnalyzer';
@@ -26,31 +26,31 @@ export default function PdfAnalysisModal({
   const [analysis, setAnalysis] = useState<DxfAnalysis | null>(null);
   const [extra, setExtra] = useState<PdfAnalysisExtra | null>(null);
   const [error, setError] = useState('');
-  const [aiClassified, setAiClassified] = useState(false);
   const [extractionProgress, setExtractionProgress] = useState(0);
+  const [analysisSubStep, setAnalysisSubStep] = useState('');
 
   const runAnalysis = async () => {
     setStep('classifying');
     setError('');
     setExtractionProgress(0);
+    setAnalysisSubStep('');
     try {
       const page = await pdfDoc.getPage(pageNumber);
 
-      // Step 1: Get operator list ONCE (avoid double fetch) and classify from it
+      // Step 1: Get operator list ONCE and classify
       await new Promise(r => setTimeout(r, 0));
       const opList = await page.getOperatorList();
       const cls = classifyFromOpList(opList.fnArray);
       setClassification(cls);
 
       if (cls.contentType === 'raster') {
-        // Raster pipeline
         setStep('analyzing');
         await new Promise(r => setTimeout(r, 0));
         const { analysis: result } = await analyzeRasterPdf(page, supabase, pageNumber);
         setAnalysis(result);
         setStep('analyzed');
       } else {
-        // Vector pipeline — runs in Web Worker (non-blocking)
+        // Vector pipeline
         setStep('extracting');
         await new Promise(r => setTimeout(r, 0));
         const extraction = await extractPageGeometry(page, (pct) => {
@@ -58,62 +58,21 @@ export default function PdfAnalysisModal({
         });
 
         setStep('analyzing');
-        // Yield to UI before heavy sync analysis
+        setAnalysisSubStep('Grupowanie stylów...');
         await new Promise(r => setTimeout(r, 0));
-        const { analysis: result, extra: analysisExtra } = analyzePdfPage(extraction, {
-          calibrationScaleRatio: scaleRatio,
-        });
+
+        const { analysis: result, extra: analysisExtra } = await analyzePdfPage(
+          extraction,
+          { calibrationScaleRatio: scaleRatio },
+          (sub) => setAnalysisSubStep(sub),
+        );
         setAnalysis(result);
         setExtra(analysisExtra);
         setStep('analyzed');
       }
     } catch (err: any) {
-      setError(err.message || 'Błąd analizy');
+      setError(err.message || 'Blad analizy');
       setStep('error');
-    }
-  };
-
-  const runAiClassification = async () => {
-    if (!analysis || !extra) return;
-    setStep('ai_classifying');
-    setError('');
-    try {
-      // Send style groups as "layers" and symbol clusters as "blocks" to dxf-classify
-      const { data, error: fnError } = await supabase.functions.invoke('dxf-classify', {
-        body: {
-          layers: extra.styleGroups.map(sg => ({
-            name: sg.name,
-            entityCount: sg.pathCount,
-            entityTypes: { PDF_PATH: sg.pathCount },
-          })),
-          blocks: analysis.blocks.map(b => ({
-            name: b.name,
-            insertCount: b.insertCount,
-            containedTypes: b.containedTypes,
-          })),
-        },
-      });
-
-      if (fnError) throw new Error(typeof fnError === 'string' ? fnError : fnError.message || 'Edge Function returned a non-2xx status code');
-      if (data?.error) throw new Error(data.error);
-
-      // Apply AI categories to style groups
-      const aiLayers: { name: string; category: string; confidence: number }[] = data.layers || [];
-      if (extra) {
-        for (const aiLayer of aiLayers) {
-          const sg = extra.styleGroups.find(g => g.name === aiLayer.name);
-          if (sg) {
-            sg.category = sg.category || aiLayer.category;
-            sg.aiConfidence = aiLayer.confidence;
-          }
-        }
-      }
-
-      setAiClassified(true);
-      setStep('analyzed');
-    } catch (err: any) {
-      setError(`Klasyfikacja AI: ${err.message || 'Błąd'}`);
-      setStep('analyzed');
     }
   };
 
@@ -122,7 +81,6 @@ export default function PdfAnalysisModal({
     setStep('saving');
     setError('');
     try {
-      // Save only lightweight summary — full analysis with 200k+ entities would crash the DB
       const analysisSummary = {
         totalLayers: analysis.totalLayers,
         totalBlocks: analysis.totalBlocks,
@@ -143,7 +101,7 @@ export default function PdfAnalysisModal({
         total_routes: analysis.lineGroups.length,
         detected_scale: extra?.scaleInfo.scaleText,
         scale_factor: extra?.scaleInfo.scaleFactor,
-        ai_classification_status: aiClassified ? 'completed' : 'none',
+        ai_classification_status: 'none',
         analysis_result: analysisSummary,
       }).select().single();
 
@@ -168,7 +126,7 @@ export default function PdfAnalysisModal({
         );
       }
 
-      // Save symbols
+      // Save symbols (batch)
       if (extra?.symbols && extra.symbols.length > 0) {
         const batchSize = 500;
         for (let i = 0; i < extra.symbols.length; i += batchSize) {
@@ -202,139 +160,147 @@ export default function PdfAnalysisModal({
       setStep('done');
       onAnalysisComplete(analysis, extra || undefined);
     } catch (err: any) {
-      setError(err.message || 'Błąd zapisu');
+      setError(err.message || 'Blad zapisu');
       setStep('error');
     }
   };
 
-  const stepLabel = (s: PdfAnalysisStep) => {
-    switch (s) {
-      case 'idle': return 'Gotowy do analizy';
-      case 'classifying': return 'Klasyfikacja strony...';
-      case 'extracting': return `Ekstrakcja geometrii...${extractionProgress > 0 ? ` ${extractionProgress}%` : ''}`;
-      case 'analyzing': return classification?.contentType === 'raster' ? 'Analiza AI (Gemini Vision)...' : 'Analiza ścieżek i symboli...';
-      case 'analyzed': return 'Analiza zakończona';
-      case 'ai_classifying': return 'Klasyfikacja AI grup...';
-      case 'saving': return 'Zapisywanie do bazy...';
-      case 'done': return 'Gotowe!';
-      case 'error': return 'Błąd';
-    }
-  };
-
-  const contentTypeBadge = (ct: string) => {
-    const colors = { vector: 'bg-green-100 text-green-700', raster: 'bg-orange-100 text-orange-700', mixed: 'bg-blue-100 text-blue-700' };
-    const labels = { vector: 'Wektorowy', raster: 'Rastrowy', mixed: 'Mieszany' };
-    return (
-      <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${colors[ct as keyof typeof colors] || 'bg-gray-100'}`}>
-        {labels[ct as keyof typeof labels] || ct}
-      </span>
-    );
-  };
+  const isRunning = ['classifying', 'extracting', 'analyzing', 'saving'].includes(step);
+  const hasLegend = extra?.legend && extra.legend.entries.length > 0;
+  const legendMatches = extra?.legend?.entries.filter(e => (e.matchCount || 0) > 0) || [];
+  const totalMatched = legendMatches.reduce((s, e) => s + (e.matchCount || 0), 0);
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-xl shadow-2xl w-[600px] max-h-[80vh] flex flex-col">
+      <div className="bg-white rounded-xl shadow-2xl w-[560px] max-h-[85vh] flex flex-col">
+        {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <div className="flex items-center gap-2">
             <FileImage size={18} className="text-blue-600" />
-            <h3 className="font-semibold">Analiza rysunku PDF</h3>
-            {classification && contentTypeBadge(classification.contentType)}
+            <h3 className="font-semibold text-sm">Analiza rysunku PDF</h3>
+            {classification && (
+              <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                classification.contentType === 'vector' ? 'bg-green-100 text-green-700' :
+                classification.contentType === 'raster' ? 'bg-orange-100 text-orange-700' :
+                'bg-blue-100 text-blue-700'
+              }`}>
+                {classification.contentType === 'vector' ? 'Wektorowy' :
+                 classification.contentType === 'raster' ? 'Rastrowy' : 'Mieszany'}
+              </span>
+            )}
           </div>
           <button onClick={onClose} className="p-1 hover:bg-gray-100 rounded"><X size={18} /></button>
         </div>
 
-        <div className="p-4 flex-1 overflow-y-auto space-y-4">
-          {/* Step indicator */}
-          <div className="flex items-center gap-2">
-            {['classifying', 'extracting', 'analyzing', 'ai_classifying', 'saving'].includes(step) ? (
-              <Loader2 size={16} className="text-blue-600 animate-spin" />
-            ) : ['done', 'analyzed'].includes(step) ? (
-              <CheckCircle size={16} className="text-green-600" />
-            ) : step === 'error' ? (
-              <AlertTriangle size={16} className="text-red-500" />
-            ) : null}
-            <span className="text-sm font-medium">{stepLabel(step)}</span>
-          </div>
-
-          {error && <div className="text-xs text-red-600 bg-red-50 p-2 rounded">{error}</div>}
-
-          {/* Classification info */}
-          {classification && (
-            <div className="text-xs text-gray-500 bg-gray-50 rounded p-2">
-              Operacje: wektorowe={classification.vectorOpCount}, rastrowe={classification.rasterOpCount}, tekst={classification.textOpCount}
-              {' | '}Pewność: {(classification.confidence * 100).toFixed(0)}%
+        {/* Content */}
+        <div className="p-4 flex-1 overflow-y-auto space-y-3">
+          {/* Progress */}
+          {isRunning && (
+            <div className="flex items-center gap-2">
+              <Loader2 size={16} className="text-blue-600 animate-spin flex-shrink-0" />
+              <div className="flex-1">
+                <div className="text-sm font-medium">
+                  {step === 'classifying' && 'Klasyfikacja strony...'}
+                  {step === 'extracting' && `Ekstrakcja geometrii... ${extractionProgress > 0 ? `${extractionProgress}%` : ''}`}
+                  {step === 'analyzing' && (analysisSubStep || 'Analiza...')}
+                  {step === 'saving' && 'Zapisywanie...'}
+                </div>
+                {step === 'extracting' && extractionProgress > 0 && (
+                  <div className="w-full bg-gray-200 rounded-full h-1.5 mt-1">
+                    <div className="bg-blue-600 h-1.5 rounded-full transition-all" style={{ width: `${extractionProgress}%` }} />
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
-          {/* Analysis results */}
-          {analysis && (
-            <div className="space-y-3">
-              <div className="grid grid-cols-4 gap-2">
-                <div className="bg-blue-50 rounded-lg p-2.5 text-center">
-                  <Layers size={18} className="mx-auto text-blue-600 mb-1" />
-                  <div className="text-lg font-bold">{extra?.styleGroups.length || analysis.totalLayers}</div>
-                  <div className="text-[10px] text-gray-500">Grup stylów</div>
-                </div>
-                <div className="bg-green-50 rounded-lg p-2.5 text-center">
-                  <Box size={18} className="mx-auto text-green-600 mb-1" />
-                  <div className="text-lg font-bold">{extra?.symbols.length || analysis.totalBlocks}</div>
-                  <div className="text-[10px] text-gray-500">Symboli</div>
-                </div>
-                <div className="bg-purple-50 rounded-lg p-2.5 text-center">
-                  <GitBranch size={18} className="mx-auto text-purple-600 mb-1" />
-                  <div className="text-lg font-bold">{analysis.lineGroups.length}</div>
-                  <div className="text-[10px] text-gray-500">Tras</div>
-                </div>
-                <div className="bg-amber-50 rounded-lg p-2.5 text-center">
-                  <Home size={18} className="mx-auto text-amber-600 mb-1" />
-                  <div className="text-lg font-bold">{extra?.rooms?.length || 0}</div>
-                  <div className="text-[10px] text-gray-500">Pomieszczeń</div>
-                </div>
+          {step === 'analyzed' && (
+            <div className="flex items-center gap-2 text-green-700">
+              <CheckCircle size={16} />
+              <span className="text-sm font-medium">Analiza zakonczona</span>
+            </div>
+          )}
+
+          {step === 'done' && (
+            <div className="flex items-center gap-2 text-green-700">
+              <CheckCircle size={16} />
+              <span className="text-sm font-medium">Zapisano!</span>
+            </div>
+          )}
+
+          {step === 'error' && (
+            <div className="flex items-center gap-2 text-red-600">
+              <AlertTriangle size={16} />
+              <span className="text-sm font-medium">Blad</span>
+            </div>
+          )}
+
+          {error && <div className="text-xs text-red-600 bg-red-50 p-2 rounded">{error}</div>}
+
+          {/* Results */}
+          {analysis && extra && (
+            <>
+              {/* Stats bar */}
+              <div className="text-xs text-gray-500 bg-gray-50 rounded p-2">
+                Skala: {extra.scaleInfo.scaleText}
+                {extra.scaleInfo.source === 'text_detection' && ' (z rysunku)'}
+                {extra.scaleInfo.source === 'default' && ' (domyslna)'}
+                {' | '}Sciezek: {extra.extraction.paths.length.toLocaleString()}
+                {' | '}Tekstow: {extra.extraction.texts.length}
+                {' | '}Tras: {analysis.lineGroups.length}
+                {' | '}Pomieszczen: {extra.rooms.length}
               </div>
 
-              {extra?.scaleInfo && (
-                <div className="text-xs text-gray-500">
-                  Skala: {extra.scaleInfo.scaleText}
-                  {extra.scaleInfo.source === 'text_detection' && ' (z rysunku)'}
-                  {extra.scaleInfo.source === 'calibration' && ' (z kalibracji)'}
-                  {extra.scaleInfo.source === 'default' && ' (domyślna)'}
-                  {' | '}Ścieżek: {extra.extraction.paths.length}
-                  {' | '}Tekstów: {extra.extraction.texts.length}
-                </div>
-              )}
-
-              {/* Top style groups */}
-              {extra?.styleGroups && extra.styleGroups.length > 0 && (
-                <div>
-                  <div className="text-xs font-medium mb-1">Top grupy stylów:</div>
-                  <div className="space-y-0.5 max-h-32 overflow-y-auto">
-                    {extra.styleGroups.slice(0, 10).map(sg => (
-                      <div key={sg.id} className="flex items-center gap-2 text-xs">
-                        <div className="w-3 h-3 rounded" style={{ backgroundColor: sg.strokeColor }} />
-                        <span className="flex-1 truncate font-mono text-[11px]">{sg.name}</span>
-                        <span className="text-gray-400">{sg.pathCount} śc.</span>
-                        {sg.totalLengthM > 0 && (
-                          <span className="text-gray-400">{sg.totalLengthM.toFixed(1)}m</span>
+              {/* LEGEND — primary result */}
+              {hasLegend ? (
+                <div className="border rounded-lg overflow-hidden">
+                  <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border-b">
+                    <BookOpen size={14} className="text-amber-600" />
+                    <span className="text-xs font-semibold text-amber-800">
+                      Legenda — {extra.legend!.entries.length} wpisow
+                    </span>
+                    {totalMatched > 0 && (
+                      <span className="ml-auto text-xs text-green-700 font-medium">
+                        {totalMatched} symboli dopasowanych
+                      </span>
+                    )}
+                  </div>
+                  <div className="max-h-60 overflow-y-auto divide-y">
+                    {extra.legend!.entries.map((entry, i) => (
+                      <div key={i} className="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-gray-50">
+                        {entry.sampleColor ? (
+                          <div className="w-4 h-4 rounded border flex-shrink-0" style={{ backgroundColor: entry.sampleColor }} />
+                        ) : (
+                          <div className="w-4 h-4 rounded border border-dashed border-gray-300 flex-shrink-0" />
                         )}
-                        {sg.aiConfidence != null && (
-                          <span className={`text-[10px] font-medium ${sg.aiConfidence >= 0.6 ? 'text-green-600' : sg.aiConfidence >= 0.3 ? 'text-amber-500' : 'text-gray-400'}`}>
-                            {Math.round(sg.aiConfidence * 100)}%
+                        <span className="flex-1 truncate" title={entry.description}>{entry.label}</span>
+                        {(entry.matchCount || 0) > 0 ? (
+                          <span className="text-green-700 font-semibold bg-green-50 px-1.5 py-0.5 rounded">
+                            {entry.matchCount} szt.
                           </span>
+                        ) : (
+                          <span className="text-gray-300">—</span>
                         )}
                       </div>
                     ))}
                   </div>
                 </div>
+              ) : (
+                <div className="text-xs text-amber-700 bg-amber-50 rounded p-3 text-center">
+                  Nie wykryto legendy na rysunku. Symbole wykryto na podstawie ksztaltow ({extra.symbols.length} szt.)
+                </div>
               )}
 
-              {/* Detected rooms */}
-              {extra?.rooms && extra.rooms.length > 0 && (
+              {/* Rooms */}
+              {extra.rooms.length > 0 && (
                 <div>
-                  <div className="text-xs font-medium mb-1">Wykryte pomieszczenia:</div>
+                  <div className="text-xs font-medium mb-1 flex items-center gap-1">
+                    <Home size={12} className="text-amber-500" />
+                    Pomieszczenia ({extra.rooms.length}):
+                  </div>
                   <div className="space-y-0.5 max-h-24 overflow-y-auto">
                     {extra.rooms.map(room => (
-                      <div key={room.id} className="flex items-center gap-2 text-xs bg-amber-50/50 px-2 py-0.5 rounded">
-                        <Home size={10} className="text-amber-500 flex-shrink-0" />
+                      <div key={room.id} className="flex items-center gap-2 text-xs px-2 py-0.5 bg-gray-50 rounded">
                         <span className="flex-1 truncate">{room.name}</span>
                         <span className="text-gray-400">{room.symbolCount} sym.</span>
                         <span className="text-gray-400">{room.routeCount} tras</span>
@@ -344,62 +310,54 @@ export default function PdfAnalysisModal({
                 </div>
               )}
 
-              {/* Legend entries with match counts */}
-              {extra?.legend && extra.legend.entries.length > 0 && (
+              {/* Top routes */}
+              {analysis.lineGroups.length > 0 && (
                 <div>
-                  <div className="text-xs font-medium mb-1">Legenda ({extra.legend.entries.length} wpisów):</div>
-                  <div className="space-y-0.5 max-h-40 overflow-y-auto">
-                    {extra.legend.entries.map((entry, i) => (
-                      <div key={i} className="flex items-center gap-2 text-xs bg-amber-50/50 px-2 py-0.5 rounded">
-                        {entry.sampleColor && (
-                          <div className="w-3 h-3 rounded flex-shrink-0" style={{ backgroundColor: entry.sampleColor }} />
-                        )}
-                        <span className="flex-1 truncate">{entry.label}</span>
-                        {(entry.matchCount || 0) > 0 ? (
-                          <span className="text-green-600 font-medium">{entry.matchCount} szt.</span>
-                        ) : (
-                          <span className="text-gray-400">0</span>
-                        )}
+                  <div className="text-xs font-medium mb-1 flex items-center gap-1">
+                    <GitBranch size={12} className="text-purple-500" />
+                    Top trasy ({analysis.lineGroups.length}):
+                  </div>
+                  <div className="space-y-0.5 max-h-20 overflow-y-auto">
+                    {analysis.lineGroups.slice(0, 5).map((r, i) => (
+                      <div key={r.id} className="flex items-center gap-2 text-xs px-2 py-0.5 bg-gray-50 rounded">
+                        <span className="flex-1 truncate font-mono text-[10px]">{r.layer}</span>
+                        <span className="text-gray-500">{r.totalLengthM.toFixed(1)}m</span>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
+            </>
+          )}
+
+          {/* Idle state */}
+          {step === 'idle' && (
+            <div className="text-center py-6 text-gray-500">
+              <FileImage size={32} className="mx-auto mb-2 text-gray-300" />
+              <p className="text-sm">Kliknij aby rozpoczac analize rysunku.</p>
+              <p className="text-xs text-gray-400 mt-1">System wykryje legende, symbole, trasy i pomieszczenia.</p>
             </div>
           )}
         </div>
 
         {/* Actions */}
-        <div className="flex items-center justify-between px-4 py-3 border-t bg-gray-50">
-          <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-100">Zamknij</button>
+        <div className="flex items-center justify-between px-4 py-3 border-t bg-gray-50 rounded-b-xl">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-100">
+            Zamknij
+          </button>
           <div className="flex items-center gap-2">
             {step === 'idle' && (
-              <button onClick={runAnalysis} className="flex items-center gap-1 px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700">
-                <Play size={14} /> Rozpocznij analizę
+              <button onClick={runAnalysis} className="flex items-center gap-1.5 px-4 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700">
+                <Play size={14} /> Rozpocznij analize
               </button>
-            )}
-            {step === 'analyzed' && !aiClassified && extra?.styleGroups && extra.styleGroups.length > 0 && (
-              <button onClick={runAiClassification} className="flex items-center gap-1 px-3 py-1.5 text-sm bg-purple-600 text-white rounded hover:bg-purple-700">
-                <Brain size={14} /> Klasyfikacja AI
-              </button>
-            )}
-            {step === 'ai_classifying' && (
-              <div className="flex items-center gap-1 px-3 py-1.5 text-sm text-purple-700">
-                <Loader2 size={14} className="animate-spin" /> Klasyfikacja AI grup...
-              </div>
-            )}
-            {step === 'saving' && (
-              <div className="flex items-center gap-1 px-3 py-1.5 text-sm text-green-700">
-                <Loader2 size={14} className="animate-spin" /> Zapisywanie...
-              </div>
             )}
             {step === 'analyzed' && (
-              <button onClick={saveToDatabase} className="flex items-center gap-1 px-3 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700">
-                <CheckCircle size={14} /> Zapisz i kontynuuj
+              <button onClick={saveToDatabase} className="flex items-center gap-1.5 px-4 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700">
+                <Save size={14} /> Zapisz i kontynuuj
               </button>
             )}
             {step === 'done' && (
-              <button onClick={onClose} className="px-3 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700">
+              <button onClick={onClose} className="px-4 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700">
                 Gotowe
               </button>
             )}

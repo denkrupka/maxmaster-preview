@@ -225,7 +225,7 @@ describe('pdfAnalyzer', () => {
   });
 
   describe('analyzePdfPage (full pipeline)', () => {
-    it('produces DxfAnalysis-compatible output', () => {
+    it('produces DxfAnalysis-compatible output', async () => {
       const paths = [
         makePath(),
         makePath({ style: { strokeColor: '#0000ff', fillColor: '#000', lineWidth: 2, dashPattern: [], isStroked: true, isFilled: false } }),
@@ -235,7 +235,7 @@ describe('pdfAnalyzer', () => {
         { text: 'Parter', x: 300, y: 50, width: 40, height: 14, fontSize: 14, fontName: 'Arial' },
       ];
       const extraction = makeExtraction(paths, texts);
-      const { analysis } = analyzePdfPage(extraction);
+      const { analysis } = await analyzePdfPage(extraction);
 
       expect(analysis.totalEntities).toBeGreaterThan(0);
       expect(analysis.layers.length).toBeGreaterThan(0);
@@ -252,23 +252,23 @@ describe('pdfAnalyzer', () => {
       expect(entity).toHaveProperty('properties');
     });
 
-    it('includes styleColor in entity properties for rule matching', () => {
+    it('includes styleColor in entity properties for rule matching', async () => {
       const paths = [makePath()];
       const extraction = makeExtraction(paths);
-      const { analysis } = analyzePdfPage(extraction);
+      const { analysis } = await analyzePdfPage(extraction);
 
       const pathEntity = analysis.entities.find(e => e.entityType === 'PDF_PATH');
       expect(pathEntity?.properties.styleColor).toBe('#ff0000');
     });
 
-    it('includes symbolShape in entity properties', () => {
+    it('includes symbolShape in entity properties', async () => {
       const paths = [
         makeSmallPath('circle', 100, 100, '#ff0000', 10),
         makeSmallPath('circle', 200, 100, '#ff0000', 10),
         makeSmallPath('circle', 300, 100, '#ff0000', 10),
       ];
       const extraction = makeExtraction(paths);
-      const { analysis } = analyzePdfPage(extraction);
+      const { analysis } = await analyzePdfPage(extraction);
 
       const symbolEntity = analysis.entities.find(e => e.entityType === 'PDF_SYMBOL');
       if (symbolEntity) {
@@ -276,14 +276,14 @@ describe('pdfAnalyzer', () => {
       }
     });
 
-    it('works with applyRules (style_color match)', () => {
+    it('works with applyRules (style_color match)', async () => {
       const paths = [
         makePath({ style: { strokeColor: '#ff0000', fillColor: '#000', lineWidth: 1, dashPattern: [], isStroked: true, isFilled: false } }),
         makePath({ style: { strokeColor: '#ff0000', fillColor: '#000', lineWidth: 1, dashPattern: [], isStroked: true, isFilled: false } }),
         makePath({ style: { strokeColor: '#0000ff', fillColor: '#000', lineWidth: 2, dashPattern: [], isStroked: true, isFilled: false } }),
       ];
       const extraction = makeExtraction(paths);
-      const { analysis } = analyzePdfPage(extraction);
+      const { analysis } = await analyzePdfPage(extraction);
 
       const rules: TakeoffRule[] = [{
         id: 'test_red',
@@ -302,14 +302,14 @@ describe('pdfAnalyzer', () => {
       expect(result.items.length).toBeGreaterThan(0);
     });
 
-    it('works with applyRules (symbol_shape match)', () => {
+    it('works with applyRules (symbol_shape match)', async () => {
       const paths = [
         makeSmallPath('circle', 100, 100, '#ff0000', 10),
         makeSmallPath('circle', 200, 100, '#ff0000', 10),
         makeSmallPath('circle', 300, 100, '#ff0000', 10),
       ];
       const extraction = makeExtraction(paths);
-      const { analysis } = analyzePdfPage(extraction);
+      const { analysis } = await analyzePdfPage(extraction);
 
       const rules: TakeoffRule[] = [{
         id: 'test_circles',
@@ -330,13 +330,13 @@ describe('pdfAnalyzer', () => {
       }
     });
 
-    it('returns extra data (style groups, symbols, rooms, scale)', () => {
+    it('returns extra data (style groups, symbols, rooms, scale)', async () => {
       const paths = [makePath()];
       const texts: PdfExtractedText[] = [
         { text: 'Skala 1:50', x: 0, y: 0, width: 50, height: 10, fontSize: 10, fontName: 'Arial' },
       ];
       const extraction = makeExtraction(paths, texts);
-      const { extra } = analyzePdfPage(extraction);
+      const { extra } = await analyzePdfPage(extraction);
 
       expect(extra.styleGroups.length).toBeGreaterThan(0);
       expect(extra.rooms).toBeDefined();
@@ -465,14 +465,14 @@ describe('pdfAnalyzer', () => {
       }
     });
 
-    it('propagates confidence to takeoff items', () => {
+    it('propagates confidence to takeoff items', async () => {
       const paths = [
         makeSmallPath('circle', 100, 100, '#ff0000', 10),
         makeSmallPath('circle', 200, 100, '#ff0000', 10),
         makeSmallPath('circle', 300, 100, '#ff0000', 10),
       ];
       const extraction = makeExtraction(paths);
-      const { analysis } = analyzePdfPage(extraction);
+      const { analysis } = await analyzePdfPage(extraction);
 
       const rules: TakeoffRule[] = [{
         id: 'test_circles',
@@ -496,7 +496,7 @@ describe('pdfAnalyzer', () => {
   });
 
   describe('room assignment integration', () => {
-    it('assigns symbols to rooms in full pipeline', () => {
+    it('assigns symbols to rooms in full pipeline', async () => {
       // Create a room (large closed path) with symbols inside
       const roomPath: PdfPath = {
         segments: [
@@ -522,7 +522,7 @@ describe('pdfAnalyzer', () => {
       ];
 
       const extraction = makeExtraction([roomPath, ...symbols], texts);
-      const { extra } = analyzePdfPage(extraction);
+      const { extra } = await analyzePdfPage(extraction);
 
       expect(extra.rooms.length).toBeGreaterThanOrEqual(1);
       const salon = extra.rooms.find(r => r.name === 'Salon');

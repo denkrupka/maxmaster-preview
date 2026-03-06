@@ -1159,15 +1159,21 @@ export interface PdfAnalysisExtra {
   extraction: PdfPageExtraction;
 }
 
+/** Yield to UI thread */
+function yieldUI(): Promise<void> { return new Promise(r => setTimeout(r, 0)); }
+
 /** Main analysis pipeline: extraction → style groups → routes → symbols → scale → DxfAnalysis */
-export function analyzePdfPage(
+export async function analyzePdfPage(
   extraction: PdfPageExtraction,
   options: PdfAnalyzeOptions = {},
-): { analysis: DxfAnalysis; extra: PdfAnalysisExtra } {
+  onProgress?: (step: string) => void,
+): Promise<{ analysis: DxfAnalysis; extra: PdfAnalysisExtra }> {
   const { calibrationScaleRatio, maxSymbolSize = 30, routeTolerance = 3 } = options;
 
   // 1. Style grouping
+  onProgress?.('Grupowanie stylów...');
   const styleGroups = groupPathsByStyle(extraction.paths);
+  await yieldUI();
 
   // 2. Scale detection
   const scaleInfo = detectScale(extraction.texts, calibrationScaleRatio);
@@ -1177,39 +1183,45 @@ export function analyzePdfPage(
     sg.totalLengthM = sg.totalLengthPx * scaleInfo.scaleFactor;
   }
 
-  // 4. Route detection (per style group)
+  // 4. Route detection — only top 20 groups by path count (avoid O(n²) on huge groups)
+  onProgress?.('Wykrywanie tras...');
   const allRoutes: LineGroup[] = [];
-  for (const sg of styleGroups) {
-    if (sg.pathCount < 2) continue;
+  const sortedGroups = [...styleGroups].sort((a, b) => b.pathCount - a.pathCount);
+  const routeGroups = sortedGroups.filter(sg => sg.pathCount >= 2 && sg.pathCount <= 5000).slice(0, 20);
+  for (const sg of routeGroups) {
     const routes = findConnectedRoutes(extraction.paths, sg.pathIndices, sg.id, routeTolerance);
-    // Convert lengths from px to meters
     for (const r of routes) {
       r.totalLengthM = r.totalLengthM * scaleInfo.scaleFactor;
     }
     allRoutes.push(...routes);
+    await yieldUI();
   }
 
   // 5. Legend extraction (with symbol template matching)
+  onProgress?.('Szukanie legendy...');
   const legend = detectLegend(extraction.paths, extraction.texts, extraction.pageWidth, extraction.pageHeight, styleGroups);
+  await yieldUI();
 
   // 6. Legend-based symbol matching (primary) + fallback basic detection
+  onProgress?.('Dopasowywanie symboli...');
   let symbols: PdfDetectedSymbol[];
   if (legend && legend.entries.some(e => e.symbolSignature)) {
-    // Primary: match drawing symbols to legend entries by shape signature
     symbols = matchSymbolsToLegend(extraction.paths, legend, maxSymbolSize);
-    // Apply legend categories to style groups based on matched symbols
     applyLegendToGroups(legend, styleGroups);
   } else {
-    // Fallback: basic shape-based detection (no legend found)
     symbols = detectSymbols(extraction.paths, styleGroups, extraction.texts, maxSymbolSize);
   }
+  await yieldUI();
 
   // 7. Room/zone detection
+  onProgress?.('Wykrywanie pomieszczeń...');
   const rooms = detectRooms(extraction.paths, extraction.texts, extraction.pageWidth, extraction.pageHeight);
   assignToRooms(rooms, symbols, allRoutes);
 
   // 8. Convert to DxfAnalysis format
+  onProgress?.('Tworzenie wyników...');
   const analysis = toDxfAnalysis(extraction, styleGroups, symbols, allRoutes, scaleInfo, legend);
+  await yieldUI();
 
   return {
     analysis,
