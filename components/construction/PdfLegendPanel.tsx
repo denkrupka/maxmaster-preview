@@ -9,13 +9,18 @@ interface PdfLegendPanelProps {
   onClose: () => void;
 }
 
-const CATEGORIES = [
-  'Kable i przewody', 'Oprawy oświetleniowe', 'Osprzęt elektryczny',
-  'Trasy kablowe', 'Tablice i rozdzielnice', 'Instalacja alarmowa',
-  'Konstrukcja', 'Wymiarowanie', 'Inne',
-];
+// Build categories dynamically from legend entries + common fallbacks
+function buildCategories(legend: PdfLegend): string[] {
+  const fromLegend = legend.entries
+    .map(e => e.label)
+    .filter(l => l && l.length >= 3);
+  const fallbacks = ['Konstrukcja', 'Wymiarowanie', 'Inne'];
+  // Deduplicate
+  return [...new Set([...fromLegend, ...fallbacks])];
+}
 
 export default function PdfLegendPanel({ legend, styleGroups, onApplyToGroups, onClose }: PdfLegendPanelProps) {
+  const categories = React.useMemo(() => buildCategories(legend), [legend]);
   const [mappings, setMappings] = React.useState<Record<string, string>>(() => {
     const m: Record<string, string> = {};
     for (const entry of legend.entries) {
@@ -53,6 +58,9 @@ export default function PdfLegendPanel({ legend, styleGroups, onApplyToGroups, o
                     <div className="w-3 h-3 rounded border" style={{ backgroundColor: entry.sampleColor }} />
                   )}
                   <span className="text-xs font-medium flex-1">{entry.label}</span>
+                  {(entry.matchCount || 0) > 0 && (
+                    <span className="text-[10px] text-green-600 font-medium">{entry.matchCount} szt.</span>
+                  )}
                 </div>
                 {entry.description !== entry.label && (
                   <div className="text-[10px] text-gray-500 mb-1 ml-5">{entry.description}</div>
@@ -64,7 +72,7 @@ export default function PdfLegendPanel({ legend, styleGroups, onApplyToGroups, o
                   style={{ maxWidth: 'calc(100% - 20px)' }}
                 >
                   <option value="">— przypisz kategorię —</option>
-                  {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  {categories.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
             ))}

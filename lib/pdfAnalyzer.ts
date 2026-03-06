@@ -954,8 +954,10 @@ export function matchSymbolsToLegend(
 
     if (bestEntry) {
       bestEntry.matchCount = (bestEntry.matchCount || 0) + 1;
+      // Use legend label as clusterId so symbols group by category
+      const legendClusterId = `legend:${bestEntry.label}`;
       results.push({
-        clusterId: `legend_match_${++matchId}`,
+        clusterId: legendClusterId,
         shape: 'OTHER',
         centerX: cx,
         centerY: cy,

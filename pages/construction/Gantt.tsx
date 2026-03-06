@@ -3183,10 +3183,6 @@ export const GanttPage: React.FC = () => {
                   ))}
                 </div>
               </div>
-              <div className="bg-slate-50 rounded-lg p-4">
-                <h3 className="text-sm font-bold text-slate-800 mb-1">Kalendarz świąt państwowych</h3>
-                <p className="text-xs text-slate-500">Wybierz kraj i region, aby automatycznie uzupełnić dni wolne od pracy w oparciu o lokalne święta.</p>
-              </div>
             </div>
             <div className="p-5 border-t border-slate-200 flex justify-end gap-3">
               <button onClick={() => setShowWorkingDaysModal(false)} className="px-4 py-2 border border-slate-200 rounded-lg hover:bg-slate-50">Anuluj</button>
