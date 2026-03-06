@@ -11,6 +11,7 @@ import type {
   PdfExtractedText,
   PdfExtractedImage,
   PdfPageExtraction,
+  PdfClassification,
 } from './pdfTypes';
 
 /** OPS map passed to the worker so it doesn't need pdfjs-dist */
@@ -32,6 +33,50 @@ function buildOpsMap(): Record<string, number> {
     paintImageXObject: OPS.paintImageXObject, paintImageMaskXObject: OPS.paintImageMaskXObject,
     paintInlineImageXObject: OPS.paintInlineImageXObject,
   };
+}
+
+// OPS sets for classification
+const VECTOR_OPS = new Set([
+  OPS.moveTo, OPS.lineTo, OPS.curveTo, OPS.curveTo2, OPS.curveTo3,
+  OPS.closePath, OPS.rectangle,
+  OPS.stroke, OPS.closeStroke, OPS.fill, OPS.eoFill,
+  OPS.fillStroke, OPS.eoFillStroke, OPS.closeFillStroke, OPS.closeEOFillStroke,
+  OPS.constructPath,
+]);
+const RASTER_OPS = new Set([
+  OPS.paintImageXObject, OPS.paintImageMaskXObject,
+  OPS.paintInlineImageXObject, OPS.paintImageXObjectRepeat,
+  OPS.paintImageMaskXObjectRepeat, OPS.paintInlineImageXObjectGroup,
+  OPS.paintImageMaskXObjectGroup,
+]);
+const TEXT_OPS = new Set([
+  OPS.showText, OPS.showSpacedText,
+  OPS.nextLineShowText, OPS.nextLineSetSpacingShowText,
+]);
+
+/** Classify from already-fetched fnArray (no extra getOperatorList call) */
+export function classifyFromOpList(fnArray: ArrayLike<number>): PdfClassification {
+  let vectorCount = 0, rasterCount = 0, textCount = 0;
+  for (let i = 0; i < fnArray.length; i++) {
+    const fn = fnArray[i];
+    if (VECTOR_OPS.has(fn)) vectorCount++;
+    else if (RASTER_OPS.has(fn)) rasterCount++;
+    else if (TEXT_OPS.has(fn)) textCount++;
+  }
+  let contentType: PdfClassification['contentType'];
+  let confidence: number;
+  if (rasterCount > 0 && vectorCount < 50) {
+    contentType = 'raster'; confidence = rasterCount > 5 ? 0.95 : 0.7;
+  } else if (vectorCount > 100 && rasterCount === 0) {
+    contentType = 'vector'; confidence = vectorCount > 500 ? 0.95 : 0.8;
+  } else if (vectorCount > 100 && rasterCount > 0) {
+    contentType = 'mixed'; confidence = 0.7;
+  } else if (rasterCount > 0) {
+    contentType = 'raster'; confidence = 0.6;
+  } else {
+    contentType = 'vector'; confidence = vectorCount > 20 ? 0.7 : 0.5;
+  }
+  return { contentType, vectorOpCount: vectorCount, rasterOpCount: rasterCount, textOpCount: textCount, confidence };
 }
 
 /** Process geometry in a Web Worker. Returns paths + images. */

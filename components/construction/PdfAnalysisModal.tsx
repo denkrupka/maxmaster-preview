@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { X, Play, Brain, Loader2, CheckCircle, AlertTriangle, Layers, Box, GitBranch, FileImage, Home } from 'lucide-react';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
-import { classifyPdfPage } from '../../lib/pdfClassifier';
-import { extractPageGeometry } from '../../lib/pdfGeometryExtractor';
+import { extractPageGeometry, classifyFromOpList } from '../../lib/pdfGeometryExtractor';
 import { analyzePdfPage, type PdfAnalysisExtra } from '../../lib/pdfAnalyzer';
 import { analyzeRasterPdf } from '../../lib/pdfRasterAnalyzer';
 import type { PdfClassification, PdfAnalysisStep } from '../../lib/pdfTypes';
@@ -37,9 +36,10 @@ export default function PdfAnalysisModal({
     try {
       const page = await pdfDoc.getPage(pageNumber);
 
-      // Step 1: Classify — use a microtask yield to let UI update before heavy work
+      // Step 1: Get operator list ONCE (avoid double fetch) and classify from it
       await new Promise(r => setTimeout(r, 0));
-      const cls = await classifyPdfPage(page);
+      const opList = await page.getOperatorList();
+      const cls = classifyFromOpList(opList.fnArray);
       setClassification(cls);
 
       if (cls.contentType === 'raster') {

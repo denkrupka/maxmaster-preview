@@ -199,7 +199,16 @@ function processOperators(data: WorkerInput): { paths: PathResult[]; images: Ima
     }
   }
 
-  return { paths, images };
+  // Filter out degenerate paths (no segments or zero-size bbox)
+  const filtered = paths.filter(p => {
+    if (p.segments.length === 0) return false;
+    const b = p.bbox;
+    // Skip paths smaller than 0.5px in both dimensions (noise/artifacts)
+    if (b.maxX - b.minX < 0.5 && b.maxY - b.minY < 0.5 && p.lengthPx < 0.5) return false;
+    return true;
+  });
+
+  return { paths: filtered, images };
 }
 
 // ==================== Worker message handler ====================
