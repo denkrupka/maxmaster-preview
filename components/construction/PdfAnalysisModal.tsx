@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Play, Loader2, CheckCircle, AlertTriangle, BookOpen, GitBranch, FileImage, Home, Save } from 'lucide-react';
+import { X, Play, Loader2, CheckCircle, AlertTriangle, BookOpen, GitBranch, FileImage, Save } from 'lucide-react';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { extractPageGeometry, classifyFromOpList } from '../../lib/pdfGeometryExtractor';
 import { analyzePdfPage, type PdfAnalysisExtra } from '../../lib/pdfAnalyzer';
@@ -244,11 +244,10 @@ export default function PdfAnalysisModal({
               <div className="text-xs text-gray-500 bg-gray-50 rounded p-2">
                 Skala: {extra.scaleInfo.scaleText}
                 {extra.scaleInfo.source === 'text_detection' && ' (z rysunku)'}
-                {extra.scaleInfo.source === 'default' && ' (domyslna)'}
-                {' | '}Sciezek: {extra.extraction.paths.length.toLocaleString()}
-                {' | '}Tekstow: {extra.extraction.texts.length}
+                {extra.scaleInfo.source === 'default' && ' (domyślna)'}
+                {' | '}Ścieżek: {extra.extraction.paths.length.toLocaleString()}
+                {' | '}Tekstów: {extra.extraction.texts.length}
                 {' | '}Tras: {analysis.lineGroups.length}
-                {' | '}Pomieszczen: {extra.rooms.length}
               </div>
 
               {/* LEGEND — primary result */}
@@ -257,7 +256,7 @@ export default function PdfAnalysisModal({
                   <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border-b">
                     <BookOpen size={14} className="text-amber-600" />
                     <span className="text-xs font-semibold text-amber-800">
-                      Legenda — {extra.legend!.entries.length} wpisow
+                      Legenda — {extra.legend!.entries.length} wpisów
                     </span>
                     {totalMatched > 0 && (
                       <span className="ml-auto text-xs text-green-700 font-medium">
@@ -274,45 +273,33 @@ export default function PdfAnalysisModal({
                           <div className="w-4 h-4 rounded border border-dashed border-gray-300 flex-shrink-0" />
                         )}
                         <span className="flex-1 truncate" title={entry.description}>{entry.label}</span>
-                        {(entry.matchCount || 0) > 0 ? (
-                          <span className="text-green-700 font-semibold bg-green-50 px-1.5 py-0.5 rounded">
-                            {entry.matchCount} szt.
-                          </span>
-                        ) : (
-                          <span className="text-gray-300">—</span>
-                        )}
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          {(entry.matchCount || 0) > 0 && (
+                            <span className="text-green-700 font-semibold bg-green-50 px-1.5 py-0.5 rounded">
+                              {entry.matchCount} szt.
+                            </span>
+                          )}
+                          {(entry.totalLengthM || 0) > 0 && (
+                            <span className="text-blue-700 font-semibold bg-blue-50 px-1.5 py-0.5 rounded">
+                              {entry.totalLengthM!.toFixed(1)}m
+                            </span>
+                          )}
+                          {!(entry.matchCount || 0) && !(entry.totalLengthM || 0) && (
+                            <span className="text-gray-300">—</span>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
                 </div>
               ) : (
                 <div className="text-xs text-amber-700 bg-amber-50 rounded p-3 text-center">
-                  Nie wykryto legendy na rysunku. Symbole wykryto na podstawie ksztaltow ({extra.symbols.length} szt.)
+                  Nie wykryto legendy na rysunku. Symbole wykryto na podstawie kształtów ({extra.symbols.length} szt.)
                 </div>
               )}
 
-              {/* Rooms — only show if detected */}
-              {extra.rooms.length > 0 && (
-                <div>
-                  <div className="text-xs font-medium mb-1 flex items-center gap-1">
-                    <Home size={12} className="text-amber-500" />
-                    Pomieszczenia ({extra.rooms.length}):
-                  </div>
-                  <div className="space-y-0.5 max-h-24 overflow-y-auto">
-                    {extra.rooms.map(room => (
-                      <div key={room.id} className="flex items-center gap-2 text-xs px-2 py-0.5 bg-gray-50 rounded">
-                        <span className="flex-1 truncate">{room.name}</span>
-                        <span className="text-gray-400">{room.symbolCount} sym.</span>
-                        <span className="text-gray-400">{room.routeCount} tras</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Top routes by style group — deduplicated by layer name */}
-              {analysis.lineGroups.length > 0 && (() => {
-                // Aggregate routes by layer (style group) — show total length per group
+              {/* Top routes — only show when NO legend (fallback view) */}
+              {!hasLegend && analysis.lineGroups.length > 0 && (() => {
                 const groupedRoutes = new Map<string, { count: number; totalLength: number }>();
                 for (const r of analysis.lineGroups) {
                   const key = r.layer;
@@ -326,7 +313,7 @@ export default function PdfAnalysisModal({
                   <div>
                     <div className="text-xs font-medium mb-1 flex items-center gap-1">
                       <GitBranch size={12} className="text-purple-500" />
-                      Grupy stylów — trasy ({analysis.lineGroups.length}):
+                      Grupy stylów ({analysis.lineGroups.length} tras):
                     </div>
                     <div className="space-y-0.5 max-h-28 overflow-y-auto">
                       {sorted.map(([layer, info], i) => (

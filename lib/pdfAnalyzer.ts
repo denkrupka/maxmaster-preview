@@ -1239,16 +1239,29 @@ export async function analyzePdfPage(
   }
   await yieldUI();
 
-  // 7. Room/zone detection (exclude legend area from room candidates)
-  onProgress?.('Wykrywanie pomieszczeń...');
-  const legendExcludeBbox = legend ? {
-    minX: legend.boundingBox.x,
-    minY: legend.boundingBox.y,
-    maxX: legend.boundingBox.x + legend.boundingBox.width,
-    maxY: legend.boundingBox.y + legend.boundingBox.height,
-  } : null;
-  const rooms = detectRooms(extraction.paths, extraction.texts, extraction.pageWidth, extraction.pageHeight, 60, legendExcludeBbox);
-  assignToRooms(rooms, symbols, allRoutes);
+  // 7. Room detection disabled — unreliable without AI/OCR (room names are arbitrary codes like B2.2.D.8.3)
+  const rooms: PdfDetectedRoom[] = [];
+
+  // 7b. Legend-based route measurement — match legend line entries to drawing paths by style
+  if (legend) {
+    onProgress?.('Pomiar tras z legendy...');
+    for (const entry of legend.entries) {
+      if (!entry.styleKey && !entry.sampleColor) continue;
+      // Find matching style group
+      const matchedGroup = styleGroups.find(g => {
+        if (entry.styleKey && g.styleKey === entry.styleKey) return true;
+        if (entry.sampleColor && g.strokeColor === entry.sampleColor) {
+          if (entry.sampleLineWidth && Math.abs(g.lineWidth - entry.sampleLineWidth) > 0.5) return false;
+          return true;
+        }
+        return false;
+      });
+      if (matchedGroup) {
+        entry.totalLengthM = matchedGroup.totalLengthM;
+        entry.matchedPathCount = matchedGroup.pathCount;
+      }
+    }
+  }
 
   // 8. Convert to DxfAnalysis format
   onProgress?.('Tworzenie wyników...');

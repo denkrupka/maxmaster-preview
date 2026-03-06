@@ -130,6 +130,8 @@ export interface PdfLegendEntry {
   symbolBbox?: { w: number; h: number }; // template size
   symbolPathIndices?: number[]; // path indices that form this symbol in legend
   matchCount?: number;          // how many instances found on drawing (excl. legend)
+  totalLengthM?: number;        // total length in meters of matched routes on drawing
+  matchedPathCount?: number;    // number of paths matched on drawing by style
 }
 
 // Legend region with entries
