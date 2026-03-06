@@ -9,15 +9,16 @@ import { ROLE_LABELS } from '../constants';
 
 export const AppLayout = ({ children }: { children?: React.ReactNode }) => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const { state, getEffectiveRole } = useAppContext();
   const effectiveRole = getEffectiveRole();
   const isSimulating = state.simulatedRole !== null;
 
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden">
-      <Sidebar isOpen={isSidebarOpen} setIsOpen={setIsSidebarOpen} />
+      <Sidebar isOpen={isSidebarOpen} setIsOpen={setIsSidebarOpen} collapsed={isSidebarCollapsed} setCollapsed={setIsSidebarCollapsed} />
 
-      <div className="flex-1 flex flex-col min-w-0 lg:ml-64">
+      <div className={`flex-1 flex flex-col min-w-0 transition-all duration-300 ${isSidebarCollapsed ? 'lg:ml-16' : 'lg:ml-64'}`}>
 
         {/* Header - now used for both Mobile (Menu) and Desktop (Notifications) */}
         <header className="bg-white border-b border-slate-200 h-16 flex items-center justify-between px-6">

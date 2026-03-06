@@ -7,7 +7,7 @@ import {
   FileText, PieChart, Clock, FileCheck, Home, User, GraduationCap, LayoutDashboard, Briefcase, FileInput, AlertTriangle, Network,
   Building2, Target, UserCheck, Headphones, ChevronDown, RefreshCw, ShieldCheck, Gift,
   ClipboardList, CalendarOff, CalendarDays, CalendarClock, CalendarRange,
-  FolderKanban, BarChart3,
+  FolderKanban, BarChart3, ChevronsLeft, ChevronsRight,
   // Construction module icons
   Calculator, FileSpreadsheet, HardHat, PenTool, FolderOpen, GanttChartSquare,
   Wallet, ShoppingCart, ClipboardCheck, Inbox
@@ -20,9 +20,11 @@ import { useMemo } from 'react';
 interface SidebarProps {
   isOpen: boolean;
   setIsOpen: (v: boolean) => void;
+  collapsed?: boolean;
+  setCollapsed?: (v: boolean) => void;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen, collapsed = false, setCollapsed }) => {
   const { state, logout, setSimulatedRole, getEffectiveRole } = useAppContext();
   const { currentUser, simulatedRole, currentCompany, companyModules } = state;
   const location = useLocation();
@@ -62,12 +64,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
       <Link
         to={to}
         onClick={() => setIsOpen(false)}
-        className={`flex items-center space-x-3 px-4 py-3 rounded-lg mb-1 transition-colors ${
+        className={`flex items-center ${collapsed ? 'justify-center px-2 py-3' : 'space-x-3 px-4 py-3'} rounded-lg mb-1 transition-colors ${
           active ? 'bg-blue-50 text-blue-700 font-medium' : 'text-slate-600 hover:bg-slate-100'
         }`}
+        title={collapsed ? label : undefined}
       >
         <Icon size={20} />
-        <span>{label}</span>
+        {!collapsed && <span>{label}</span>}
       </Link>
     );
   };
@@ -83,14 +86,32 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
     label: string;
     children: React.ReactNode;
   }) => {
-    const isOpen = openGroups[groupId] || false;
+    const isGroupOpen = openGroups[groupId] || false;
+
+    if (collapsed) {
+      // When collapsed, show just the icon that expands on click
+      return (
+        <div className="mb-1">
+          <button
+            onClick={() => toggleGroup(groupId)}
+            className={`w-full flex items-center justify-center px-2 py-3 rounded-lg transition-colors ${
+              isGroupOpen ? 'bg-slate-100 text-slate-800' : 'text-slate-600 hover:bg-slate-100'
+            }`}
+            title={label}
+          >
+            <Icon size={20} />
+          </button>
+          {isGroupOpen && <div className="mt-1">{children}</div>}
+        </div>
+      );
+    }
 
     return (
       <div className="mb-1">
         <button
           onClick={() => toggleGroup(groupId)}
           className={`w-full flex items-center justify-between px-4 py-3 rounded-lg transition-colors ${
-            isOpen ? 'bg-slate-100 text-slate-800' : 'text-slate-600 hover:bg-slate-100'
+            isGroupOpen ? 'bg-slate-100 text-slate-800' : 'text-slate-600 hover:bg-slate-100'
           }`}
         >
           <div className="flex items-center space-x-3">
@@ -99,10 +120,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
           </div>
           <ChevronDown
             size={16}
-            className={`transform transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
+            className={`transform transition-transform duration-200 ${isGroupOpen ? 'rotate-180' : ''}`}
           />
         </button>
-        {isOpen && (
+        {isGroupOpen && (
           <div className="ml-4 mt-1 border-l-2 border-slate-200 pl-2">
             {children}
           </div>
@@ -113,6 +134,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
 
   // Role switcher for SuperAdmin
   const RoleSwitcher = ({ roles, returnLabel }: { roles: { role: Role; label: string; icon: any }[]; returnLabel: string }) => {
+    if (collapsed) return null;
     return (
       <div className="px-4 py-2 mb-2">
         <div className="relative">
@@ -188,24 +210,35 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
       )}
 
       {/* Sidebar */}
-      <aside className={`fixed top-0 left-0 bottom-0 w-64 bg-white border-r border-slate-200 z-50 transform transition-transform duration-300 lg:translate-x-0 ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        <div className="h-16 flex items-center px-6 border-b border-slate-100">
-          <div className="flex items-center space-x-2">
-            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold">M</div>
-            <span className="text-lg font-bold text-slate-800">MaxMaster</span>
-          </div>
-          <button onClick={() => setIsOpen(false)} className="ml-auto lg:hidden text-slate-500">
-            <X size={24} />
-          </button>
+      <aside className={`fixed top-0 left-0 bottom-0 bg-white border-r border-slate-200 z-50 transform transition-all duration-300 lg:translate-x-0 ${collapsed ? 'w-16' : 'w-64'} ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className={`h-16 flex items-center ${collapsed ? 'px-3 justify-center' : 'px-6'} border-b border-slate-100`}>
+          {collapsed ? (
+            <button onClick={() => setCollapsed?.(false)} className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold hover:bg-blue-700 transition" title="Rozwiń menu">
+              M
+            </button>
+          ) : (
+            <>
+              <div className="flex items-center space-x-2">
+                <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold">M</div>
+                <span className="text-lg font-bold text-slate-800">MaxMaster</span>
+              </div>
+              <button onClick={() => setCollapsed?.(true)} className="ml-auto hidden lg:flex p-1 hover:bg-slate-100 rounded text-slate-400" title="Zwiń menu">
+                <ChevronsLeft size={18} />
+              </button>
+              <button onClick={() => setIsOpen(false)} className="ml-auto lg:hidden text-slate-500">
+                <X size={24} />
+              </button>
+            </>
+          )}
         </div>
 
-        <div className="p-4 overflow-y-auto h-[calc(100vh-4rem)] flex flex-col">
+        <div className={`${collapsed ? 'p-2' : 'p-4'} overflow-y-auto h-[calc(100vh-4rem)] flex flex-col ${collapsed ? 'items-center' : ''}`}>
           <div className="mb-6">
 
             {/* --- SUPERADMIN VIEW --- */}
             {currentUser?.role === Role.SUPERADMIN && !simulatedRole && (
                <>
-                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4">Super Admin</p>
+                 <p className={`text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4 ${collapsed ? 'hidden' : ''}`}>Super Admin</p>
                  <NavItem to="/superadmin/dashboard" icon={LayoutDashboard} label="Dashboard" />
                  <NavItem to="/superadmin/users" icon={Users} label="Użytkownicy" />
                  <NavItem to="/superadmin/companies" icon={Building2} label="Firmy" />
@@ -234,7 +267,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
             {/* --- SALES VIEW (or SuperAdmin simulating Sales) --- */}
             {(effectiveRole === Role.SALES || (isSuperAdminSimulating && simulatedRole === Role.SALES)) && (
                <>
-                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4">
+                 <p className={`text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4 ${collapsed ? 'hidden' : ''}`}>
                    Sales CRM {isSuperAdminSimulating && <span className="text-amber-500">(tryb)</span>}
                  </p>
                  <NavItem to="/sales/dashboard" icon={LayoutDashboard} label="Dashboard" />
@@ -249,7 +282,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
             {/* --- DORADCA (CONSULTANT) VIEW (or SuperAdmin simulating Doradca) --- */}
             {(effectiveRole === Role.DORADCA || (isSuperAdminSimulating && simulatedRole === Role.DORADCA)) && (
                <>
-                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4">
+                 <p className={`text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4 ${collapsed ? 'hidden' : ''}`}>
                    Doradca {isSuperAdminSimulating && <span className="text-amber-500">(tryb)</span>}
                  </p>
                  <NavItem to="/doradca/dashboard" icon={LayoutDashboard} label="Panel Doradcy" />
@@ -260,7 +293,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
             {/* --- HR VIEW (or SuperAdmin/CompanyAdmin simulating HR) --- */}
             {(effectiveRole === Role.HR || (isSuperAdminSimulating && simulatedRole === Role.HR) || (isCompanyAdminSimulating && simulatedRole === Role.HR)) && (
                <>
-                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4">
+                 <p className={`text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4 ${collapsed ? 'hidden' : ''}`}>
                    Panel HR {(isSuperAdminSimulating || isCompanyAdminSimulating) && <span className="text-amber-500">(tryb)</span>}
                  </p>
                  <NavItem to="/hr/dashboard" icon={Layers} label="Dashboard" />
@@ -304,7 +337,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
             {/* --- COMPANY ADMIN VIEW --- */}
             {currentUser?.role === Role.COMPANY_ADMIN && !simulatedRole && (
                <>
-                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4">Admin Firmy</p>
+                 <p className={`text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4 ${collapsed ? 'hidden' : ''}`}>Admin Firmy</p>
                  <NavItem to="/company/dashboard" icon={LayoutDashboard} label="Dashboard" />
                  <NavItem to="/company/users" icon={Users} label="Użytkownicy" />
                  <NavItem to="/company/departments" icon={Building2} label="Obiekty" />
@@ -387,7 +420,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
             {/* --- ADMIN VIEW (TECHNICAL / LEGACY) --- */}
             {currentUser?.role === Role.ADMIN && (
                <>
-                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4">Panel Techniczny</p>
+                 <p className={`text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4 ${collapsed ? 'hidden' : ''}`}>Panel Techniczny</p>
                  <NavItem to="/admin/users" icon={Users} label="Zarządzanie Kontami" />
                </>
             )}
@@ -395,7 +428,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
             {/* --- COORDINATOR VIEW (or CompanyAdmin simulating Coordinator) --- */}
             {(currentUser?.role === Role.COORDINATOR || (isCompanyAdminSimulating && simulatedRole === Role.COORDINATOR)) && (
                 <>
-                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4">
+                    <p className={`text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4 ${collapsed ? 'hidden' : ''}`}>
                       Koordynator {isCompanyAdminSimulating && <span className="text-amber-500">(tryb)</span>}
                     </p>
                     <NavItem to="/coordinator/dashboard" icon={LayoutDashboard} label="Dashboard" />
@@ -428,7 +461,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
             {/* --- CANDIDATE VIEW --- */}
             {currentUser?.role === Role.CANDIDATE && (
                 <>
-                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4">Kandydat</p>
+                    <p className={`text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4 ${collapsed ? 'hidden' : ''}`}>Kandydat</p>
                     <NavItem to="/candidate/dashboard" icon={Home} label="Panel Główny" />
                     <NavItem to="/candidate/profile" icon={User} label="Mój Profil" />
                 </>
@@ -437,7 +470,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
             {/* --- TRIAL EMPLOYEE VIEW --- */}
             {currentUser?.status === UserStatus.TRIAL && (
                 <>
-                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4">Okres Próbny</p>
+                    <p className={`text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4 ${collapsed ? 'hidden' : ''}`}>Okres Próbny</p>
                     <NavItem to="/trial/dashboard" icon={Clock} label="Mój Okres Próbny" />
                     <NavItem to="/trial/skills" icon={Award} label="Umiejętności i Uprawnienia" />
                     <NavItem to="/trial/quality" icon={AlertTriangle} label="Historia Jakości" />
@@ -451,7 +484,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
             {/* --- BRIGADIR VIEW (CompanyAdmin simulating Brigadir) --- */}
             {(isCompanyAdminSimulating && simulatedRole === Role.BRIGADIR) && (
                 <>
-                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4">
+                    <p className={`text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4 ${collapsed ? 'hidden' : ''}`}>
                       Brygadzista <span className="text-amber-500">(tryb)</span>
                     </p>
                     <NavItem to="/brigadir/dashboard" icon={LayoutDashboard} label="Panel Zarządzania" />
@@ -477,7 +510,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
                 {/* --- BRIGADIR VIEW EXTENSION --- */}
                 {currentUser?.role === Role.BRIGADIR && (
                   <>
-                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4">Brygadzista</p>
+                    <p className={`text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4 ${collapsed ? 'hidden' : ''}`}>Brygadzista</p>
                     <NavItem to="/brigadir/dashboard" icon={LayoutDashboard} label="Panel Zarządzania" />
                     <NavItem to="/brigadir/checks" icon={CheckSquare} label="Weryfikacje praktyki" />
                     <NavItem to="/brigadir/quality" icon={AlertTriangle} label="Zgłoszenia Jakości" />
@@ -498,7 +531,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
                 {/* --- REGULAR EMPLOYEE (non-brigadir) --- */}
                 {currentUser?.role === Role.EMPLOYEE && (
                   <>
-                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4">Pracownik</p>
+                    <p className={`text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 px-4 ${collapsed ? 'hidden' : ''}`}>Pracownik</p>
 
                     <NavItem to="/dashboard" icon={LayoutDashboard} label="Panel Pracownika" />
                     <div className="my-2 border-t border-slate-100"></div>
@@ -524,6 +557,17 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
           </div>
 
           <div className="mt-auto pt-4 border-t border-slate-100">
+             {collapsed ? (
+               <div className="flex flex-col items-center gap-2">
+                 <div className="w-9 h-9 bg-slate-100 rounded-full flex items-center justify-center text-slate-600 font-bold text-sm" title={`${currentUser?.first_name} ${currentUser?.last_name}`}>
+                   {currentUser?.first_name?.[0]}
+                 </div>
+                 <button onClick={logout} className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors" title="Wyloguj się">
+                   <LogOut size={18} />
+                 </button>
+               </div>
+             ) : (
+             <>
              <div className={`px-4 py-3 rounded-lg mb-4 ${(isSuperAdminSimulating || isCompanyAdminSimulating) ? 'bg-amber-50' : 'bg-slate-50'}`}>
                 <p className="text-sm font-medium text-slate-900">{currentUser?.first_name} {currentUser?.last_name}</p>
                 <p className="text-xs text-slate-500 capitalize">
@@ -539,6 +583,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, setIsOpen }) => {
               <LogOut size={20} />
               <span>Wyloguj się</span>
             </button>
+            </>
+            )}
           </div>
         </div>
       </aside>

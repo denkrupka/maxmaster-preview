@@ -11,7 +11,7 @@ import {
   Save, Undo2, Filter, MapPin, Image,
   ExternalLink, Crosshair, LayoutList, BookOpen,
   Hash, CloudLightning, MessageCircleWarning,
-  Magnet, FileSearch, BarChart3, Printer, FileType2, Info, Sparkles
+  Magnet, FileSearch, BarChart3, Printer, FileType2, Info, Sparkles, PanelLeftClose, PanelLeftOpen
 } from 'lucide-react';
 import { useAppContext } from '../../context/AppContext';
 import { supabase } from '../../lib/supabase';
@@ -313,6 +313,7 @@ export const DrawingsPage: React.FC = () => {
   const [zoom, setZoom] = useState(100);
   const [activeTool, setActiveTool] = useState<AnnotationTool>('pointer');
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [annColor, setAnnColor] = useState('#ef4444');
   const [annWidth, setAnnWidth] = useState(2);
 
@@ -1694,7 +1695,18 @@ export const DrawingsPage: React.FC = () => {
       {/* SPLIT PANEL */}
       <div className="flex-1 flex overflow-hidden">
 
+        {/* LEFT PANEL TOGGLE (when collapsed) */}
+        {!leftPanelOpen && (
+          <div className="border-r border-slate-200 bg-white flex flex-col items-center py-2 flex-shrink-0">
+            <button onClick={() => setLeftPanelOpen(true)}
+              className="p-2 hover:bg-slate-100 rounded-lg text-slate-500 transition" title="Pokaż panel planów">
+              <PanelLeftOpen className="w-5 h-5" />
+            </button>
+          </div>
+        )}
+
         {/* LEFT PANEL */}
+        {leftPanelOpen && (
         <div className="w-[300px] min-w-[240px] border-r border-slate-200 bg-white flex flex-col overflow-hidden flex-shrink-0">
           <div className="px-3 py-2.5 border-b border-slate-200 flex items-center justify-between flex-shrink-0 bg-slate-50">
             <span className="font-semibold text-slate-700 text-sm">Plany i rzuty</span>
@@ -1703,6 +1715,8 @@ export const DrawingsPage: React.FC = () => {
                 className="p-1.5 hover:bg-slate-200 rounded text-slate-500" title="Utwórz nową grupę planów"><FolderPlus className="w-4 h-4" /></button>
               <button onClick={e => { e.stopPropagation(); setShowSortModal(true); }}
                 className="p-1.5 hover:bg-slate-200 rounded text-slate-500" title="Sortuj plany alfabetycznie"><ArrowUpDown className="w-4 h-4" /></button>
+              <button onClick={e => { e.stopPropagation(); setLeftPanelOpen(false); }}
+                className="p-1.5 hover:bg-slate-200 rounded text-slate-500" title="Ukryj panel"><PanelLeftClose className="w-4 h-4" /></button>
             </div>
           </div>
           {/* Search in left panel */}
@@ -1772,6 +1786,7 @@ export const DrawingsPage: React.FC = () => {
             ))}
           </div>
         </div>
+        )}
 
         {/* RIGHT PANEL */}
         <div className="flex-1 flex flex-col overflow-hidden bg-white" onClick={e => e.stopPropagation()}>

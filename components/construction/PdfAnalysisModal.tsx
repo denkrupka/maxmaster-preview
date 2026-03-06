@@ -28,10 +28,12 @@ export default function PdfAnalysisModal({
   const [extra, setExtra] = useState<PdfAnalysisExtra | null>(null);
   const [error, setError] = useState('');
   const [aiClassified, setAiClassified] = useState(false);
+  const [extractionProgress, setExtractionProgress] = useState(0);
 
   const runAnalysis = async () => {
     setStep('classifying');
     setError('');
+    setExtractionProgress(0);
     try {
       // Step 1: Classify
       const page = await pdfDoc.getPage(pageNumber);
@@ -45,9 +47,11 @@ export default function PdfAnalysisModal({
         setAnalysis(result);
         setStep('analyzed');
       } else {
-        // Vector pipeline
+        // Vector pipeline — runs in Web Worker (non-blocking)
         setStep('extracting');
-        const extraction = await extractPageGeometry(page);
+        const extraction = await extractPageGeometry(page, (pct) => {
+          setExtractionProgress(pct);
+        });
 
         setStep('analyzing');
         const { analysis: result, extra: analysisExtra } = analyzePdfPage(extraction, {
@@ -193,7 +197,7 @@ export default function PdfAnalysisModal({
     switch (s) {
       case 'idle': return 'Gotowy do analizy';
       case 'classifying': return 'Klasyfikacja strony...';
-      case 'extracting': return 'Ekstrakcja geometrii...';
+      case 'extracting': return `Ekstrakcja geometrii...${extractionProgress > 0 ? ` ${extractionProgress}%` : ''}`;
       case 'analyzing': return classification?.contentType === 'raster' ? 'Analiza AI (Gemini Vision)...' : 'Analiza ścieżek i symboli...';
       case 'analyzed': return 'Analiza zakończona';
       case 'ai_classifying': return 'Klasyfikacja AI grup...';
