@@ -1793,6 +1793,20 @@ export const OffersPage: React.FC = () => {
         }
       }
 
+      // Save new representative contact if added inline
+      if (showAddRepInline && newRepData.first_name.trim() && newRepData.last_name.trim() && clientId) {
+        const { data: savedContact } = await supabase.from('contractor_client_contacts').insert({
+          client_id: clientId, first_name: newRepData.first_name.trim(), last_name: newRepData.last_name.trim(),
+          phone: newRepData.phone || null, email: newRepData.email || null, position: newRepData.position || null,
+          is_main_contact: newRepData.is_main_contact
+        }).select().single();
+        if (savedContact) {
+          setSendRepresentativeId(savedContact.id);
+          setShowAddRepInline(false);
+          setNewRepData({ first_name: '', last_name: '', phone: '', email: '', position: '', is_main_contact: true });
+        }
+      }
+
       await loadData();
       setShowCreateModal(false);
       resetOfferForm();
@@ -1897,6 +1911,52 @@ export const OffersPage: React.FC = () => {
           }
         })
         .eq('id', selectedOffer.id);
+
+      // Save new representative contact if added inline
+      if (showAddRepInline && newRepData.first_name.trim() && newRepData.last_name.trim()) {
+        let repClientId = offerData.client_id || (selectedOffer as any)?.client_id || '';
+        // Find or create contractor if needed
+        if (!repClientId && offerClientData.client_name.trim()) {
+          const nipNorm = offerClientData.nip ? offerClientData.nip.replace(/\D/g, '') : '';
+          if (nipNorm) {
+            const { data: byNip } = await supabase.from('contractors').select('id')
+              .eq('company_id', currentUser.company_id).eq('nip', nipNorm).is('deleted_at', null).limit(1);
+            if (byNip?.length) repClientId = byNip[0].id;
+          }
+          if (!repClientId) {
+            const { data: byName } = await supabase.from('contractors').select('id')
+              .eq('company_id', currentUser.company_id).ilike('name', offerClientData.client_name.trim()).is('deleted_at', null).limit(1);
+            if (byName?.length) repClientId = byName[0].id;
+          }
+          if (!repClientId) {
+            const address = [offerClientData.company_street, offerClientData.company_street_number, offerClientData.company_postal_code, offerClientData.company_city].filter(Boolean).join(', ') || null;
+            const { data: newC } = await supabase.from('contractors').insert({
+              company_id: currentUser.company_id, name: offerClientData.client_name.trim(),
+              nip: nipNorm || null, contractor_entity_type: 'company', contractor_type: 'customer',
+              legal_address: address, actual_address: address, created_by_id: currentUser.id
+            }).select('id').single();
+            if (newC) repClientId = newC.id;
+          }
+          if (repClientId) {
+            setOfferData(prev => ({ ...prev, client_id: repClientId }));
+            // Also update offer's client_id
+            await supabase.from('offers').update({ client_id: repClientId }).eq('id', selectedOffer.id);
+          }
+        }
+        if (repClientId) {
+          const { data: savedContact } = await supabase.from('contractor_client_contacts').insert({
+            client_id: repClientId, first_name: newRepData.first_name.trim(), last_name: newRepData.last_name.trim(),
+            phone: newRepData.phone || null, email: newRepData.email || null, position: newRepData.position || null,
+            is_main_contact: newRepData.is_main_contact
+          }).select().single();
+          if (savedContact) {
+            setOfferClientContacts(prev => [...prev, savedContact]);
+            setSendRepresentativeId(savedContact.id);
+            setShowAddRepInline(false);
+            setNewRepData({ first_name: '', last_name: '', phone: '', email: '', position: '', is_main_contact: true });
+          }
+        }
+      }
 
       // Delete existing sections and items (will re-create)
       await supabase.from('offer_sections').delete().eq('offer_id', selectedOffer.id);
@@ -4882,7 +4942,7 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                 </div>
               );
             })()}
-            {/* Przedstawiciel Zamawiającego — edit mode: contact selector or add form */}
+            {/* Przedstawiciel Zamawiającego — edit mode */}
             {editMode && (
               <div className="p-4 bg-slate-50 rounded-lg">
                 <label className="block text-sm font-medium text-slate-700 mb-1">Przedstawiciel</label>
@@ -4890,7 +4950,7 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                   <>
                     <select
                       value={sendRepresentativeId}
-                      onChange={e => setSendRepresentativeId(e.target.value)}
+                      onChange={e => { setSendRepresentativeId(e.target.value); setShowAddRepInline(false); }}
                       className="w-full px-2 py-1 border border-slate-200 rounded text-sm"
                     >
                       <option value="">-- Wybierz --</option>
@@ -4919,14 +4979,34 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                     })()}
                     <button
                       type="button"
-                      onClick={() => { setShowAddRepInline(true); setNewRepData({ first_name: '', last_name: '', phone: '', email: '', position: '', is_main_contact: false }); }}
+                      onClick={() => { setSendRepresentativeId(''); setShowAddRepInline(true); setNewRepData({ first_name: '', last_name: '', phone: '', email: '', position: '', is_main_contact: false }); }}
                       className="mt-2 flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
                     >
                       <UserPlus className="w-3 h-3" />
                       Dodaj nowego
                     </button>
                   </>
-                ) : !showAddRepInline ? (
+                ) : showAddRepInline ? (
+                  <div className="mt-2 space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <input type="text" value={newRepData.first_name} onChange={e => setNewRepData(p => ({ ...p, first_name: e.target.value }))} className="px-2 py-1.5 border border-slate-200 rounded text-sm" placeholder="Imię *" />
+                      <input type="text" value={newRepData.last_name} onChange={e => setNewRepData(p => ({ ...p, last_name: e.target.value }))} className="px-2 py-1.5 border border-slate-200 rounded text-sm" placeholder="Nazwisko *" />
+                    </div>
+                    <input type="tel" value={newRepData.phone} onChange={e => setNewRepData(p => ({ ...p, phone: formatPhoneNumber(e.target.value) }))} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm" placeholder="Telefon" maxLength={16} />
+                    <input type="email" value={newRepData.email} onChange={e => setNewRepData(p => ({ ...p, email: e.target.value }))} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm" placeholder="E-mail" />
+                    <input type="text" value={newRepData.position} onChange={e => setNewRepData(p => ({ ...p, position: e.target.value }))} className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm" placeholder="Stanowisko" />
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={newRepData.is_main_contact} onChange={e => setNewRepData(p => ({ ...p, is_main_contact: e.target.checked }))} className="w-3.5 h-3.5 text-amber-600 rounded" />
+                      <span className="text-xs text-slate-600 flex items-center gap-1"><Star className="w-3 h-3 text-amber-500" /> Główny kontakt</span>
+                    </label>
+                    {offerClientContacts.length > 0 && (
+                      <button type="button" onClick={() => setShowAddRepInline(false)} className="text-xs text-slate-500 hover:text-slate-700">
+                        Wybierz z istniejących
+                      </button>
+                    )}
+                    <p className="text-[10px] text-slate-400 italic">Kontakt zostanie zapisany przy zapisie oferty</p>
+                  </div>
+                ) : (
                   <button
                     type="button"
                     onClick={() => { setShowAddRepInline(true); setNewRepData({ first_name: '', last_name: '', phone: '', email: '', position: '', is_main_contact: true }); }}
@@ -4935,143 +5015,6 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                     <UserPlus className="w-3 h-3" />
                     Dodaj przedstawiciela
                   </button>
-                ) : null}
-                {showAddRepInline && (
-                  <div className="mt-2 space-y-2">
-                    <div className="grid grid-cols-2 gap-2">
-                      <input
-                        type="text"
-                        value={newRepData.first_name}
-                        onChange={e => setNewRepData(p => ({ ...p, first_name: e.target.value }))}
-                        className="px-2 py-1.5 border border-slate-200 rounded text-sm"
-                        placeholder="Imię *"
-                      />
-                      <input
-                        type="text"
-                        value={newRepData.last_name}
-                        onChange={e => setNewRepData(p => ({ ...p, last_name: e.target.value }))}
-                        className="px-2 py-1.5 border border-slate-200 rounded text-sm"
-                        placeholder="Nazwisko *"
-                      />
-                    </div>
-                    <input
-                      type="tel"
-                      value={newRepData.phone}
-                      onChange={e => setNewRepData(p => ({ ...p, phone: formatPhoneNumber(e.target.value) }))}
-                      className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"
-                      placeholder="Telefon"
-                      maxLength={16}
-                    />
-                    <input
-                      type="email"
-                      value={newRepData.email}
-                      onChange={e => setNewRepData(p => ({ ...p, email: e.target.value }))}
-                      className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"
-                      placeholder="E-mail"
-                    />
-                    <input
-                      type="text"
-                      value={newRepData.position}
-                      onChange={e => setNewRepData(p => ({ ...p, position: e.target.value }))}
-                      className="w-full px-2 py-1.5 border border-slate-200 rounded text-sm"
-                      placeholder="Stanowisko"
-                    />
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={newRepData.is_main_contact}
-                        onChange={e => setNewRepData(p => ({ ...p, is_main_contact: e.target.checked }))}
-                        className="w-3.5 h-3.5 text-amber-600 rounded"
-                      />
-                      <span className="text-xs text-slate-600 flex items-center gap-1">
-                        <Star className="w-3 h-3 text-amber-500" />
-                        Główny kontakt
-                      </span>
-                    </label>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        disabled={!newRepData.first_name.trim() || !newRepData.last_name.trim()}
-                        onClick={async () => {
-                          if (!currentUser) return;
-                          try {
-                            let clientId = offerData.client_id || (selectedOffer as any)?.client_id || '';
-
-                            // If no client_id, find or create contractor from offerClientData
-                            if (!clientId && offerClientData.client_name.trim()) {
-                              const nipNorm = offerClientData.nip ? offerClientData.nip.replace(/\D/g, '') : '';
-                              // Try find by NIP
-                              if (nipNorm) {
-                                const { data: byNip } = await supabase.from('contractors').select('id')
-                                  .eq('company_id', currentUser.company_id).eq('nip', nipNorm).is('deleted_at', null).limit(1);
-                                if (byNip?.length) clientId = byNip[0].id;
-                              }
-                              // Try find by name
-                              if (!clientId) {
-                                const { data: byName } = await supabase.from('contractors').select('id')
-                                  .eq('company_id', currentUser.company_id).ilike('name', offerClientData.client_name.trim()).is('deleted_at', null).limit(1);
-                                if (byName?.length) clientId = byName[0].id;
-                              }
-                              // Create new contractor
-                              if (!clientId) {
-                                const address = [offerClientData.company_street, offerClientData.company_street_number, offerClientData.company_postal_code, offerClientData.company_city].filter(Boolean).join(', ') || null;
-                                const { data: newC } = await supabase.from('contractors').insert({
-                                  company_id: currentUser.company_id,
-                                  name: offerClientData.client_name.trim(),
-                                  nip: nipNorm || null,
-                                  contractor_entity_type: 'company',
-                                  contractor_type: 'customer',
-                                  legal_address: address,
-                                  actual_address: address,
-                                  created_by_id: currentUser.id
-                                }).select('id').single();
-                                if (newC) {
-                                  clientId = newC.id;
-                                  setOfferData(prev => ({ ...prev, client_id: newC.id }));
-                                }
-                              } else {
-                                setOfferData(prev => ({ ...prev, client_id: clientId }));
-                              }
-                            }
-
-                            if (!clientId) { console.error('Could not resolve client_id'); return; }
-
-                            const { data: saved } = await supabase
-                              .from('contractor_client_contacts')
-                              .insert({
-                                client_id: clientId,
-                                first_name: newRepData.first_name.trim(),
-                                last_name: newRepData.last_name.trim(),
-                                phone: newRepData.phone || null,
-                                email: newRepData.email || null,
-                                position: newRepData.position || null,
-                                is_main_contact: newRepData.is_main_contact
-                              })
-                              .select()
-                              .single();
-                            if (saved) {
-                              setOfferClientContacts(prev => [...prev, saved]);
-                              setSendRepresentativeId(saved.id);
-                              setShowAddRepInline(false);
-                              setNewRepData({ first_name: '', last_name: '', phone: '', email: '', position: '', is_main_contact: true });
-                            }
-                          } catch (err) {
-                            console.error('Error saving contact:', err);
-                          }
-                        }}
-                        className="flex-1 px-2 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
-                      >
-                        Zapisz
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setShowAddRepInline(false)}
-                        className="px-2 py-1.5 text-xs text-slate-600 bg-slate-200 rounded hover:bg-slate-300"
-                      >
-                        Anuluj
-                      </button>
-                    </div>
-                  </div>
                 )}
               </div>
             )}
