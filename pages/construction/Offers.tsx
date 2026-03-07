@@ -1592,7 +1592,7 @@ export const OffersPage: React.FC = () => {
               company_id: currentUser.company_id,
               name: offerClientData.client_name.trim(),
               nip: nipNorm || null,
-              contractor_entity_type: 'company',
+              contractor_entity_type: 'legal_entity',
               contractor_type: 'customer',
               legal_address: address,
               actual_address: address,
@@ -1935,7 +1935,7 @@ export const OffersPage: React.FC = () => {
           const nipNorm2 = offerClientData.nip ? offerClientData.nip.replace(/\D/g, '') : '';
           const { data: newC } = await supabase.from('contractors').insert({
             company_id: currentUser.company_id, name: offerClientData.client_name.trim(),
-            nip: nipNorm2 || null, contractor_entity_type: 'company', contractor_type: 'customer',
+            nip: nipNorm2 || null, contractor_entity_type: 'legal_entity', contractor_type: 'customer',
             legal_address: address, actual_address: address, created_by_id: currentUser.id
           }).select('id').single();
           if (newC) resolvedClientId = newC.id;
@@ -2372,7 +2372,7 @@ export const OffersPage: React.FC = () => {
           const address = [offerClientData.company_street, offerClientData.company_street_number, offerClientData.company_postal_code, offerClientData.company_city].filter(Boolean).join(', ') || null;
           const { data: newC } = await supabase.from('contractors').insert({
             company_id: currentUser.company_id, name: offerClientData.client_name.trim(),
-            nip: nipNorm || null, contractor_entity_type: 'company', contractor_type: 'customer',
+            nip: nipNorm || null, contractor_entity_type: 'legal_entity', contractor_type: 'customer',
             legal_address: address, actual_address: address, created_by_id: currentUser.id
           }).select('id').single();
           if (newC) resolvedClientId = newC.id;
