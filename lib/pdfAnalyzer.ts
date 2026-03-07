@@ -1626,12 +1626,16 @@ export function matchAiResultToGeometry(
   styleGroups: PdfStyleGroup[] | null,
   extraction: PdfPageExtraction | null,
   calibrationScaleRatio?: number,
+  pageDimensions?: { width: number; height: number },
 ): { analysis: DxfAnalysis; extra: PdfAnalysisExtra } {
   const layers: AnalyzedLayer[] = [];
   const entities: AnalyzedEntity[] = [];
   const blocks: AnalyzedBlock[] = [];
   const lineGroups: LineGroup[] = [];
   let entityIdx = 0;
+  // Page dimensions for converting AI percentage positions to pixel coordinates
+  const pageW = extraction?.pageWidth || pageDimensions?.width || 0;
+  const pageH = extraction?.pageHeight || pageDimensions?.height || 0;
 
   // Build scale info
   let scaleInfo: PdfScaleInfo;
@@ -1699,13 +1703,21 @@ export function matchAiResultToGeometry(
       containedTypes: ['PDF_SYMBOL'],
     });
 
-    for (let i = 0; i < sym.count; i++) {
+    // Create entities with positions (for highlighting on drawing)
+    const positions = sym.positions || [];
+    const count = Math.max(sym.count, positions.length);
+    for (let i = 0; i < count; i++) {
+      const pos = positions[i];
+      // Convert percentage (0-100) to page coordinates
+      const center = pos && pageW > 0 && pageH > 0
+        ? { x: (pos.x / 100) * pageW, y: (pos.y / 100) * pageH }
+        : undefined;
       entities.push({
         index: entityIdx++,
         entityType: 'PDF_SYMBOL',
         layerName,
         blockName: sym.type,
-        geometry: { type: 'point' },
+        geometry: center ? { type: 'point', center } : { type: 'point' },
         lengthM: 0,
         areaM2: 0,
         properties: { aiCategory: sym.category, aiType: sym.type, aiDescription: sym.description, styleColor: color },

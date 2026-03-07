@@ -116,11 +116,14 @@ export default function PdfAnalysisModal({
 
       // Step 5: Merge AI results with geometry for precise measurements
       setAnalysisSubStep('Łączenie wyników...');
+      // Get page dimensions for position mapping (at 1x scale, not render scale)
+      const viewport1x = page.getViewport({ scale: 1 });
       const { analysis: result, extra: analysisExtra } = matchAiResultToGeometry(
         aiResult,
         styleGroups,
         extraction,
         scaleRatio,
+        { width: viewport1x.width, height: viewport1x.height },
       );
 
       setAiUsed(true);

@@ -159,9 +159,11 @@ export interface PdfRasterAiResult {
 
 export interface PdfRasterAiSymbol {
   type: string;       // e.g., "Oprawa oświetleniowa LED"
+  legendRef?: string; // legend symbol code e.g. "AW1"
   category: string;   // e.g., "Oprawy"
   count: number;
   description?: string;
+  positions?: { x: number; y: number }[]; // percentage coords 0-100 of image
 }
 
 export interface PdfRasterAiRoute {
