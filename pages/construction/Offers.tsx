@@ -1654,10 +1654,10 @@ export const OffersPage: React.FC = () => {
               object_city: offerClientData.object_city,
               object_postal_code: offerClientData.object_postal_code,
               representative_id: sendRepresentativeId || null,
-              representative_name: (showAddRepInline && newRepData.first_name) ? `${newRepData.first_name} ${newRepData.last_name}`.trim() : (() => { const r = offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0]; return r ? `${r.first_name || ''} ${r.last_name || ''}`.trim() : ''; })(),
-              representative_email: (showAddRepInline && newRepData.first_name) ? (newRepData.email || '') : (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.email || '',
-              representative_phone: (showAddRepInline && newRepData.first_name) ? (newRepData.phone || '') : (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.phone || '',
-              representative_position: (showAddRepInline && newRepData.first_name) ? (newRepData.position || '') : (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.position || '',
+              representative_name: (() => { const oc = offerContacts.find(c => c.first_name.trim()); if (oc) return `${oc.first_name} ${oc.last_name}`.trim(); if (showAddRepInline && newRepData.first_name) return `${newRepData.first_name} ${newRepData.last_name}`.trim(); const r = offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0]; return r ? `${r.first_name || ''} ${r.last_name || ''}`.trim() : ''; })(),
+              representative_email: (() => { const oc = offerContacts.find(c => c.first_name.trim()); if (oc) return oc.email || ''; if (showAddRepInline && newRepData.first_name) return newRepData.email || ''; return (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.email || ''; })(),
+              representative_phone: (() => { const oc = offerContacts.find(c => c.first_name.trim()); if (oc) return oc.phone || ''; if (showAddRepInline && newRepData.first_name) return newRepData.phone || ''; return (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.phone || ''; })(),
+              representative_position: (() => { const oc = offerContacts.find(c => c.first_name.trim()); if (oc) return oc.position || ''; if (showAddRepInline && newRepData.first_name) return newRepData.position || ''; return (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.position || ''; })(),
               work_type_ids: offerSelectedWorkTypes
             },
             warunki: {
@@ -1861,20 +1861,36 @@ export const OffersPage: React.FC = () => {
         }
       }
 
-      // Save new representative contact if added inline
-      if (showAddRepInline && newRepData.first_name.trim() && newRepData.last_name.trim() && contactsClientIdC) {
-        const { data: savedContact } = await supabase.from('contractor_client_contacts').insert({
-          client_id: contactsClientIdC, company_id: currentUser.company_id,
-          first_name: newRepData.first_name.trim(), last_name: newRepData.last_name.trim(),
-          phone: newRepData.phone || null, email: newRepData.email || null,
-          position: newRepData.position || null, is_main_contact: newRepData.is_main_contact
-        }).select().single();
-        if (savedContact) {
-          setSendRepresentativeId(savedContact.id);
+      // Save representative contacts if added (from create modal offerContacts or inline newRepData)
+      if (contactsClientIdC) {
+        // From create modal form (offerContacts)
+        const validContacts = offerContacts.filter(c => c.first_name.trim() && c.last_name.trim());
+        for (const contact of validContacts) {
+          const { data: savedContact } = await supabase.from('contractor_client_contacts').insert({
+            client_id: contactsClientIdC, company_id: currentUser.company_id,
+            first_name: contact.first_name.trim(), last_name: contact.last_name.trim(),
+            phone: contact.phone || null, email: contact.email || null,
+            position: contact.position || null, is_main_contact: contact.is_primary || false
+          }).select().single();
+          if (savedContact) {
+            setSendRepresentativeId(savedContact.id);
+          }
         }
-        setShowAddRepInline(false);
-        setNewRepData({ first_name: '', last_name: '', phone: '', email: '', position: '', is_main_contact: true });
+        // From inline form (edit mode fallback)
+        if (validContacts.length === 0 && showAddRepInline && newRepData.first_name.trim() && newRepData.last_name.trim()) {
+          const { data: savedContact } = await supabase.from('contractor_client_contacts').insert({
+            client_id: contactsClientIdC, company_id: currentUser.company_id,
+            first_name: newRepData.first_name.trim(), last_name: newRepData.last_name.trim(),
+            phone: newRepData.phone || null, email: newRepData.email || null,
+            position: newRepData.position || null, is_main_contact: newRepData.is_main_contact
+          }).select().single();
+          if (savedContact) {
+            setSendRepresentativeId(savedContact.id);
+          }
+        }
       }
+      setShowAddRepInline(false);
+      setNewRepData({ first_name: '', last_name: '', phone: '', email: '', position: '', is_main_contact: true });
 
       await loadData();
       setShowCreateModal(false);
