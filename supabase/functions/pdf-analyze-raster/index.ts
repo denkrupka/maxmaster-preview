@@ -1,9 +1,9 @@
-// Supabase Edge Function for Raster PDF Drawing Analysis with Gemini Vision
-// Analyzes scanned/raster electrical drawings using AI
+// Supabase Edge Function: Analyze PDF drawing with Claude Vision (Anthropic)
+// Unified for both vector and raster PDFs
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 
-const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
+const CLAUDE_API_KEY = Deno.env.get('CLAUDE_API_KEY');
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -25,128 +25,106 @@ serve(async (req) => {
       );
     }
 
-    if (!GEMINI_API_KEY) {
+    if (!CLAUDE_API_KEY) {
       return new Response(
-        JSON.stringify({ error: 'GEMINI_API_KEY not configured' }),
+        JSON.stringify({ error: 'CLAUDE_API_KEY not configured' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
     const detectedMime = mimeType || 'image/jpeg';
 
-    const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                {
-                  inline_data: {
-                    mime_type: detectedMime,
-                    data: imageBase64,
-                  },
-                },
-                {
-                  text: `Analizujesz rysunek techniczny instalacji elektrycznej (strona ${pageNumber || 1}).${ocrContext ? `\n\nDodatkowy kontekst z OCR: ${ocrContext}` : ''}
-Zidentyfikuj wszystkie elementy na rysunku i zwróć JSON z następującą strukturą:
+    const systemPrompt = `Jesteś ekspertem od analizy rysunków technicznych instalacji elektrycznych i budowlanych.
+Analizujesz rysunek i zwracasz WYŁĄCZNIE poprawny JSON — bez komentarzy, bez markdown.
 
-1. "symbols" — tablica wykrytych symboli/elementów, każdy z polami:
-   - "type": nazwa elementu (np. "Oprawa oświetleniowa LED", "Gniazdo wtykowe 230V", "Wyłącznik świecznikowy")
-   - "category": jedna z kategorii: "Kable", "Oprawy", "Osprzęt", "Trasy", "Tablice", "Alarmy", "Inne"
-   - "count": ilość wykrytych wystąpień na rysunku
-   - "description": krótki opis (opcjonalny)
+Zasady:
+- Czytaj legendę DOKŁADNIE — przepisuj nazwy symboli i opisy dosłownie z rysunku
+- Licz symbole precyzyjnie — każdy symbol na rysunku osobno
+- Rozróżniaj typy: oprawy LED vs fluorescencyjne vs awaryjne, gniazda 230V vs DATA vs TV
+- Trasy kablowe: podaj typ kabla jeśli widoczny (np. YDYp 3x2.5) i szacunkową długość
+- Jeśli nie widzisz skali — napisz null
+- Nie wymyślaj elementów których nie ma na rysunku`;
 
-2. "routes" — tablica tras kablowych/przewodów, każda z polami:
-   - "type": typ kabla/przewodu (np. "YDYp 3x2.5", "YKY 5x10")
-   - "category": "Kable"
-   - "estimatedLengthM": szacunkowa długość w metrach
-   - "description": opis trasy (opcjonalny)
+    const userPrompt = `Przeanalizuj ten rysunek techniczny (strona ${pageNumber || 1}).${ocrContext ? `\n\nDodatkowy kontekst: ${ocrContext}` : ''}
 
-3. "scaleText" — tekst skali znaleziony na rysunku (np. "1:100") lub null
-4. "legendEntries" — tablica wpisów z legendy rysunku, każdy z polami:
-   - "symbol": opis symbolu z legendy
-   - "description": opis znaczenia
-   - "category": kategoria
-5. "drawingType" — typ rysunku (np. "Instalacja oświetleniowa", "Instalacja gniazd", "Schemat rozdzielnicy")
+Zwróć JSON z dokładnie taką strukturą:
+{
+  "symbols": [
+    {"type": "nazwa elementu", "category": "kategoria", "count": liczba, "description": "opis"}
+  ],
+  "routes": [
+    {"type": "typ kabla", "category": "Kable", "estimatedLengthM": długość_w_metrach, "description": "opis"}
+  ],
+  "scaleText": "1:100" lub null,
+  "legendEntries": [
+    {"symbol": "oznaczenie z legendy", "description": "opis z legendy", "category": "kategoria"}
+  ],
+  "drawingType": "typ rysunku"
+}
+
+Kategorie: "Kable i przewody", "Osprzęt elektryczny", "Oprawy oświetleniowe", "Tablice rozdzielcze", "Instalacja alarmowa", "Instalacja teletechniczna", "Inne"
 
 WAŻNE:
-- Policz dokładnie każdy symbol na rysunku
-- Rozróżniaj typy opraw oświetleniowych (LED, fluorescencyjne, awaryjne)
-- Rozróżniaj typy gniazd (230V, DATA, TV)
-- Jeśli widzisz legendę — użyj jej do identyfikacji symboli
-- Szacuj długości tras w oparciu o skalę rysunku`,
-                },
-              ],
-            },
-          ],
-          generationConfig: {
-            response_mime_type: 'application/json',
-            response_schema: {
-              type: 'OBJECT',
-              properties: {
-                symbols: {
-                  type: 'ARRAY',
-                  items: {
-                    type: 'OBJECT',
-                    properties: {
-                      type: { type: 'STRING' },
-                      category: { type: 'STRING' },
-                      count: { type: 'NUMBER' },
-                      description: { type: 'STRING' },
-                    },
-                    required: ['type', 'category', 'count'],
-                  },
-                },
-                routes: {
-                  type: 'ARRAY',
-                  items: {
-                    type: 'OBJECT',
-                    properties: {
-                      type: { type: 'STRING' },
-                      category: { type: 'STRING' },
-                      estimatedLengthM: { type: 'NUMBER' },
-                      description: { type: 'STRING' },
-                    },
-                    required: ['type', 'category', 'estimatedLengthM'],
-                  },
-                },
-                scaleText: { type: 'STRING' },
-                legendEntries: {
-                  type: 'ARRAY',
-                  items: {
-                    type: 'OBJECT',
-                    properties: {
-                      symbol: { type: 'STRING' },
-                      description: { type: 'STRING' },
-                      category: { type: 'STRING' },
-                    },
-                    required: ['symbol', 'description', 'category'],
-                  },
-                },
-                drawingType: { type: 'STRING' },
-              },
-              required: ['symbols', 'routes', 'scaleText', 'legendEntries', 'drawingType'],
-            },
-          },
-        }),
-      }
-    );
+- Przepisz WSZYSTKIE wpisy z legendy dosłownie
+- Policz KAŻDY symbol na rysunku osobno
+- Dla tras podaj szacunkową długość w metrach (na podstawie skali)
+- Jeśli element powtarza się — podaj łączną liczbę wystąpień`;
 
-    if (!geminiResponse.ok) {
-      const errorText = await geminiResponse.text();
-      console.error('Gemini API error:', errorText);
+    const claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': CLAUDE_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 8192,
+        system: systemPrompt,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: detectedMime,
+                  data: imageBase64,
+                },
+              },
+              {
+                type: 'text',
+                text: userPrompt,
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    if (!claudeResponse.ok) {
+      const errorText = await claudeResponse.text();
+      console.error('Claude API error:', errorText);
       return new Response(
         JSON.stringify({ error: 'Failed to analyze drawing with AI', details: errorText }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    const geminiData = await geminiResponse.json();
-    const text = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-    const parsedData = JSON.parse(text);
+    const claudeData = await claudeResponse.json();
+
+    // Extract text content from Claude response
+    const textContent = claudeData.content?.find((c: any) => c.type === 'text')?.text || '{}';
+
+    // Parse JSON — Claude may wrap it in ```json blocks
+    let jsonStr = textContent.trim();
+    const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (jsonMatch) {
+      jsonStr = jsonMatch[1].trim();
+    }
+
+    const parsedData = JSON.parse(jsonStr);
 
     return new Response(
       JSON.stringify({ success: true, data: parsedData }),
