@@ -1835,22 +1835,21 @@ export const OffersPage: React.FC = () => {
         }
       }
 
-      // Save new representative contact if added inline
-      if (showAddRepInline && newRepData.first_name.trim() && newRepData.last_name.trim()) {
-        // Find or create matching record in contractors_clients (FK target for contacts)
-        let contactsClientId = '';
+      // Always sync client to contractors_clients (kartoteka) when creating offer
+      let contactsClientIdC = '';
+      if (offerClientData.client_name.trim()) {
         const nipNormC = offerClientData.nip ? offerClientData.nip.replace(/\D/g, '') : '';
         if (nipNormC) {
           const { data: byNip } = await supabase.from('contractors_clients').select('id')
             .eq('company_id', currentUser.company_id).eq('nip', nipNormC).limit(1);
-          if (byNip?.length) contactsClientId = byNip[0].id;
+          if (byNip?.length) contactsClientIdC = byNip[0].id;
         }
-        if (!contactsClientId && offerClientData.client_name.trim()) {
+        if (!contactsClientIdC) {
           const { data: byName } = await supabase.from('contractors_clients').select('id')
             .eq('company_id', currentUser.company_id).ilike('name', offerClientData.client_name.trim()).limit(1);
-          if (byName?.length) contactsClientId = byName[0].id;
+          if (byName?.length) contactsClientIdC = byName[0].id;
         }
-        if (!contactsClientId && offerClientData.client_name.trim()) {
+        if (!contactsClientIdC) {
           const { data: newCl } = await supabase.from('contractors_clients').insert({
             company_id: currentUser.company_id, name: offerClientData.client_name.trim(),
             nip: nipNormC || null,
@@ -1858,18 +1857,20 @@ export const OffersPage: React.FC = () => {
             address_city: offerClientData.company_city || null,
             address_postal_code: offerClientData.company_postal_code || null
           }).select('id').single();
-          if (newCl) contactsClientId = newCl.id;
+          if (newCl) contactsClientIdC = newCl.id;
         }
-        if (contactsClientId) {
-          const { data: savedContact } = await supabase.from('contractor_client_contacts').insert({
-            client_id: contactsClientId, company_id: currentUser.company_id,
-            first_name: newRepData.first_name.trim(), last_name: newRepData.last_name.trim(),
-            phone: newRepData.phone || null, email: newRepData.email || null,
-            position: newRepData.position || null, is_main_contact: newRepData.is_main_contact
-          }).select().single();
-          if (savedContact) {
-            setSendRepresentativeId(savedContact.id);
-          }
+      }
+
+      // Save new representative contact if added inline
+      if (showAddRepInline && newRepData.first_name.trim() && newRepData.last_name.trim() && contactsClientIdC) {
+        const { data: savedContact } = await supabase.from('contractor_client_contacts').insert({
+          client_id: contactsClientIdC, company_id: currentUser.company_id,
+          first_name: newRepData.first_name.trim(), last_name: newRepData.last_name.trim(),
+          phone: newRepData.phone || null, email: newRepData.email || null,
+          position: newRepData.position || null, is_main_contact: newRepData.is_main_contact
+        }).select().single();
+        if (savedContact) {
+          setSendRepresentativeId(savedContact.id);
         }
         setShowAddRepInline(false);
         setNewRepData({ first_name: '', last_name: '', phone: '', email: '', position: '', is_main_contact: true });
@@ -1925,27 +1926,21 @@ export const OffersPage: React.FC = () => {
         }
       }
 
-      // Save new representative contact BEFORE offer update
-      // Capture inline rep data before any state resets
-      const inlineRepActive = showAddRepInline && newRepData.first_name.trim() && newRepData.last_name.trim();
-      const inlineRepSnapshot = inlineRepActive ? { ...newRepData } : null;
-      let savedRepId = sendRepresentativeId || '';
-
-      if (inlineRepActive && resolvedClientId) {
-        // Find or create matching record in contractors_clients (contacts FK target)
-        let contactsClientId = '';
+      // Always sync client to contractors_clients (kartoteka) when saving offer
+      let contactsClientId = '';
+      if (offerClientData.client_name.trim()) {
         const nipNorm = offerClientData.nip ? offerClientData.nip.replace(/\D/g, '') : '';
         if (nipNorm) {
           const { data: byNip } = await supabase.from('contractors_clients').select('id')
             .eq('company_id', currentUser.company_id).eq('nip', nipNorm).limit(1);
           if (byNip?.length) contactsClientId = byNip[0].id;
         }
-        if (!contactsClientId && offerClientData.client_name.trim()) {
+        if (!contactsClientId) {
           const { data: byName } = await supabase.from('contractors_clients').select('id')
             .eq('company_id', currentUser.company_id).ilike('name', offerClientData.client_name.trim()).limit(1);
           if (byName?.length) contactsClientId = byName[0].id;
         }
-        if (!contactsClientId && offerClientData.client_name.trim()) {
+        if (!contactsClientId) {
           const { data: newCl } = await supabase.from('contractors_clients').insert({
             company_id: currentUser.company_id, name: offerClientData.client_name.trim(),
             nip: nipNorm || null,
@@ -1955,20 +1950,26 @@ export const OffersPage: React.FC = () => {
           }).select('id').single();
           if (newCl) contactsClientId = newCl.id;
         }
-        if (contactsClientId) {
-          const { data: savedContact, error: contactErr } = await supabase.from('contractor_client_contacts').insert({
-            client_id: contactsClientId, company_id: currentUser.company_id,
-            first_name: inlineRepSnapshot!.first_name.trim(), last_name: inlineRepSnapshot!.last_name.trim(),
-            phone: inlineRepSnapshot!.phone || null, email: inlineRepSnapshot!.email || null,
-            position: inlineRepSnapshot!.position || null, is_main_contact: inlineRepSnapshot!.is_main_contact
-          }).select().single();
-          if (savedContact) {
-            savedRepId = savedContact.id;
-            setOfferClientContacts(prev => [...prev, savedContact]);
-            setSendRepresentativeId(savedContact.id);
-          }
-          if (contactErr) console.error('Contact save error:', contactErr);
+      }
+
+      // Save new representative contact BEFORE offer update
+      const inlineRepActive = showAddRepInline && newRepData.first_name.trim() && newRepData.last_name.trim();
+      const inlineRepSnapshot = inlineRepActive ? { ...newRepData } : null;
+      let savedRepId = sendRepresentativeId || '';
+
+      if (inlineRepActive && contactsClientId) {
+        const { data: savedContact, error: contactErr } = await supabase.from('contractor_client_contacts').insert({
+          client_id: contactsClientId, company_id: currentUser.company_id,
+          first_name: inlineRepSnapshot!.first_name.trim(), last_name: inlineRepSnapshot!.last_name.trim(),
+          phone: inlineRepSnapshot!.phone || null, email: inlineRepSnapshot!.email || null,
+          position: inlineRepSnapshot!.position || null, is_main_contact: inlineRepSnapshot!.is_main_contact
+        }).select().single();
+        if (savedContact) {
+          savedRepId = savedContact.id;
+          setOfferClientContacts(prev => [...prev, savedContact]);
+          setSendRepresentativeId(savedContact.id);
         }
+        if (contactErr) console.error('Contact save error:', contactErr);
         setShowAddRepInline(false);
         setNewRepData({ first_name: '', last_name: '', phone: '', email: '', position: '', is_main_contact: true });
       }
