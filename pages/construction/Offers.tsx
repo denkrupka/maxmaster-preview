@@ -931,11 +931,28 @@ export const OffersPage: React.FC = () => {
   // ============================================
   const offerLoadClientContactsById = async (contractorId: string) => {
     try {
-      const { data } = await supabase
+      // contractorId is from 'contractors' table; contacts use 'contractors_clients' table
+      // Bridge: find matching contractors_clients record
+      let contactsClientId = '';
+      const { data: contractor } = await supabase.from('contractors').select('name, nip').eq('id', contractorId).single();
+      if (contractor) {
+        const nipN = contractor.nip ? contractor.nip.replace(/\D/g, '') : '';
+        if (nipN) {
+          const { data: byNip } = await supabase.from('contractors_clients').select('id')
+            .eq('company_id', currentUser!.company_id).eq('nip', nipN).limit(1);
+          if (byNip?.length) contactsClientId = byNip[0].id;
+        }
+        if (!contactsClientId && contractor.name) {
+          const { data: byName } = await supabase.from('contractors_clients').select('id')
+            .eq('company_id', currentUser!.company_id).ilike('name', contractor.name).limit(1);
+          if (byName?.length) contactsClientId = byName[0].id;
+        }
+      }
+      const { data } = contactsClientId ? await supabase
         .from('contractor_client_contacts')
         .select('*')
-        .eq('client_id', contractorId)
-        .order('last_name');
+        .eq('client_id', contactsClientId)
+        .order('last_name') : { data: null };
       const contactsList = data || [];
       setOfferClientContacts(contactsList);
 
@@ -1293,18 +1310,38 @@ export const OffersPage: React.FC = () => {
         }
 
         // Load client contacts for send modal
+        // offer.client_id is from 'contractors' table, but contacts use 'contractors_clients' table
+        // Bridge: find matching contractors_clients record by NIP or name
         if (offer.client_id) {
-          const { data: contacts } = await supabase
-            .from('contractor_client_contacts')
-            .select('*')
-            .eq('client_id', offer.client_id)
-            .order('last_name');
-          setOfferClientContacts(contacts || []);
-          // Auto-select representative from saved print_settings or main contact
-          const ps = offer.print_settings?.client_data;
-          const savedRepId = ps?.representative_id;
-          const mainContact = (contacts || []).find((c: any) => c.id === savedRepId) || (contacts || []).find((c: any) => c.is_main_contact) || (contacts || [])[0];
-          if (mainContact) setSendRepresentativeId(mainContact.id);
+          let contactsClientId = '';
+          const { data: contractor } = await supabase.from('contractors').select('name, nip').eq('id', offer.client_id).single();
+          if (contractor) {
+            const nipN = contractor.nip ? contractor.nip.replace(/\D/g, '') : '';
+            if (nipN) {
+              const { data: byNip } = await supabase.from('contractors_clients').select('id')
+                .eq('company_id', currentUser.company_id).eq('nip', nipN).limit(1);
+              if (byNip?.length) contactsClientId = byNip[0].id;
+            }
+            if (!contactsClientId && contractor.name) {
+              const { data: byName } = await supabase.from('contractors_clients').select('id')
+                .eq('company_id', currentUser.company_id).ilike('name', contractor.name).limit(1);
+              if (byName?.length) contactsClientId = byName[0].id;
+            }
+          }
+          if (contactsClientId) {
+            const { data: contacts } = await supabase
+              .from('contractor_client_contacts')
+              .select('*')
+              .eq('client_id', contactsClientId)
+              .order('last_name');
+            setOfferClientContacts(contacts || []);
+            const ps = offer.print_settings?.client_data;
+            const savedRepId = ps?.representative_id;
+            const mainContact = (contacts || []).find((c: any) => c.id === savedRepId) || (contacts || []).find((c: any) => c.is_main_contact) || (contacts || [])[0];
+            if (mainContact) setSendRepresentativeId(mainContact.id);
+          } else {
+            setOfferClientContacts([]);
+          }
         }
 
         // Load negotiation data if status is negotiation
@@ -1617,10 +1654,10 @@ export const OffersPage: React.FC = () => {
               object_city: offerClientData.object_city,
               object_postal_code: offerClientData.object_postal_code,
               representative_id: sendRepresentativeId || null,
-              representative_name: showAddRepInline && newRepData.first_name ? `${newRepData.first_name} ${newRepData.last_name}`.trim() : (() => { const r = offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0]; return r ? `${r.first_name || ''} ${r.last_name || ''}`.trim() : ''; })(),
-              representative_email: showAddRepInline && newRepData.first_name ? (newRepData.email || '') : (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.email || '',
-              representative_phone: showAddRepInline && newRepData.first_name ? (newRepData.phone || '') : (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.phone || '',
-              representative_position: showAddRepInline && newRepData.first_name ? (newRepData.position || '') : (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.position || '',
+              representative_name: (showAddRepInline && newRepData.first_name) ? `${newRepData.first_name} ${newRepData.last_name}`.trim() : (() => { const r = offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0]; return r ? `${r.first_name || ''} ${r.last_name || ''}`.trim() : ''; })(),
+              representative_email: (showAddRepInline && newRepData.first_name) ? (newRepData.email || '') : (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.email || '',
+              representative_phone: (showAddRepInline && newRepData.first_name) ? (newRepData.phone || '') : (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.phone || '',
+              representative_position: (showAddRepInline && newRepData.first_name) ? (newRepData.position || '') : (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.position || '',
               work_type_ids: offerSelectedWorkTypes
             },
             warunki: {
@@ -1799,17 +1836,43 @@ export const OffersPage: React.FC = () => {
       }
 
       // Save new representative contact if added inline
-      if (showAddRepInline && newRepData.first_name.trim() && newRepData.last_name.trim() && clientId) {
-        const { data: savedContact } = await supabase.from('contractor_client_contacts').insert({
-          client_id: clientId, first_name: newRepData.first_name.trim(), last_name: newRepData.last_name.trim(),
-          phone: newRepData.phone || null, email: newRepData.email || null, position: newRepData.position || null,
-          is_main_contact: newRepData.is_main_contact
-        }).select().single();
-        if (savedContact) {
-          setSendRepresentativeId(savedContact.id);
-          setShowAddRepInline(false);
-          setNewRepData({ first_name: '', last_name: '', phone: '', email: '', position: '', is_main_contact: true });
+      if (showAddRepInline && newRepData.first_name.trim() && newRepData.last_name.trim()) {
+        // Find or create matching record in contractors_clients (FK target for contacts)
+        let contactsClientId = '';
+        const nipNormC = offerClientData.nip ? offerClientData.nip.replace(/\D/g, '') : '';
+        if (nipNormC) {
+          const { data: byNip } = await supabase.from('contractors_clients').select('id')
+            .eq('company_id', currentUser.company_id).eq('nip', nipNormC).limit(1);
+          if (byNip?.length) contactsClientId = byNip[0].id;
         }
+        if (!contactsClientId && offerClientData.client_name.trim()) {
+          const { data: byName } = await supabase.from('contractors_clients').select('id')
+            .eq('company_id', currentUser.company_id).ilike('name', offerClientData.client_name.trim()).limit(1);
+          if (byName?.length) contactsClientId = byName[0].id;
+        }
+        if (!contactsClientId && offerClientData.client_name.trim()) {
+          const { data: newCl } = await supabase.from('contractors_clients').insert({
+            company_id: currentUser.company_id, name: offerClientData.client_name.trim(),
+            nip: nipNormC || null,
+            address_street: offerClientData.company_street ? `${offerClientData.company_street} ${offerClientData.company_street_number || ''}`.trim() : null,
+            address_city: offerClientData.company_city || null,
+            address_postal_code: offerClientData.company_postal_code || null
+          }).select('id').single();
+          if (newCl) contactsClientId = newCl.id;
+        }
+        if (contactsClientId) {
+          const { data: savedContact } = await supabase.from('contractor_client_contacts').insert({
+            client_id: contactsClientId, company_id: currentUser.company_id,
+            first_name: newRepData.first_name.trim(), last_name: newRepData.last_name.trim(),
+            phone: newRepData.phone || null, email: newRepData.email || null,
+            position: newRepData.position || null, is_main_contact: newRepData.is_main_contact
+          }).select().single();
+          if (savedContact) {
+            setSendRepresentativeId(savedContact.id);
+          }
+        }
+        setShowAddRepInline(false);
+        setNewRepData({ first_name: '', last_name: '', phone: '', email: '', position: '', is_main_contact: true });
       }
 
       await loadData();
@@ -1863,21 +1926,60 @@ export const OffersPage: React.FC = () => {
       }
 
       // Save new representative contact BEFORE offer update
+      // Capture inline rep data before any state resets
+      const inlineRepActive = showAddRepInline && newRepData.first_name.trim() && newRepData.last_name.trim();
+      const inlineRepSnapshot = inlineRepActive ? { ...newRepData } : null;
       let savedRepId = sendRepresentativeId || '';
-      if (showAddRepInline && newRepData.first_name.trim() && newRepData.last_name.trim() && resolvedClientId) {
-        const { data: savedContact } = await supabase.from('contractor_client_contacts').insert({
-          client_id: resolvedClientId, first_name: newRepData.first_name.trim(), last_name: newRepData.last_name.trim(),
-          phone: newRepData.phone || null, email: newRepData.email || null, position: newRepData.position || null,
-          is_main_contact: newRepData.is_main_contact
-        }).select().single();
-        if (savedContact) {
-          savedRepId = savedContact.id;
-          setOfferClientContacts(prev => [...prev, savedContact]);
-          setSendRepresentativeId(savedContact.id);
-          setShowAddRepInline(false);
-          setNewRepData({ first_name: '', last_name: '', phone: '', email: '', position: '', is_main_contact: true });
+
+      if (inlineRepActive && resolvedClientId) {
+        // Find or create matching record in contractors_clients (contacts FK target)
+        let contactsClientId = '';
+        const nipNorm = offerClientData.nip ? offerClientData.nip.replace(/\D/g, '') : '';
+        if (nipNorm) {
+          const { data: byNip } = await supabase.from('contractors_clients').select('id')
+            .eq('company_id', currentUser.company_id).eq('nip', nipNorm).limit(1);
+          if (byNip?.length) contactsClientId = byNip[0].id;
         }
+        if (!contactsClientId && offerClientData.client_name.trim()) {
+          const { data: byName } = await supabase.from('contractors_clients').select('id')
+            .eq('company_id', currentUser.company_id).ilike('name', offerClientData.client_name.trim()).limit(1);
+          if (byName?.length) contactsClientId = byName[0].id;
+        }
+        if (!contactsClientId && offerClientData.client_name.trim()) {
+          const { data: newCl } = await supabase.from('contractors_clients').insert({
+            company_id: currentUser.company_id, name: offerClientData.client_name.trim(),
+            nip: nipNorm || null,
+            address_street: offerClientData.company_street ? `${offerClientData.company_street} ${offerClientData.company_street_number || ''}`.trim() : null,
+            address_city: offerClientData.company_city || null,
+            address_postal_code: offerClientData.company_postal_code || null
+          }).select('id').single();
+          if (newCl) contactsClientId = newCl.id;
+        }
+        if (contactsClientId) {
+          const { data: savedContact, error: contactErr } = await supabase.from('contractor_client_contacts').insert({
+            client_id: contactsClientId, company_id: currentUser.company_id,
+            first_name: inlineRepSnapshot!.first_name.trim(), last_name: inlineRepSnapshot!.last_name.trim(),
+            phone: inlineRepSnapshot!.phone || null, email: inlineRepSnapshot!.email || null,
+            position: inlineRepSnapshot!.position || null, is_main_contact: inlineRepSnapshot!.is_main_contact
+          }).select().single();
+          if (savedContact) {
+            savedRepId = savedContact.id;
+            setOfferClientContacts(prev => [...prev, savedContact]);
+            setSendRepresentativeId(savedContact.id);
+          }
+          if (contactErr) console.error('Contact save error:', contactErr);
+        }
+        setShowAddRepInline(false);
+        setNewRepData({ first_name: '', last_name: '', phone: '', email: '', position: '', is_main_contact: true });
       }
+
+      // Build representative data for print_settings (always use inline data if it was active)
+      const repFromContacts = offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0];
+      const repName = inlineRepSnapshot ? `${inlineRepSnapshot.first_name} ${inlineRepSnapshot.last_name}`.trim()
+        : repFromContacts ? `${repFromContacts.first_name || ''} ${repFromContacts.last_name || ''}`.trim() : '';
+      const repEmail = inlineRepSnapshot ? (inlineRepSnapshot.email || '') : repFromContacts?.email || '';
+      const repPhone = inlineRepSnapshot ? (inlineRepSnapshot.phone || '') : repFromContacts?.phone || '';
+      const repPosition = inlineRepSnapshot ? (inlineRepSnapshot.position || '') : repFromContacts?.position || '';
 
       // Update offer
       await supabase
@@ -1917,10 +2019,10 @@ export const OffersPage: React.FC = () => {
               object_city: offerClientData.object_city,
               object_postal_code: offerClientData.object_postal_code,
               representative_id: savedRepId || sendRepresentativeId || null,
-              representative_name: savedRepId ? `${newRepData.first_name} ${newRepData.last_name}`.trim() : (() => { const r = offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0]; return r ? `${r.first_name || ''} ${r.last_name || ''}`.trim() : ''; })(),
-              representative_email: savedRepId ? (newRepData.email || '') : (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.email || '',
-              representative_phone: savedRepId ? (newRepData.phone || '') : (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.phone || '',
-              representative_position: savedRepId ? (newRepData.position || '') : (offerClientContacts.find((c: any) => c.id === sendRepresentativeId) || offerClientContacts[0])?.position || '',
+              representative_name: repName,
+              representative_email: repEmail,
+              representative_phone: repPhone,
+              representative_position: repPosition,
               work_type_ids: offerSelectedWorkTypes
             },
             warunki: {

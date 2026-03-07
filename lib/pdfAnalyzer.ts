@@ -15,6 +15,9 @@ import type {
   PdfLegendEntry,
   PdfScaleInfo,
   PdfExtractedText,
+  PdfRasterAiResult,
+  PdfRasterAiSymbol,
+  PdfRasterAiRoute,
 } from './pdfTypes';
 import type {
   DxfAnalysis,
@@ -1610,4 +1613,240 @@ function toDxfAnalysis(
     blocks,
     lineGroups: routesWithAnalysisIndices,
   };
+}
+
+// ==================== AI-FIRST ANALYSIS (unified pipeline) ====================
+
+/**
+ * Convert full AI analysis result (from Gemini) into DxfAnalysis + PdfAnalysisExtra.
+ * If geometric data is available (vector PDF), enrich AI results with precise measurements.
+ */
+export function matchAiResultToGeometry(
+  aiResult: PdfRasterAiResult,
+  styleGroups: PdfStyleGroup[] | null,
+  extraction: PdfPageExtraction | null,
+  calibrationScaleRatio?: number,
+): { analysis: DxfAnalysis; extra: PdfAnalysisExtra } {
+  const layers: AnalyzedLayer[] = [];
+  const entities: AnalyzedEntity[] = [];
+  const blocks: AnalyzedBlock[] = [];
+  const lineGroups: LineGroup[] = [];
+  let entityIdx = 0;
+
+  // Build scale info
+  let scaleInfo: PdfScaleInfo;
+  if (extraction) {
+    scaleInfo = detectScale(extraction.texts, calibrationScaleRatio);
+  } else {
+    scaleInfo = {
+      scaleText: aiResult.scaleText || '1:100',
+      scaleFactor: 0.0005, // default
+      source: 'default',
+    };
+    if (aiResult.scaleText) {
+      const m = aiResult.scaleText.match(/1\s*:\s*(\d+)/);
+      if (m) {
+        const ratio = parseInt(m[1]);
+        scaleInfo.scaleRatio = ratio;
+        scaleInfo.scaleFactor = ratio / 1000 / 2; // approximate px→m at 2x render
+        scaleInfo.source = 'text_detection';
+      }
+    }
+  }
+
+  // If we have style groups, apply scale to them
+  if (styleGroups) {
+    for (const sg of styleGroups) {
+      if (!sg.totalLengthM || sg.totalLengthM === 0) {
+        sg.totalLengthM = sg.totalLengthPx * scaleInfo.scaleFactor;
+      }
+    }
+  }
+
+  // Category colors
+  const catColors: Record<string, string> = {
+    'Kable': '#cc0000', 'Kable i przewody': '#cc0000',
+    'Oprawy': '#0066cc', 'Oprawy oświetleniowe': '#0066cc',
+    'Osprzęt': '#00aa00', 'Osprzęt elektryczny': '#00aa00',
+    'Trasy': '#ff8800', 'Trasy kablowe': '#ff8800',
+    'Tablice': '#6600cc', 'Tablice rozdzielcze': '#6600cc',
+    'Alarmy': '#cc6600', 'Instalacja alarmowa': '#cc6600',
+    'Instalacja teletechniczna': '#008888',
+    'Inne': '#808080',
+  };
+
+  // Build legend entries from AI
+  const legendEntries: PdfLegendEntry[] = [];
+
+  // Process AI symbols → layers + entities + blocks + legend
+  for (const sym of aiResult.symbols || []) {
+    const layerName = `${sym.category} — ${sym.type}`;
+    const color = catColors[sym.category] || '#808080';
+
+    layers.push({
+      name: layerName,
+      color,
+      entityCount: sym.count,
+      frozen: false,
+      entityTypes: { 'PDF_SYMBOL': sym.count },
+    });
+
+    blocks.push({
+      name: sym.type,
+      insertCount: sym.count,
+      sampleLayer: layerName,
+      entityCount: 1,
+      containedTypes: ['PDF_SYMBOL'],
+    });
+
+    for (let i = 0; i < sym.count; i++) {
+      entities.push({
+        index: entityIdx++,
+        entityType: 'PDF_SYMBOL',
+        layerName,
+        blockName: sym.type,
+        geometry: { type: 'point' },
+        lengthM: 0,
+        areaM2: 0,
+        properties: { aiCategory: sym.category, aiType: sym.type, aiDescription: sym.description, styleColor: color },
+      });
+    }
+
+    legendEntries.push({
+      label: sym.type,
+      description: sym.description || sym.type,
+      category: sym.category,
+      matchCount: sym.count,
+    });
+  }
+
+  // Process AI routes → entities + lineGroups + legend
+  const usedGroupIds = new Set<string>();
+  let routeIdx = 0;
+
+  for (const route of aiResult.routes || []) {
+    const layerName = `Kable — ${route.type}`;
+    const color = catColors[route.category] || catColors['Kable'];
+    let lengthM = route.estimatedLengthM;
+
+    // Try to find matching geometric style group for precise length
+    if (styleGroups) {
+      // Routes are typically colored lines — try to match by category keywords to color
+      const matched = findRouteStyleGroup(route, styleGroups, usedGroupIds);
+      if (matched) {
+        usedGroupIds.add(matched.id);
+        lengthM = matched.totalLengthM; // Use precise geometric length
+      }
+    }
+
+    layers.push({
+      name: layerName,
+      color,
+      entityCount: 1,
+      frozen: false,
+      entityTypes: { 'PDF_PATH': 1 },
+    });
+
+    const entityIndex = entityIdx++;
+    entities.push({
+      index: entityIndex,
+      entityType: 'PDF_PATH',
+      layerName,
+      geometry: { type: 'polyline' },
+      lengthM,
+      areaM2: 0,
+      properties: { aiCategory: route.category, aiType: route.type, aiDescription: route.description, styleColor: color },
+    });
+
+    lineGroups.push({
+      id: `ai_route_${++routeIdx}`,
+      entityIndices: [entityIndex],
+      totalLengthM: lengthM,
+      layer: layerName,
+      points: [],
+    });
+
+    legendEntries.push({
+      label: route.type,
+      description: route.description || route.type,
+      category: route.category || 'Kable',
+      totalLengthM: lengthM,
+    });
+  }
+
+  // Add AI legend entries that weren't already captured via symbols/routes
+  for (const le of aiResult.legendEntries || []) {
+    const alreadyExists = legendEntries.some(
+      e => e.label === le.symbol || e.label === le.description
+    );
+    if (!alreadyExists) {
+      legendEntries.push({
+        label: le.symbol,
+        description: le.description,
+        category: le.category,
+      });
+    }
+  }
+
+  const legend: PdfLegend = {
+    boundingBox: { x: 0, y: 0, width: 0, height: 0 },
+    entries: legendEntries,
+  };
+
+  const analysis: DxfAnalysis = {
+    totalEntities: entities.length,
+    totalBlocks: blocks.length,
+    totalLayers: layers.length,
+    unitSystem: aiResult.scaleText || scaleInfo.scaleText || 'AI',
+    insUnits: 6,
+    layers,
+    entities,
+    blocks,
+    lineGroups,
+  };
+
+  const extra: PdfAnalysisExtra = {
+    styleGroups: styleGroups || [],
+    symbols: [],
+    rooms: [],
+    legend,
+    scaleInfo,
+    extraction: extraction || { paths: [], texts: [], pageWidth: 0, pageHeight: 0 },
+  };
+
+  return { analysis, extra };
+}
+
+/** Try to match an AI-detected route to a geometric style group by color keywords */
+function findRouteStyleGroup(
+  route: PdfRasterAiRoute,
+  groups: PdfStyleGroup[],
+  usedIds: Set<string>,
+): PdfStyleGroup | null {
+  // Cable routes are typically the longest line groups — try matching by total length
+  // Sort unused groups by total length descending
+  const available = groups
+    .filter(g => !usedIds.has(g.id) && g.totalLengthM > 0.5)
+    .sort((a, b) => b.totalLengthM - a.totalLengthM);
+
+  if (available.length === 0) return null;
+
+  // If AI estimated a length, find the closest matching group
+  if (route.estimatedLengthM > 0) {
+    let bestMatch: PdfStyleGroup | null = null;
+    let bestRatio = Infinity;
+    for (const g of available) {
+      const ratio = Math.max(g.totalLengthM, route.estimatedLengthM) /
+                    Math.min(g.totalLengthM, route.estimatedLengthM);
+      if (ratio < bestRatio) {
+        bestRatio = ratio;
+        bestMatch = g;
+      }
+    }
+    // Accept if within 5x ratio (AI estimates are rough)
+    if (bestMatch && bestRatio < 5) return bestMatch;
+  }
+
+  // Fallback: return the longest unused group
+  return available[0];
 }

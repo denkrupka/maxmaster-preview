@@ -1,66 +1,41 @@
 import React, { useState } from 'react';
-import { X, Play, Loader2, CheckCircle, AlertTriangle, BookOpen, GitBranch, FileImage, Save, Sparkles } from 'lucide-react';
+import { X, Play, Loader2, CheckCircle, AlertTriangle, BookOpen, FileImage, Save, Sparkles } from 'lucide-react';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
-import { extractPageGeometry, classifyFromOpList } from '../../lib/pdfGeometryExtractor';
-import { analyzePdfPage, type PdfAnalysisExtra, matchAiLegendToGeometry } from '../../lib/pdfAnalyzer';
-import { analyzeRasterPdf } from '../../lib/pdfRasterAnalyzer';
-import type { PdfClassification, PdfAnalysisStep, PdfLegend } from '../../lib/pdfTypes';
+import { classifyFromOpList } from '../../lib/pdfGeometryExtractor';
+import { extractPageGeometry } from '../../lib/pdfGeometryExtractor';
+import { groupPathsByStyle, detectScale, matchAiResultToGeometry } from '../../lib/pdfAnalyzer';
+import type { PdfClassification, PdfAnalysisStep, PdfRasterAiResult } from '../../lib/pdfTypes';
 import type { DxfAnalysis } from '../../lib/dxfAnalyzer';
+import type { PdfAnalysisExtra } from '../../lib/pdfAnalyzer';
 import { supabase } from '../../lib/supabase';
 
-/** Render a specific region of a PDF page to base64 JPEG */
-async function renderLegendRegion(
-  page: PDFPageProxy,
-  legendBbox: { x: number; y: number; width: number; height: number },
-  padding: number = 10,
-): Promise<string> {
-  // Render full page at 2x scale, then crop legend region
-  const scale = 2;
-  const viewport = page.getViewport({ scale });
+/** Render a PDF page to base64 JPEG for AI analysis */
+async function renderPageToBase64(page: PDFPageProxy, renderScale: number = 2): Promise<string> {
+  const viewport = page.getViewport({ scale: renderScale });
   const canvas = document.createElement('canvas');
   canvas.width = viewport.width;
   canvas.height = viewport.height;
   const ctx = canvas.getContext('2d')!;
   await page.render({ canvasContext: ctx, viewport }).promise;
-
-  // Crop legend region (coordinates are in PDF units, scale them)
-  const sx = Math.max(0, (legendBbox.x - padding) * scale);
-  const sy = Math.max(0, (legendBbox.y - padding) * scale);
-  const sw = Math.min(canvas.width - sx, (legendBbox.width + padding * 2) * scale);
-  const sh = Math.min(canvas.height - sy, (legendBbox.height + padding * 2) * scale);
-
-  const cropCanvas = document.createElement('canvas');
-  cropCanvas.width = sw;
-  cropCanvas.height = sh;
-  const cropCtx = cropCanvas.getContext('2d')!;
-  cropCtx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
-
-  const dataUrl = cropCanvas.toDataURL('image/jpeg', 0.9);
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
   return dataUrl.replace(/^data:image\/jpeg;base64,/, '');
 }
 
-/** Call Supabase Edge Function to analyze legend image with AI */
-async function analyzeLegendWithAI(
-  legendBase64: string,
-  styleGroupsSummary: string,
-): Promise<{ entries: Array<{
-  label: string;
-  description: string;
-  entryType: 'symbol' | 'line' | 'area';
-  color: string;
-  lineStyle?: string;
-  lineWidth?: string;
-  category: string;
-}>; drawingType?: string }> {
-  const { data, error } = await supabase.functions.invoke('pdf-analyze-legend', {
+/** Call AI (Gemini) to analyze the full drawing page */
+async function analyzeDrawingWithAI(
+  imageBase64: string,
+  pageNumber: number,
+  geometryContext?: string,
+): Promise<PdfRasterAiResult> {
+  const { data, error } = await supabase.functions.invoke('pdf-analyze-raster', {
     body: {
-      legendImageBase64: legendBase64,
+      imageBase64,
       mimeType: 'image/jpeg',
-      styleGroupsSummary,
+      pageNumber,
+      ocrContext: geometryContext || undefined,
     },
   });
-
-  if (error) throw new Error(`AI legend analysis failed: ${error.message}`);
+  if (error) throw new Error(`AI analysis failed: ${error.message}`);
   if (data?.error) throw new Error(data.error);
   return data.data || data;
 }
@@ -95,75 +70,65 @@ export default function PdfAnalysisModal({
     try {
       const page = await pdfDoc.getPage(pageNumber);
 
-      // Step 1: Get operator list ONCE and classify
+      // Step 1: Classify page type
       await new Promise(r => setTimeout(r, 0));
       const opList = await page.getOperatorList();
       const cls = classifyFromOpList(opList.fnArray);
       setClassification(cls);
 
-      if (cls.contentType === 'raster') {
-        setStep('analyzing');
-        await new Promise(r => setTimeout(r, 0));
-        const { analysis: result } = await analyzeRasterPdf(page, supabase, pageNumber);
-        setAnalysis(result);
-        setStep('analyzed');
-      } else {
-        // Vector pipeline
-        setStep('extracting');
-        await new Promise(r => setTimeout(r, 0));
-        const extraction = await extractPageGeometry(page, (pct) => {
-          setExtractionProgress(pct);
-        });
+      // Step 2: Render full page for AI
+      setStep('extracting');
+      setAnalysisSubStep('Renderowanie strony...');
+      await new Promise(r => setTimeout(r, 0));
+      const imageBase64 = await renderPageToBase64(page);
 
-        setStep('analyzing');
-        setAnalysisSubStep('Grupowanie stylów...');
-        await new Promise(r => setTimeout(r, 0));
+      // Step 3: For vector PDFs — extract geometry in parallel for precise measurements
+      let geometryContext = '';
+      let styleGroups: Awaited<ReturnType<typeof groupPathsByStyle>> | null = null;
+      let extraction: Awaited<ReturnType<typeof extractPageGeometry>> | null = null;
 
-        const { analysis: result, extra: analysisExtra } = await analyzePdfPage(
-          extraction,
-          { calibrationScaleRatio: scaleRatio },
-          (sub) => setAnalysisSubStep(sub),
-        );
+      if (cls.contentType === 'vector' || cls.contentType === 'mixed') {
+        setAnalysisSubStep('Ekstrakcja geometrii...');
+        extraction = await extractPageGeometry(page, (pct) => setExtractionProgress(pct));
+        styleGroups = groupPathsByStyle(extraction.paths);
+        const scaleInfo = detectScale(extraction.texts, scaleRatio);
 
-        // AI Legend Analysis — if legend bbox found, render it and send to Gemini
-        if (analysisExtra.legend) {
-          try {
-            setAnalysisSubStep('AI analizuje legendę...');
-            await new Promise(r => setTimeout(r, 0));
-
-            const legendBase64 = await renderLegendRegion(page, analysisExtra.legend.boundingBox);
-
-            // Build style groups summary for AI context
-            const topGroups = [...analysisExtra.styleGroups]
-              .sort((a, b) => b.totalLengthPx - a.totalLengthPx)
-              .slice(0, 15)
-              .map(sg => `${sg.name}: ${sg.pathCount} sciezek, ${sg.totalLengthM.toFixed(1)}m`)
-              .join('\n');
-
-            const aiResult = await analyzeLegendWithAI(legendBase64, topGroups);
-
-            // Merge AI results with geometric data
-            if (aiResult.entries && aiResult.entries.length > 0) {
-              matchAiLegendToGeometry(
-                aiResult.entries,
-                analysisExtra.legend,
-                analysisExtra.styleGroups,
-                analysisExtra.extraction.paths,
-              );
-              setAiUsed(true);
-            }
-          } catch (aiErr: any) {
-            console.warn('AI legend analysis failed, using geometric fallback:', aiErr.message);
-            // Non-fatal — geometric results are still valid
-          }
+        // Apply scale
+        for (const sg of styleGroups) {
+          sg.totalLengthM = sg.totalLengthPx * scaleInfo.scaleFactor;
         }
 
-        setAnalysis(result);
-        setExtra(analysisExtra);
-        setStep('analyzed');
+        // Build context summary for AI — helps it match elements more accurately
+        const topGroups = [...styleGroups]
+          .sort((a, b) => b.totalLengthPx - a.totalLengthPx)
+          .slice(0, 10)
+          .map(sg => `${sg.name}: ${sg.pathCount} elementów, ${sg.totalLengthM.toFixed(1)}m`)
+          .join('; ');
+        geometryContext = `Wektorowy PDF. Wykryto ${extraction.paths.length} ścieżek, ${extraction.texts.length} tekstów. Grupy stylów: ${topGroups}. Skala: ${scaleInfo.scaleText || 'domyślna 1:100'}`;
       }
+
+      // Step 4: AI analyzes the full drawing
+      setStep('analyzing');
+      setAnalysisSubStep('AI analizuje rysunek...');
+      await new Promise(r => setTimeout(r, 0));
+
+      const aiResult = await analyzeDrawingWithAI(imageBase64, pageNumber, geometryContext);
+
+      // Step 5: Merge AI results with geometry for precise measurements
+      setAnalysisSubStep('Łączenie wyników...');
+      const { analysis: result, extra: analysisExtra } = matchAiResultToGeometry(
+        aiResult,
+        styleGroups,
+        extraction,
+        scaleRatio,
+      );
+
+      setAiUsed(true);
+      setAnalysis(result);
+      setExtra(analysisExtra);
+      setStep('analyzed');
     } catch (err: any) {
-      setError(err.message || 'Blad analizy');
+      setError(err.message || 'Błąd analizy');
       setStep('error');
     }
   };
@@ -309,7 +274,12 @@ export default function PdfAnalysisModal({
           {step === 'analyzed' && (
             <div className="flex items-center gap-2 text-green-700">
               <CheckCircle size={16} />
-              <span className="text-sm font-medium">Analiza zakonczona</span>
+              <span className="text-sm font-medium">Analiza zakończona</span>
+              {aiUsed && (
+                <span className="flex items-center gap-1 px-2 py-0.5 bg-violet-100 text-violet-700 rounded-full text-[10px] font-medium">
+                  <Sparkles size={10} /> Gemini AI
+                </span>
+              )}
             </div>
           )}
 
@@ -334,96 +304,60 @@ export default function PdfAnalysisModal({
             <>
               {/* Stats bar */}
               <div className="text-xs text-gray-500 bg-gray-50 rounded p-2">
-                Skala: {extra.scaleInfo.scaleText}
+                Skala: {extra.scaleInfo.scaleText || '—'}
                 {extra.scaleInfo.source === 'text_detection' && ' (z rysunku)'}
                 {extra.scaleInfo.source === 'default' && ' (domyślna)'}
-                {' | '}Ścieżek: {extra.extraction.paths.length.toLocaleString()}
-                {' | '}Tekstów: {extra.extraction.texts.length}
+                {' | '}Symboli: {analysis.totalBlocks}
                 {' | '}Tras: {analysis.lineGroups.length}
+                {extra.extraction.paths.length > 0 && (
+                  <>{' | '}Ścieżek: {extra.extraction.paths.length.toLocaleString()}</>
+                )}
               </div>
 
-              {/* LEGEND — primary result */}
-              {hasLegend ? (
+              {/* Wykryte elementy */}
+              {hasLegend && (
                 <div className="border rounded-lg overflow-hidden">
                   <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border-b">
                     <BookOpen size={14} className="text-amber-600" />
                     <span className="text-xs font-semibold text-amber-800">
-                      Legenda — {extra.legend!.entries.length} wpisów
+                      Wykryte elementy — {extra.legend!.entries.length} pozycji
                     </span>
-                    {aiUsed && (
-                      <span className="flex items-center gap-1 px-1.5 py-0.5 bg-violet-100 text-violet-700 rounded-full text-[9px] font-medium">
-                        <Sparkles size={10} /> AI
-                      </span>
-                    )}
-                    {totalMatched > 0 && (
-                      <span className="ml-auto text-xs text-green-700 font-medium">
-                        {totalMatched} symboli dopasowanych
-                      </span>
-                    )}
                   </div>
-                  <div className="max-h-60 overflow-y-auto divide-y">
+                  <div className="max-h-[40vh] overflow-y-auto divide-y">
                     {extra.legend!.entries.map((entry, i) => (
-                      <div key={i} className="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-gray-50">
-                        {entry.sampleColor ? (
-                          <div className="w-4 h-4 rounded border flex-shrink-0" style={{ backgroundColor: entry.sampleColor }} />
-                        ) : (
-                          <div className="w-4 h-4 rounded border border-dashed border-gray-300 flex-shrink-0" />
-                        )}
-                        <span className="flex-1 truncate" title={entry.description}>{entry.label}</span>
-                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                          {(entry.matchCount || 0) > 0 && (
-                            <span className="text-green-700 font-semibold bg-green-50 px-1.5 py-0.5 rounded">
-                              {entry.matchCount} szt.
-                            </span>
-                          )}
-                          {(entry.totalLengthM || 0) > 0 && (
-                            <span className="text-blue-700 font-semibold bg-blue-50 px-1.5 py-0.5 rounded">
-                              {entry.totalLengthM!.toFixed(1)}m
-                            </span>
-                          )}
-                          {!(entry.matchCount || 0) && !(entry.totalLengthM || 0) && (
-                            <span className="text-gray-300">—</span>
-                          )}
+                      <div key={i} className="px-3 py-2 text-xs hover:bg-gray-50">
+                        <div className="flex items-center gap-2">
+                          <span className="flex-1 font-medium text-slate-700" title={entry.description}>{entry.label}</span>
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            {(entry.matchCount || 0) > 0 && (
+                              <span className="text-green-700 font-bold bg-green-50 px-1.5 py-0.5 rounded">
+                                {entry.matchCount} szt.
+                              </span>
+                            )}
+                            {(entry.totalLengthM || 0) > 0 && (
+                              <span className="text-blue-700 font-bold bg-blue-50 px-1.5 py-0.5 rounded">
+                                {entry.totalLengthM!.toFixed(1)}m
+                              </span>
+                            )}
+                          </div>
                         </div>
+                        {entry.category && (
+                          <span className="text-[10px] text-gray-400">{entry.category}</span>
+                        )}
+                        {entry.description && entry.description !== entry.label && (
+                          <div className="text-[10px] text-gray-500 mt-0.5 truncate">{entry.description}</div>
+                        )}
                       </div>
                     ))}
                   </div>
                 </div>
-              ) : (
-                <div className="text-xs text-amber-700 bg-amber-50 rounded p-3 text-center">
-                  Nie wykryto legendy na rysunku. Symbole wykryto na podstawie kształtów ({extra.symbols.length} szt.)
-                </div>
               )}
 
-              {/* Top routes — only show when NO legend (fallback view) */}
-              {!hasLegend && analysis.lineGroups.length > 0 && (() => {
-                const groupedRoutes = new Map<string, { count: number; totalLength: number }>();
-                for (const r of analysis.lineGroups) {
-                  const key = r.layer;
-                  const existing = groupedRoutes.get(key) || { count: 0, totalLength: 0 };
-                  existing.count++;
-                  existing.totalLength += r.totalLengthM;
-                  groupedRoutes.set(key, existing);
-                }
-                const sorted = [...groupedRoutes.entries()].sort((a, b) => b[1].totalLength - a[1].totalLength).slice(0, 8);
-                return (
-                  <div>
-                    <div className="text-xs font-medium mb-1 flex items-center gap-1">
-                      <GitBranch size={12} className="text-purple-500" />
-                      Grupy stylów ({analysis.lineGroups.length} tras):
-                    </div>
-                    <div className="space-y-0.5 max-h-28 overflow-y-auto">
-                      {sorted.map(([layer, info], i) => (
-                        <div key={i} className="flex items-center gap-2 text-xs px-2 py-0.5 bg-gray-50 rounded">
-                          <span className="flex-1 truncate text-[10px]">{layer}</span>
-                          <span className="text-gray-400 text-[10px]">{info.count} tras</span>
-                          <span className="text-gray-500 font-medium">{info.totalLength.toFixed(1)}m</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })()}
+              {!hasLegend && (
+                <div className="text-xs text-amber-700 bg-amber-50 rounded p-3 text-center">
+                  AI nie wykryło elementów na rysunku.
+                </div>
+              )}
             </>
           )}
 
@@ -431,8 +365,8 @@ export default function PdfAnalysisModal({
           {step === 'idle' && (
             <div className="text-center py-6 text-gray-500">
               <FileImage size={32} className="mx-auto mb-2 text-gray-300" />
-              <p className="text-sm">Kliknij aby rozpoczac analize rysunku.</p>
-              <p className="text-xs text-gray-400 mt-1">System wykryje legende, symbole, trasy i pomieszczenia.</p>
+              <p className="text-sm">Kliknij aby rozpocząć analizę rysunku.</p>
+              <p className="text-xs text-gray-400 mt-1">AI przeanalizuje legendę, symbole i trasy kablowe.</p>
             </div>
           )}
         </div>
