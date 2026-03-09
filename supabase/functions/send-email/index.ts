@@ -118,13 +118,17 @@ serve(async (req) => {
     }
 
     // Log email sent
-    await supabaseAdmin.from('email_logs').insert({
-      recipient: Array.isArray(to) ? to.join(', ') : to,
-      template: template || 'CUSTOM',
-      subject,
-      status: 'sent',
-      provider_id: result.MessageID
-    }).catch(err => console.error('Failed to log email:', err))
+    try {
+      await supabaseAdmin.from('email_logs').insert({
+        recipient: Array.isArray(to) ? to.join(', ') : to,
+        template: template || 'CUSTOM',
+        subject,
+        status: 'sent',
+        provider_id: result.MessageID
+      })
+    } catch (logErr) {
+      console.error('Failed to log email:', logErr)
+    }
 
     return new Response(
       JSON.stringify({ success: true, id: result.MessageID }),
