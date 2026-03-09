@@ -158,7 +158,7 @@ export const PlansWorkspace: React.FC = () => {
   const [strokeWidth, setStrokeWidth] = useState(2);
   const [isDrawing, setIsDrawing] = useState(false);
   const [drawPoints, setDrawPoints] = useState<DrawPoint[]>([]);
-  const [textInput, setTextInput] = useState<{ x: number; y: number; text: string } | null>(null);
+  const [textInput, setTextInput] = useState<{ x: number; y: number; text: string; toolType: 'text' | 'callout' } | null>(null);
   const [countMarkers, setCountMarkers] = useState<DrawPoint[]>([]);
 
   // ---- SVG overlay ref ----
@@ -177,10 +177,13 @@ export const PlansWorkspace: React.FC = () => {
   const [calibrationPoints, setCalibrationPoints] = useState<DrawPoint[]>([]);
   const [calibrationInput, setCalibrationInput] = useState<{ pixelDist: number; show: boolean }>({ pixelDist: 0, show: false });
 
-  // ---- Photo pins ----
-  const [photoPins, setPhotoPins] = useState<{ id: string; x: number; y: number; url: string; label?: string; authorName?: string; createdAt?: string }[]>([]);
+  // ---- Photo pins (each pin can have multiple photos) ----
+  type PhotoItem = { id: string; url: string; label?: string; authorName?: string; createdAt?: string };
+  type PhotoPin = { id: string; x: number; y: number; photos: PhotoItem[] };
+  const [photoPins, setPhotoPins] = useState<PhotoPin[]>([]);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const [pendingPhotoPoint, setPendingPhotoPoint] = useState<DrawPoint | null>(null);
+  const [pendingPhotoPinId, setPendingPhotoPinId] = useState<string | null>(null); // for adding more photos to existing pin
   const [showPhotoModal, setShowPhotoModal] = useState(false);
   const [showPhotoGallery, setShowPhotoGallery] = useState<{ pinId: string } | null>(null);
   const [galleryIndex, setGalleryIndex] = useState(0);
@@ -599,13 +602,22 @@ export const PlansWorkspace: React.FC = () => {
       const { data: photoData } = await supabase.from('plan_photos').select('*')
         .eq('plan_id', planId).order('created_at');
       if (photoData) {
-        setPhotoPins(photoData.map((p: any) => ({
-          id: p.id,
-          x: p.position_x,
-          y: p.position_y,
-          url: p.photo_url,
-          label: p.label,
-        })));
+        // Group photos by position (same x,y = same pin)
+        const pinMap = new Map<string, PhotoPin>();
+        for (const p of photoData as any[]) {
+          const key = `${Math.round(p.position_x)},${Math.round(p.position_y)}`;
+          if (!pinMap.has(key)) {
+            pinMap.set(key, { id: `pin-${p.id}`, x: p.position_x, y: p.position_y, photos: [] });
+          }
+          pinMap.get(key)!.photos.push({
+            id: p.id,
+            url: p.photo_url,
+            label: p.label,
+            authorName: p.author_name,
+            createdAt: p.created_at,
+          });
+        }
+        setPhotoPins(Array.from(pinMap.values()));
       }
     } catch {
       // Tables may not exist yet
@@ -1092,46 +1104,70 @@ export const PlansWorkspace: React.FC = () => {
   // ---- Photo Upload Handler ----
 
   const handlePhotoUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !pendingPhotoPoint || !selectedPlan || !selectedProject) return;
+    const files = e.target.files;
+    if (!files || files.length === 0 || !selectedPlan || !selectedProject) return;
+    if (!pendingPhotoPoint && !pendingPhotoPinId) return;
+
+    const authorName = `${currentUser?.first_name || ''} ${currentUser?.last_name || ''}`.trim() || 'User';
 
     try {
-      const safeName = sanitizeFileName(file.name);
-      const path = `plan-photos/${selectedProject.id}/${Date.now()}_${safeName}`;
-      const { error: uploadErr } = await supabase.storage.from('plan-files').upload(path, file);
-      if (uploadErr) throw uploadErr;
-      const { data: urlData } = supabase.storage.from('plan-files').getPublicUrl(path);
+      const newPhotos: PhotoItem[] = [];
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const safeName = sanitizeFileName(file.name);
+        const path = `plan-photos/${selectedProject.id}/${Date.now()}_${i}_${safeName}`;
+        const { error: uploadErr } = await supabase.storage.from('plan-files').upload(path, file);
+        if (uploadErr) throw uploadErr;
+        const { data: urlData } = supabase.storage.from('plan-files').getPublicUrl(path);
 
-      const pin = {
-        id: `photo-${Date.now()}`,
-        x: pendingPhotoPoint.x,
-        y: pendingPhotoPoint.y,
-        url: urlData.publicUrl,
-        label: file.name,
-        authorName: `${currentUser?.first_name || ''} ${currentUser?.last_name || ''}`.trim() || 'User',
-        createdAt: new Date().toISOString(),
-      };
-      setPhotoPins(prev => [...prev, pin]);
+        const photoItem: PhotoItem = {
+          id: `ph-${Date.now()}-${i}`,
+          url: urlData.publicUrl,
+          label: file.name,
+          authorName,
+          createdAt: new Date().toISOString(),
+        };
+        newPhotos.push(photoItem);
 
-      // Persist
-      await supabase.from('plan_photos').insert({
-        plan_id: selectedPlan.id,
-        position_x: pendingPhotoPoint.x,
-        position_y: pendingPhotoPoint.y,
-        photo_url: urlData.publicUrl,
-        label: file.name,
-        created_by: currentUser?.id,
-      });
+        // Persist
+        await supabase.from('plan_photos').insert({
+          plan_id: selectedPlan.id,
+          position_x: pendingPhotoPoint?.x ?? 0,
+          position_y: pendingPhotoPoint?.y ?? 0,
+          photo_url: urlData.publicUrl,
+          label: file.name,
+          created_by: currentUser?.id,
+        });
+      }
+
+      if (pendingPhotoPinId) {
+        // Add photos to existing pin
+        setPhotoPins(prev => prev.map(pin =>
+          pin.id === pendingPhotoPinId
+            ? { ...pin, photos: [...pin.photos, ...newPhotos] }
+            : pin
+        ));
+      } else if (pendingPhotoPoint) {
+        // Create new pin
+        const newPin: PhotoPin = {
+          id: `pin-${Date.now()}`,
+          x: pendingPhotoPoint.x,
+          y: pendingPhotoPoint.y,
+          photos: newPhotos,
+        };
+        setPhotoPins(prev => [...prev, newPin]);
+      }
 
       dispatch({ type: 'SET_ACTIVE_TOOL', tool: 'select' });
-      notify('Zdjecie dodane');
+      notify(`${newPhotos.length > 1 ? newPhotos.length + ' zdjec dodanych' : 'Zdjecie dodane'}`);
     } catch (err: any) {
       notify(err.message || 'Blad przesylania zdjecia', 'error');
     }
 
     setPendingPhotoPoint(null);
+    setPendingPhotoPinId(null);
     if (photoInputRef.current) photoInputRef.current.value = '';
-  }, [pendingPhotoPoint, selectedPlan, selectedProject, currentUser, notify]);
+  }, [pendingPhotoPoint, pendingPhotoPinId, selectedPlan, selectedProject, currentUser, notify]);
 
   // ---- Analysis Modal Handlers ----
 
@@ -1371,9 +1407,9 @@ export const PlansWorkspace: React.FC = () => {
       if (d < bestDist) { bestDist = d; best = { type: 'comment', id: c.id }; }
     }
     // Check photo pins
-    for (const p of photoPins) {
-      const d = Math.sqrt((p.x - pt.x) ** 2 + (p.y - pt.y) ** 2);
-      if (d < bestDist) { bestDist = d; best = { type: 'photo', id: p.id }; }
+    for (const pin of photoPins) {
+      const d = Math.sqrt((pin.x - pt.x) ** 2 + (pin.y - pt.y) ** 2);
+      if (d < bestDist) { bestDist = d; best = { type: 'photo', id: pin.id }; }
     }
     // Check count markers
     for (let i = 0; i < countMarkers.length; i++) {
@@ -1411,12 +1447,18 @@ export const PlansWorkspace: React.FC = () => {
       return;
     }
 
-    // Pan tool: start panning by scrolling the parent container
+    // Pan tool: start panning by scrolling the scrollable parent
     if (ws.activeTool === 'pan') {
-      const container = viewerContainerRef.current;
-      if (container) {
+      // Find the actual scrollable parent of the SVG
+      let scrollEl: HTMLElement | null = svgOverlayRef.current?.parentElement?.parentElement || viewerContainerRef.current;
+      while (scrollEl && scrollEl.scrollHeight <= scrollEl.clientHeight && scrollEl.scrollWidth <= scrollEl.clientWidth) {
+        scrollEl = scrollEl.parentElement;
+      }
+      if (!scrollEl) scrollEl = viewerContainerRef.current;
+      if (scrollEl) {
         setIsPanning(true);
-        setPanStart({ x: e.clientX, y: e.clientY, scrollLeft: container.scrollLeft, scrollTop: container.scrollTop });
+        setPanStart({ x: e.clientX, y: e.clientY, scrollLeft: scrollEl.scrollLeft, scrollTop: scrollEl.scrollTop });
+        (svgOverlayRef.current as any).__panScrollEl = scrollEl;
       }
       e.preventDefault();
       return;
@@ -1435,9 +1477,8 @@ export const PlansWorkspace: React.FC = () => {
       }
       const clickedPin = photoPins.find(p => Math.sqrt((p.x - pt.x) ** 2 + (p.y - pt.y) ** 2) < 20);
       if (clickedPin) {
-        const idx = photoPins.indexOf(clickedPin);
         setShowPhotoGallery({ pinId: clickedPin.id });
-        setGalleryIndex(idx >= 0 ? idx : 0);
+        setGalleryIndex(0);
         return;
       }
       setBoxSelectStart({ x: pt.x, y: pt.y });
@@ -1453,7 +1494,7 @@ export const PlansWorkspace: React.FC = () => {
     }
 
     if (ws.activeTool === 'text-annotation' || ws.activeTool === 'callout') {
-      setTextInput({ x: pt.x, y: pt.y, text: '' });
+      setTextInput({ x: pt.x, y: pt.y, text: '', toolType: ws.activeTool === 'callout' ? 'callout' : 'text' });
       return;
     }
 
@@ -1483,11 +1524,11 @@ export const PlansWorkspace: React.FC = () => {
         Math.sqrt((p.x - pt.x) ** 2 + (p.y - pt.y) ** 2) < 20
       );
       if (clickedPin) {
-        const idx = photoPins.indexOf(clickedPin);
         setShowPhotoGallery({ pinId: clickedPin.id });
-        setGalleryIndex(idx >= 0 ? idx : 0);
+        setGalleryIndex(0);
       } else {
         setPendingPhotoPoint(pt);
+        setPendingPhotoPinId(null);
         setShowPhotoModal(true);
       }
       return;
@@ -1544,10 +1585,10 @@ export const PlansWorkspace: React.FC = () => {
 
     // Pan tool: scroll container
     if (isPanning && panStart) {
-      const container = viewerContainerRef.current;
-      if (container) {
-        container.scrollLeft = panStart.scrollLeft - (e.clientX - panStart.x);
-        container.scrollTop = panStart.scrollTop - (e.clientY - panStart.y);
+      const scrollEl = (svgOverlayRef.current as any)?.__panScrollEl || viewerContainerRef.current;
+      if (scrollEl) {
+        scrollEl.scrollLeft = panStart.scrollLeft - (e.clientX - panStart.x);
+        scrollEl.scrollTop = panStart.scrollTop - (e.clientY - panStart.y);
       }
       e.preventDefault();
       return;
@@ -1713,7 +1754,7 @@ export const PlansWorkspace: React.FC = () => {
     if (!textInput || !textInput.text.trim()) { setTextInput(null); return; }
     const annotation: AnnotationItem = {
       id: `ann-${Date.now()}`,
-      type: ws.activeTool === 'callout' ? 'callout' : 'text',
+      type: textInput.toolType,
       geometry: { points: [{ x: textInput.x, y: textInput.y }] },
       text: textInput.text,
       strokeColor,
@@ -1723,7 +1764,7 @@ export const PlansWorkspace: React.FC = () => {
     };
     setAnnotations(prev => [...prev, annotation]);
     setTextInput(null);
-  }, [textInput, ws.activeTool, strokeColor, strokeWidth, currentUser]);
+  }, [textInput, strokeColor, strokeWidth, currentUser]);
 
   // ---- Keyboard shortcuts ----
 
@@ -1956,13 +1997,17 @@ export const PlansWorkspace: React.FC = () => {
     // Photo pins — no onClick here, handled by mouseDown handler
     for (const pin of photoPins) {
       const phHovered = isEraseHovered(pin.id);
+      const photoCount = pin.photos.length;
       parts.push(
         <g key={`photo-${pin.id}`} style={{ cursor: 'pointer', filter: phHovered ? 'drop-shadow(0 0 6px rgba(239,68,68,0.8))' : undefined }}
           opacity={phHovered ? 0.5 : 1}>
           <circle cx={pin.x} cy={pin.y} r={14} fill={phHovered ? '#ef4444' : '#3b82f6'} stroke="white" strokeWidth={2} />
           <text x={pin.x} y={pin.y + 5} textAnchor="middle" fontSize={12} fill="white" fontFamily="sans-serif">📷</text>
-          {pin.label && (
-            <text x={pin.x + 18} y={pin.y + 4} fontSize={10} fill="#3b82f6" fontFamily="sans-serif">{pin.label}</text>
+          {photoCount > 1 && (
+            <g>
+              <circle cx={pin.x + 10} cy={pin.y - 10} r={8} fill="#ef4444" stroke="white" strokeWidth={1.5} />
+              <text x={pin.x + 10} y={pin.y - 6} textAnchor="middle" fontSize={9} fill="white" fontWeight="bold" fontFamily="sans-serif">{photoCount}</text>
+            </g>
           )}
         </g>
       );
@@ -2135,27 +2180,9 @@ export const PlansWorkspace: React.FC = () => {
         </defs>
         {renderSvgAnnotations()}
 
-        {/* Text input overlay */}
+        {/* Text input marker */}
         {textInput && (
-          <foreignObject x={textInput.x - 5} y={textInput.y - 25} width={250} height={36}>
-            <div>
-              <input
-                type="text"
-                autoFocus
-                value={textInput.text}
-                onChange={e => setTextInput({ ...textInput, text: e.target.value })}
-                onKeyDown={e => {
-                  e.stopPropagation();
-                  if (e.key === 'Enter') handleTextAnnotationSubmit();
-                  if (e.key === 'Escape') setTextInput(null);
-                }}
-                onBlur={handleTextAnnotationSubmit}
-                onMouseDown={e => e.stopPropagation()}
-                style={{ width: '240px', padding: '4px 8px', fontSize: '13px', border: '2px solid #3b82f6', borderRadius: '6px', outline: 'none', background: 'white', boxShadow: '0 2px 8px rgba(0,0,0,0.15)' }}
-                placeholder="Wpisz tekst..."
-              />
-            </div>
-          </foreignObject>
+          <circle cx={textInput.x} cy={textInput.y} r={4} fill="#3b82f6" stroke="white" strokeWidth={2} />
         )}
 
         {/* Box selection rectangle */}
@@ -2990,7 +3017,12 @@ export const PlansWorkspace: React.FC = () => {
             activeTool={ws.activeTool}
             onSetTool={(tool) => {
               if (tool === 'snapshot') { handleSnapshot(); return; }
-              dispatch({ type: 'SET_ACTIVE_TOOL', tool });
+              // Toggle: clicking active tool switches to select
+              if (tool === ws.activeTool && tool !== 'select') {
+                dispatch({ type: 'SET_ACTIVE_TOOL', tool: 'select' });
+              } else {
+                dispatch({ type: 'SET_ACTIVE_TOOL', tool });
+              }
             }}
             strokeColor={strokeColor}
             strokeWidth={strokeWidth}
@@ -3059,9 +3091,9 @@ export const PlansWorkspace: React.FC = () => {
           onRetryError={(id) => {
             setErrors(prev => prev.filter(e => e.id !== id));
           }}
-          photos={photoPins}
+          photos={photoPins.flatMap(pin => pin.photos.map(ph => ({ id: ph.id, x: pin.x, y: pin.y, url: ph.url, label: ph.label })))}
           onDeletePhoto={(id) => {
-            setPhotoPins(prev => prev.filter(p => p.id !== id));
+            setPhotoPins(prev => prev.map(pin => ({ ...pin, photos: pin.photos.filter(ph => ph.id !== id) })).filter(pin => pin.photos.length > 0));
             if (activeFile) {
               supabase.from('plan_photos').delete().eq('id', id).then(() => {});
             }
@@ -3241,7 +3273,7 @@ export const PlansWorkspace: React.FC = () => {
 
       {/* Hidden photo input */}
       <input ref={photoInputRef} type="file" className="hidden"
-        accept="image/*" onChange={handlePhotoUpload} />
+        accept="image/*" multiple onChange={handlePhotoUpload} />
 
       {/* Scale calibration dialog */}
       {calibrationInput.show && (
@@ -3417,11 +3449,11 @@ export const PlansWorkspace: React.FC = () => {
 
       {/* ===== PHOTO UPLOAD MODAL ===== */}
       {showPhotoModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40" onClick={() => { setShowPhotoModal(false); setPendingPhotoPoint(null); }}>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40" onClick={() => { setShowPhotoModal(false); setPendingPhotoPoint(null); setPendingPhotoPinId(null); }}>
           <div className="bg-white rounded-xl shadow-2xl w-80" onClick={e => e.stopPropagation()}>
             <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
               <h3 className="text-sm font-bold text-slate-800">Dodaj zdjecie</h3>
-              <button onClick={() => { setShowPhotoModal(false); setPendingPhotoPoint(null); }} className="p-1 hover:bg-slate-100 rounded"><X className="w-4 h-4" /></button>
+              <button onClick={() => { setShowPhotoModal(false); setPendingPhotoPoint(null); setPendingPhotoPinId(null); }} className="p-1 hover:bg-slate-100 rounded"><X className="w-4 h-4" /></button>
             </div>
             <div className="p-4 space-y-3">
               <button
@@ -3443,53 +3475,67 @@ export const PlansWorkspace: React.FC = () => {
 
       {/* ===== PHOTO GALLERY MODAL ===== */}
       {showPhotoGallery && (() => {
-        const allPhotos = photoPins;
-        const startIdx = allPhotos.findIndex(p => p.id === showPhotoGallery.pinId);
-        const idx = galleryIndex >= 0 && galleryIndex < allPhotos.length ? galleryIndex : (startIdx >= 0 ? startIdx : 0);
-        const photo = allPhotos[idx];
+        const pin = photoPins.find(p => p.id === showPhotoGallery.pinId);
+        if (!pin || pin.photos.length === 0) return null;
+        const pinPhotos = pin.photos;
+        const idx = galleryIndex >= 0 && galleryIndex < pinPhotos.length ? galleryIndex : 0;
+        const photo = pinPhotos[idx];
         if (!photo) return null;
         return (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80" onClick={() => setShowPhotoGallery(null)}>
             <div className="bg-white rounded-xl shadow-2xl w-[700px] max-w-[95vw] max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
               <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
                 <div>
-                  <h3 className="text-sm font-bold text-slate-800">Zdjecie {idx + 1} z {allPhotos.length}</h3>
+                  <h3 className="text-sm font-bold text-slate-800">Zdjecie {idx + 1} z {pinPhotos.length}</h3>
                   <div className="flex items-center gap-3 text-[10px] text-slate-400 mt-0.5">
                     {photo.authorName && <span>Dodal: {photo.authorName}</span>}
                     {photo.createdAt && <span>{new Date(photo.createdAt).toLocaleString('pl-PL')}</span>}
                   </div>
                 </div>
                 <div className="flex items-center gap-1">
+                  {/* Add more photos to this pin */}
+                  <button onClick={() => {
+                    setPendingPhotoPinId(pin.id);
+                    setPendingPhotoPoint(null);
+                    photoInputRef.current?.removeAttribute('capture');
+                    photoInputRef.current?.click();
+                  }} className="p-1.5 hover:bg-blue-50 rounded text-slate-500 hover:text-blue-600" title="Dodaj wiecej zdjec">
+                    <Plus className="w-4 h-4" />
+                  </button>
                   <a href={photo.url} download className="p-1.5 hover:bg-slate-100 rounded text-slate-500" title="Pobierz"><Download className="w-4 h-4" /></a>
                   <button onClick={() => {
-                    setPhotoPins(prev => prev.filter(p => p.id !== photo.id));
-                    if (activeFile?.id) supabase.from('plan_photos').delete().eq('id', photo.id).then(() => {});
-                    if (allPhotos.length <= 1) setShowPhotoGallery(null);
-                    else setGalleryIndex(Math.min(idx, allPhotos.length - 2));
+                    // Remove this photo from the pin
+                    setPhotoPins(prev => prev.map(p => {
+                      if (p.id !== pin.id) return p;
+                      const remaining = p.photos.filter(ph => ph.id !== photo.id);
+                      return { ...p, photos: remaining };
+                    }).filter(p => p.photos.length > 0));
+                    if (pinPhotos.length <= 1) setShowPhotoGallery(null);
+                    else setGalleryIndex(Math.min(idx, pinPhotos.length - 2));
                     notify('Zdjecie usuniete');
                   }} className="p-1.5 hover:bg-red-50 rounded text-slate-500 hover:text-red-500" title="Usun"><Trash2 className="w-4 h-4" /></button>
                   <button onClick={() => setShowPhotoGallery(null)} className="p-1.5 hover:bg-slate-100 rounded"><X className="w-4 h-4" /></button>
                 </div>
               </div>
               <div className="flex-1 flex items-center justify-center bg-slate-900 relative min-h-[400px]">
-                {allPhotos.length > 1 && (
-                  <button onClick={() => setGalleryIndex((idx - 1 + allPhotos.length) % allPhotos.length)}
+                {pinPhotos.length > 1 && (
+                  <button onClick={() => setGalleryIndex((idx - 1 + pinPhotos.length) % pinPhotos.length)}
                     className="absolute left-2 z-10 p-2 bg-black/50 text-white rounded-full hover:bg-black/70">
                     <ChevronDown className="w-5 h-5 rotate-90" />
                   </button>
                 )}
                 <img src={photo.url} alt={photo.label || 'Zdjecie'} className="max-w-full max-h-[70vh] object-contain" />
-                {allPhotos.length > 1 && (
-                  <button onClick={() => setGalleryIndex((idx + 1) % allPhotos.length)}
+                {pinPhotos.length > 1 && (
+                  <button onClick={() => setGalleryIndex((idx + 1) % pinPhotos.length)}
                     className="absolute right-2 z-10 p-2 bg-black/50 text-white rounded-full hover:bg-black/70">
                     <ChevronDown className="w-5 h-5 -rotate-90" />
                   </button>
                 )}
               </div>
               {/* Thumbnails */}
-              {allPhotos.length > 1 && (
+              {pinPhotos.length > 1 && (
                 <div className="px-3 py-2 bg-slate-50 border-t border-slate-200 flex gap-2 overflow-x-auto">
-                  {allPhotos.map((p, i) => (
+                  {pinPhotos.map((p, i) => (
                     <button key={p.id} onClick={() => setGalleryIndex(i)}
                       className={`w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 border-2 ${i === idx ? 'border-blue-500' : 'border-transparent hover:border-slate-300'}`}>
                       <img src={p.url} alt="" className="w-full h-full object-cover" />
@@ -3498,6 +3544,34 @@ export const PlansWorkspace: React.FC = () => {
                 </div>
               )}
             </div>
+          </div>
+        );
+      })()}
+
+      {/* ===== TEXT INPUT OVERLAY ===== */}
+      {textInput && (() => {
+        const svg = svgOverlayRef.current;
+        if (!svg) return null;
+        const svgRect = svg.getBoundingClientRect();
+        const left = svgRect.left + textInput.x;
+        const top = svgRect.top + textInput.y;
+        return (
+          <div style={{ position: 'fixed', left: `${left}px`, top: `${top - 30}px`, zIndex: 200 }}>
+            <input
+              type="text"
+              autoFocus
+              value={textInput.text}
+              onChange={e => setTextInput({ ...textInput, text: e.target.value })}
+              onKeyDown={e => {
+                e.stopPropagation();
+                if (e.key === 'Enter') handleTextAnnotationSubmit();
+                if (e.key === 'Escape') setTextInput(null);
+              }}
+              onBlur={() => setTimeout(handleTextAnnotationSubmit, 100)}
+              onMouseDown={e => e.stopPropagation()}
+              style={{ width: '250px', padding: '6px 10px', fontSize: '13px', border: '2px solid #3b82f6', borderRadius: '8px', outline: 'none', background: 'white', boxShadow: '0 4px 16px rgba(0,0,0,0.2)' }}
+              placeholder={textInput.toolType === 'callout' ? 'Wpisz odnosnik...' : 'Wpisz tekst...'}
+            />
           </div>
         );
       })()}
