@@ -1244,6 +1244,25 @@ export const PlansWorkspace: React.FC = () => {
     notify('Plik przeniesiony');
   }, [notify]);
 
+  const handleReorderFile = useCallback(async (fileId: string, targetFileId: string, position: 'before' | 'after') => {
+    // Get current folder files, find positions, reorder
+    const folder = sidebarFolders.find(f => f.files.some(fl => fl.id === fileId));
+    if (!folder) return;
+    const files = [...folder.files];
+    const fromIdx = files.findIndex(f => f.id === fileId);
+    const toIdx = files.findIndex(f => f.id === targetFileId);
+    if (fromIdx < 0 || toIdx < 0) return;
+    const [moved] = files.splice(fromIdx, 1);
+    const insertIdx = position === 'before' ? (toIdx > fromIdx ? toIdx - 1 : toIdx) : (toIdx > fromIdx ? toIdx : toIdx + 1);
+    files.splice(insertIdx, 0, moved);
+    // Update sort_order in DB
+    for (let i = 0; i < files.length; i++) {
+      await supabase.from('plans').update({ sort_order: i }).eq('id', files[i].id);
+    }
+    loadPlansData();
+    notify('Kolejnosc zmieniona');
+  }, [sidebarFolders, notify]);
+
   // ---- URN ready (from APS viewer) ----
 
   const handleUrnReady = useCallback(async (urn: string) => {
@@ -1845,26 +1864,47 @@ export const PlansWorkspace: React.FC = () => {
         const ry = Math.abs(drawPoints[1].y - drawPoints[0].y) / 2;
         parts.push(<ellipse key="drawing-preview" cx={cx} cy={cy} rx={rx} ry={ry}
           stroke={strokeColor} strokeWidth={strokeWidth} fill="none" strokeDasharray="4 2" />);
-      } else if (tool === 'arrow' || tool === 'line' || tool.startsWith('measure-')) {
+      } else if (tool === 'issue-cloud') {
+        const x = Math.min(drawPoints[0].x, drawPoints[1].x);
+        const y = Math.min(drawPoints[0].y, drawPoints[1].y);
+        const w = Math.abs(drawPoints[1].x - drawPoints[0].x);
+        const h = Math.abs(drawPoints[1].y - drawPoints[0].y);
+        parts.push(<rect key="drawing-preview" x={x} y={y} width={w} height={h}
+          stroke="#ef4444" strokeWidth={strokeWidth} fill="rgba(239,68,68,0.08)" strokeDasharray="6 3" rx={6} />);
+      } else if (tool === 'arrow' || tool === 'line') {
         parts.push(
           <line key="drawing-preview" x1={drawPoints[0].x} y1={drawPoints[0].y}
             x2={drawPoints[1].x} y2={drawPoints[1].y}
-            stroke={tool.startsWith('measure-') ? '#2563eb' : strokeColor}
-            strokeWidth={strokeWidth} strokeDasharray="4 2"
+            stroke={strokeColor} strokeWidth={strokeWidth} strokeDasharray="4 2"
             markerEnd={tool === 'arrow' ? 'url(#arrowhead)' : undefined} />
         );
-        // Show live measurement
-        if (tool.startsWith('measure-')) {
-          const dist = Math.sqrt(
-            (drawPoints[1].x - drawPoints[0].x) ** 2 + (drawPoints[1].y - drawPoints[0].y) ** 2
-          );
-          const scale = activeFile?.scale_ratio || 1;
-          const midX = (drawPoints[0].x + drawPoints[1].x) / 2;
-          const midY = (drawPoints[0].y + drawPoints[1].y) / 2;
+      } else if (tool.startsWith('measure-')) {
+        // Draw all accumulated segments for polyline measurements
+        if (drawPoints.length >= 2) {
+          const pointStr = drawPoints.map(p => `${p.x},${p.y}`).join(' ');
           parts.push(
-            <text key="measure-live" x={midX} y={midY - 8}
-              textAnchor="middle" fontSize={12} fill="#2563eb" fontWeight="bold" fontFamily="sans-serif">
-              {(dist * scale).toFixed(1)} mm
+            <polyline key="drawing-preview" points={pointStr}
+              stroke="#2563eb" strokeWidth={strokeWidth} fill="none" strokeDasharray="4 2" />
+          );
+          // For area measurement, show closing line
+          if (tool === 'measure-area' && drawPoints.length >= 3) {
+            parts.push(
+              <line key="measure-close" x1={drawPoints[drawPoints.length - 1].x} y1={drawPoints[drawPoints.length - 1].y}
+                x2={drawPoints[0].x} y2={drawPoints[0].y}
+                stroke="#2563eb" strokeWidth={1} strokeDasharray="2 2" opacity={0.5} />
+            );
+          }
+          // Show live measurement
+          let totalDist = 0;
+          for (let i = 0; i < drawPoints.length - 1; i++) {
+            totalDist += Math.sqrt((drawPoints[i + 1].x - drawPoints[i].x) ** 2 + (drawPoints[i + 1].y - drawPoints[i].y) ** 2);
+          }
+          const scale = activeFile?.scale_ratio || 1;
+          const last = drawPoints[drawPoints.length - 1];
+          parts.push(
+            <text key="measure-live" x={last.x + 10} y={last.y - 8}
+              fontSize={12} fill="#2563eb" fontWeight="bold" fontFamily="sans-serif">
+              {(totalDist * scale).toFixed(1)} mm
             </text>
           );
         }
@@ -2479,6 +2519,7 @@ export const PlansWorkspace: React.FC = () => {
             onDeleteFolder={handleDeleteFolder}
             onCreateSubfolder={handleCreateSubfolder}
             onMoveFileToFolder={handleMoveFileToFolder}
+            onReorderFile={handleReorderFile}
           />
         </div>
       )}
