@@ -217,6 +217,17 @@ export const PlansWorkspace: React.FC = () => {
   // ---- Version history ----
   const [versionHistory, setVersionHistory] = useState<PlanRecord[]>([]);
   const [showVersionHistory, setShowVersionHistory] = useState(false);
+  const [versionHistoryTab, setVersionHistoryTab] = useState<'versions' | 'changelog'>('versions');
+
+  // ---- Dirty (unsaved changes) tracking ----
+  const [isDirty, setIsDirty] = useState(false);
+  const [changeLog, setChangeLog] = useState<{ action: string; time: string }[]>([]);
+  const [showUnsavedModal, setShowUnsavedModal] = useState<{ action: 'switch'; fileId?: string } | { action: 'back' } | null>(null);
+
+  const markDirty = useCallback((action: string) => {
+    setIsDirty(true);
+    setChangeLog(prev => [...prev, { action, time: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) }]);
+  }, []);
 
   // ---- Version comparison ----
   const [compareVersionList, setCompareVersionList] = useState<PlanRecord[]>([]);
@@ -502,10 +513,12 @@ export const PlansWorkspace: React.FC = () => {
 
   // ---- File Selection ----
 
-  const handleSelectFile = useCallback((fileId: string) => {
+  const doSelectFile = useCallback((fileId: string) => {
     const plan = allPlans.find(p => p.id === fileId);
     if (!plan) return;
     setSelectedPlan(plan);
+    setIsDirty(false);
+    setChangeLog([]);
     dispatch({ type: 'SET_ACTIVE_FILE', fileId });
 
     // Reset workspace data
@@ -534,6 +547,14 @@ export const PlansWorkspace: React.FC = () => {
     // Load persisted annotations, measurements, comments for this file
     loadPersistedData(fileId);
   }, [allPlans]);
+
+  const handleSelectFile = useCallback((fileId: string) => {
+    if (isDirty) {
+      setShowUnsavedModal({ action: 'switch', fileId });
+    } else {
+      doSelectFile(fileId);
+    }
+  }, [isDirty, doSelectFile]);
 
   const loadPersistedData = async (planId: string) => {
     try {
@@ -960,20 +981,22 @@ export const PlansWorkspace: React.FC = () => {
     }
   }, [selectedPlan, objects, compareVersionList, notify]);
 
-  // ---- Version History ----
+  // ---- Version History (for the current file only) ----
 
   const handleHistory = useCallback(async () => {
     if (!selectedPlan) return;
     try {
+      // Load version history for THIS specific file (by original_filename or name within the same project)
       const { data } = await supabase.from('plans').select('*')
         .eq('project_id', selectedPlan.project_id)
-        .eq('component_id', selectedPlan.component_id)
+        .eq('name', selectedPlan.name)
         .order('version', { ascending: false })
         .limit(50);
       if (data) setVersionHistory(data);
     } catch {
       // ignore
     }
+    setVersionHistoryTab('versions');
     setShowVersionHistory(true);
   }, [selectedPlan]);
 
@@ -983,6 +1006,41 @@ export const PlansWorkspace: React.FC = () => {
     notify(`Przelaczono na wersje ${plan.version}`);
   }, [notify]);
 
+  // ---- Save changes (creates a new version snapshot) ----
+
+  const handleSave = useCallback(async () => {
+    if (!selectedPlan || !isDirty) return;
+    try {
+      // Update the plan's updated_at timestamp
+      await supabase.from('plans').update({
+        updated_at: new Date().toISOString(),
+      }).eq('id', selectedPlan.id);
+
+      // Save all annotations to DB (bulk upsert)
+      if (activeFile?.id) {
+        for (const ann of annotations) {
+          await supabase.from('plan_annotations').upsert({
+            id: ann.id,
+            plan_id: activeFile.id,
+            type: ann.type,
+            geometry: ann.geometry,
+            text: ann.text || null,
+            stroke_color: ann.strokeColor,
+            stroke_width: ann.strokeWidth,
+            created_by: ann.createdBy,
+            created_at: ann.createdAt,
+          }, { onConflict: 'id' });
+        }
+      }
+
+      setIsDirty(false);
+      setChangeLog([]);
+      notify('Zmiany zapisane');
+    } catch (err: any) {
+      notify(err.message || 'Blad zapisu', 'error');
+    }
+  }, [selectedPlan, isDirty, activeFile, annotations, notify]);
+
   // ---- Export ----
 
   const handleExport = useCallback(() => {
@@ -991,15 +1049,24 @@ export const PlansWorkspace: React.FC = () => {
 
   // ---- Back to projects ----
 
-  const handleBackToProjects = useCallback(() => {
+  const doBackToProjects = useCallback(() => {
     setSelectedProject(null);
     setSelectedPlan(null);
     setFolders([]);
     setAllPlans([]);
+    setIsDirty(false);
+    setChangeLog([]);
     dispatch({ type: 'RESET_WORKSPACE' });
-    // Re-expand portal sidebar
     window.dispatchEvent(new Event('sidebar-expand'));
   }, []);
+
+  const handleBackToProjects = useCallback(() => {
+    if (isDirty) {
+      setShowUnsavedModal({ action: 'back' });
+    } else {
+      doBackToProjects();
+    }
+  }, [isDirty, doBackToProjects]);
 
   // ---- Snapshot ----
 
@@ -1551,6 +1618,7 @@ export const PlansWorkspace: React.FC = () => {
         setCountMarkers(prev => prev.filter((_, i) => i !== idx));
       }
       setEraserHoverId(null);
+      markDirty(`Usunieto element: ${target.type}`);
       return;
     }
 
@@ -1668,10 +1736,11 @@ export const PlansWorkspace: React.FC = () => {
     };
     setMeasurements(prev => [...prev, measurement]);
     if (activeFile?.id) api.saveMeasurement(measurement, activeFile.id);
+    markDirty(`Dodano pomiar: ${measurement.value} ${measurement.unit}`);
     setIsDrawing(false);
     setDrawPoints([]);
     setCursorPt(null);
-  }, [drawPoints, ws.activeTool, activeFile, currentUser]);
+  }, [drawPoints, ws.activeTool, activeFile, currentUser, markDirty]);
 
   const handleSvgMouseUp = useCallback(() => {
     // Complete screenshot area selection
@@ -1744,10 +1813,11 @@ export const PlansWorkspace: React.FC = () => {
     };
     setAnnotations(prev => [...prev, annotation]);
     if (activeFile?.id) api.saveAnnotation(annotation, activeFile.id);
+    markDirty(`Dodano adnotacje: ${annotationType}`);
 
     setIsDrawing(false);
     setDrawPoints([]);
-  }, [isDrawing, drawPoints, ws.activeTool, strokeColor, strokeWidth, currentUser, activeFile, boxSelectStart, boxSelectEnd, annotations, isPanning, isSelectingScreenshotArea, screenshotStart, screenshotEnd, captureScreenshotArea]);
+  }, [isDrawing, drawPoints, ws.activeTool, strokeColor, strokeWidth, currentUser, activeFile, boxSelectStart, boxSelectEnd, annotations, isPanning, isSelectingScreenshotArea, screenshotStart, screenshotEnd, captureScreenshotArea, markDirty]);
 
   // ---- Text annotation submit ----
   const handleTextAnnotationSubmit = useCallback(() => {
@@ -1764,7 +1834,8 @@ export const PlansWorkspace: React.FC = () => {
     };
     setAnnotations(prev => [...prev, annotation]);
     setTextInput(null);
-  }, [textInput, strokeColor, strokeWidth, currentUser]);
+    markDirty(`Dodano tekst: "${annotation.text}"`);
+  }, [textInput, strokeColor, strokeWidth, currentUser, markDirty]);
 
   // ---- Keyboard shortcuts ----
 
@@ -1793,6 +1864,13 @@ export const PlansWorkspace: React.FC = () => {
         return;
       }
 
+      // Ctrl+S — save
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        handleSave();
+        return;
+      }
+
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
         switch (e.key.toLowerCase()) {
           case 'v': dispatch({ type: 'SET_ACTIVE_TOOL', tool: 'select' }); break;
@@ -1815,7 +1893,7 @@ export const PlansWorkspace: React.FC = () => {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [ws.isFullscreen, textInput, isDrawing, ws.activeTool, finalizeMeasurement]);
+  }, [ws.isFullscreen, textInput, isDrawing, ws.activeTool, finalizeMeasurement, handleSave]);
 
   // ---- SVG Overlay Rendering ----
 
@@ -2799,7 +2877,21 @@ export const PlansWorkspace: React.FC = () => {
             onExport={handleExport}
             onUploadNewVersion={handleImport}
             onHistory={handleHistory}
-            onDownload={() => { if (activeFile) window.open(activeFile.file_url, '_blank'); }}
+            onDownload={async () => {
+              if (!activeFile) return;
+              try {
+                const resp = await fetch(activeFile.file_url);
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = activeFile.original_filename || activeFile.name;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+              } catch { window.open(activeFile.file_url, '_blank'); }
+            }}
             filters={ws.filters}
             availableLayers={[...new Set(objects.map(o => o.layer).filter(Boolean) as string[])]}
             availableCategories={[...new Set(objects.map(o => o.category).filter(Boolean) as string[])]}
@@ -2817,47 +2909,81 @@ export const PlansWorkspace: React.FC = () => {
             pdfPage={showPdfViewer ? pdfPage : undefined}
             pdfTotalPages={showPdfViewer ? pdfTotalPages : undefined}
             onPdfPageChange={showPdfViewer ? setPdfPage : undefined}
+            hasUnsavedChanges={isDirty}
+            onSave={handleSave}
           />
         )}
 
-        {/* Version History Dropdown */}
+        {/* Version History Panel */}
         {showVersionHistory && (
-          <div className="absolute top-12 right-4 z-50 w-80 bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden">
+          <div className="absolute top-12 right-4 z-50 w-96 bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden">
             <div className="flex items-center justify-between px-4 py-2.5 bg-slate-50 border-b border-slate-200">
-              <span className="text-xs font-bold text-slate-700">Historia wersji</span>
+              <span className="text-xs font-bold text-slate-700">Historia — {selectedPlan?.name}</span>
               <button onClick={() => setShowVersionHistory(false)} className="p-1 hover:bg-slate-200 rounded">
                 <X className="w-3.5 h-3.5 text-slate-500" />
               </button>
             </div>
-            <div className="max-h-64 overflow-y-auto">
-              {versionHistory.length === 0 ? (
-                <p className="px-4 py-6 text-xs text-slate-400 text-center">Brak historii wersji</p>
-              ) : versionHistory.map(v => (
-                <div
-                  key={v.id}
-                  className={`px-4 py-2.5 border-b border-slate-50 cursor-pointer transition-colors hover:bg-blue-50 ${
-                    v.id === selectedPlan?.id ? 'bg-blue-50 border-l-2 border-l-blue-500' : ''
-                  }`}
-                  onClick={() => handleSwitchVersion(v)}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-medium text-slate-800">
-                      v{v.version} — {v.name}
-                    </span>
-                    {v.is_current_version && (
-                      <span className="text-[9px] px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full">aktualna</span>
+            {/* Tabs */}
+            <div className="flex border-b border-slate-200">
+              <button
+                onClick={() => setVersionHistoryTab('versions')}
+                className={`flex-1 py-2 text-xs font-medium transition ${versionHistoryTab === 'versions' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-slate-500 hover:text-slate-700'}`}
+              >Wersje</button>
+              <button
+                onClick={() => setVersionHistoryTab('changelog')}
+                className={`flex-1 py-2 text-xs font-medium transition ${versionHistoryTab === 'changelog' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-slate-500 hover:text-slate-700'}`}
+              >Dziennik zmian{changeLog.length > 0 && <span className="ml-1 px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded-full text-[9px]">{changeLog.length}</span>}</button>
+            </div>
+            {/* Tab content */}
+            <div className="max-h-72 overflow-y-auto">
+              {versionHistoryTab === 'versions' ? (
+                versionHistory.length === 0 ? (
+                  <p className="px-4 py-6 text-xs text-slate-400 text-center">Brak historii wersji</p>
+                ) : versionHistory.map(v => (
+                  <div
+                    key={v.id}
+                    className={`px-4 py-2.5 border-b border-slate-50 flex items-center gap-3 ${
+                      v.id === selectedPlan?.id ? 'bg-blue-50 border-l-2 border-l-blue-500' : ''
+                    }`}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-medium text-slate-800">v{v.version}</span>
+                        {v.is_current_version && (
+                          <span className="text-[9px] px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full">aktualna</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-[10px] text-slate-400">
+                          {new Date(v.created_at).toLocaleDateString('pl-PL')} {new Date(v.created_at).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                        {v.file_size && (
+                          <span className="text-[10px] text-slate-400">{(v.file_size / 1024 / 1024).toFixed(1)} MB</span>
+                        )}
+                      </div>
+                    </div>
+                    {v.id !== selectedPlan?.id && (
+                      <button
+                        onClick={() => handleSwitchVersion(v)}
+                        className="text-[10px] px-2.5 py-1 bg-slate-100 hover:bg-blue-100 text-slate-600 hover:text-blue-700 rounded-lg transition font-medium"
+                      >Otworz</button>
                     )}
                   </div>
-                  <div className="flex items-center gap-2 mt-0.5">
-                    <span className="text-[10px] text-slate-400">
-                      {new Date(v.created_at).toLocaleDateString('pl-PL')} {new Date(v.created_at).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                    {v.file_size && (
-                      <span className="text-[10px] text-slate-400">{(v.file_size / 1024 / 1024).toFixed(1)} MB</span>
-                    )}
+                ))
+              ) : (
+                changeLog.length === 0 ? (
+                  <p className="px-4 py-6 text-xs text-slate-400 text-center">Brak zmian w tej sesji</p>
+                ) : (
+                  <div className="divide-y divide-slate-50">
+                    {changeLog.map((entry, i) => (
+                      <div key={i} className="px-4 py-2 flex items-center gap-3">
+                        <span className="text-[10px] text-slate-400 font-mono w-14 flex-shrink-0">{entry.time}</span>
+                        <span className="text-[11px] text-slate-600">{entry.action}</span>
+                      </div>
+                    ))}
                   </div>
-                </div>
-              ))}
+                )
+              )}
             </div>
           </div>
         )}
@@ -3575,6 +3701,47 @@ export const PlansWorkspace: React.FC = () => {
           </div>
         );
       })()}
+
+      {/* Unsaved changes modal */}
+      {showUnsavedModal && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-2xl shadow-2xl w-96 overflow-hidden">
+            <div className="px-6 py-5">
+              <h3 className="text-sm font-bold text-slate-800 mb-1">Niezapisane zmiany</h3>
+              <p className="text-xs text-slate-500">Masz niezapisane zmiany w tym pliku. Co chcesz zrobic?</p>
+            </div>
+            <div className="flex gap-2 px-6 pb-5">
+              <button
+                onClick={() => {
+                  setShowUnsavedModal(null);
+                }}
+                className="flex-1 px-3 py-2 text-xs font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition"
+              >Anuluj</button>
+              <button
+                onClick={() => {
+                  const modal = showUnsavedModal;
+                  setShowUnsavedModal(null);
+                  setIsDirty(false);
+                  setChangeLog([]);
+                  if (modal.action === 'back') doBackToProjects();
+                  else if (modal.action === 'switch' && modal.fileId) doSelectFile(modal.fileId);
+                }}
+                className="flex-1 px-3 py-2 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition"
+              >Nie zapisuj</button>
+              <button
+                onClick={async () => {
+                  const modal = showUnsavedModal;
+                  await handleSave();
+                  setShowUnsavedModal(null);
+                  if (modal.action === 'back') doBackToProjects();
+                  else if (modal.action === 'switch' && modal.fileId) doSelectFile(modal.fileId);
+                }}
+                className="flex-1 px-3 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition"
+              >Zapisz</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Notification toast */}
       {notification && (

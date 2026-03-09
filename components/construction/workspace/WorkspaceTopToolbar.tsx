@@ -4,7 +4,7 @@ import {
   RefreshCw, Sparkles, BookOpen, GitCompare, Download, BarChart3,
   Filter, Layers, Eye, EyeOff, Upload, History, Loader2,
   PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ChevronDown,
-  Pencil, Check, ArrowLeft, Box,
+  Pencil, Check, ArrowLeft, Box, Save,
 } from 'lucide-react';
 import type { ViewerMode, AsyncStatus, WorkspaceFilters } from './WorkspaceTypes';
 
@@ -68,6 +68,9 @@ interface WorkspaceTopToolbarProps {
   // Open in Autodesk
   canOpenInAutodesk?: boolean;
   onOpenInAutodesk?: () => void;
+  // Save
+  hasUnsavedChanges?: boolean;
+  onSave?: () => void;
 }
 
 const MODE_OPTIONS: { mode: ViewerMode; label: string; icon: React.ReactNode }[] = [
@@ -272,19 +275,20 @@ export const WorkspaceTopToolbar: React.FC<WorkspaceTopToolbarProps> = (props) =
         )}
       </div>
 
-      {/* Filters */}
-      <button
-        onClick={() => setShowFilters(!showFilters)}
-        className={`p-1.5 rounded-lg transition ${showFilters ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100 text-slate-500'}`}
-        title="Filtry"
-      >
-        <Filter className="w-4 h-4" />
-      </button>
+      {/* Filters — positioned after mode switcher */}
+      <div className="relative">
+        <button
+          onClick={() => setShowFilters(!showFilters)}
+          className={`p-1.5 rounded-lg transition ${showFilters ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100 text-slate-500'}`}
+          title="Filtry"
+        >
+          <Filter className="w-4 h-4" />
+        </button>
 
       {showFilters && (
         <>
           <div className="fixed inset-0 z-[200]" onClick={() => setShowFilters(false)} />
-          <div className="absolute top-full right-20 mt-1 w-80 bg-white border border-slate-200 rounded-xl shadow-xl z-[201] p-3 space-y-3 max-h-[70vh] overflow-y-auto">
+          <div className="absolute top-full left-0 mt-1 w-80 bg-white border border-slate-200 rounded-xl shadow-xl z-[201] p-3 space-y-3 max-h-[70vh] overflow-y-auto">
             <h4 className="text-xs font-bold text-slate-700">Filtry wyswietlania</h4>
 
             {/* Search within objects */}
@@ -376,8 +380,29 @@ export const WorkspaceTopToolbar: React.FC<WorkspaceTopToolbarProps> = (props) =
           </div>
         </>
       )}
+      </div>
 
       <div className="flex-1 min-w-[8px]" />
+
+      {/* Save button — highlighted when unsaved changes */}
+      {props.onSave && (
+        <button
+          onClick={props.onSave}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition ${
+            props.hasUnsavedChanges
+              ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-sm'
+              : 'bg-slate-100 text-slate-400 cursor-default'
+          }`}
+          disabled={!props.hasUnsavedChanges}
+          title={props.hasUnsavedChanges ? 'Zapisz zmiany (Ctrl+S)' : 'Brak zmian do zapisania'}
+        >
+          <Save className="w-3.5 h-3.5" />
+          <span className="hidden xl:inline">Zapisz</span>
+          {props.hasUnsavedChanges && <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />}
+        </button>
+      )}
+
+      <div className="w-px h-5 bg-slate-200 mx-0.5" />
 
       {/* Right side actions */}
       <button onClick={props.onHistory} className="p-1 hover:bg-slate-100 rounded-lg text-slate-500" title="Historia wersji">
