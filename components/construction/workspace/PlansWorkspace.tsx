@@ -192,6 +192,9 @@ export const PlansWorkspace: React.FC = () => {
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editingCommentText, setEditingCommentText] = useState('');
 
+  // ---- Eraser hover highlight ----
+  const [eraserHoverId, setEraserHoverId] = useState<string | null>(null);
+
   // ---- Hover tooltip ----
   const [hoverTooltip, setHoverTooltip] = useState<{ x: number; y: number; obj: DrawingObject } | null>(null);
 
@@ -1105,6 +1108,8 @@ export const PlansWorkspace: React.FC = () => {
         y: pendingPhotoPoint.y,
         url: urlData.publicUrl,
         label: file.name,
+        authorName: `${currentUser?.first_name || ''} ${currentUser?.last_name || ''}`.trim() || 'User',
+        createdAt: new Date().toISOString(),
       };
       setPhotoPins(prev => [...prev, pin]);
 
@@ -1118,6 +1123,7 @@ export const PlansWorkspace: React.FC = () => {
         created_by: currentUser?.id,
       });
 
+      dispatch({ type: 'SET_ACTIVE_TOOL', tool: 'select' });
       notify('Zdjecie dodane');
     } catch (err: any) {
       notify(err.message || 'Blad przesylania zdjecia', 'error');
@@ -1312,6 +1318,82 @@ export const PlansWorkspace: React.FC = () => {
       'measure-area', 'measure-polyline', 'count-marker', 'erase', 'comment'].includes(tool);
   };
 
+  // Helper: find nearest element at point for eraser
+  const findNearestElement = useCallback((pt: DrawPoint, threshold: number = 30): { type: 'annotation' | 'measurement' | 'comment' | 'photo' | 'count'; id: string } | null => {
+    let bestDist = threshold;
+    let best: { type: 'annotation' | 'measurement' | 'comment' | 'photo' | 'count'; id: string } | null = null;
+
+    // Check annotations
+    for (const ann of annotations) {
+      const geom = ann.geometry;
+      if (!geom?.points?.length) continue;
+      for (const p of geom.points) {
+        const d = Math.sqrt((p.x - pt.x) ** 2 + (p.y - pt.y) ** 2);
+        if (d < bestDist) { bestDist = d; best = { type: 'annotation', id: ann.id }; }
+      }
+      // For shapes (rect, ellipse, cloud), also check edges
+      if (['rectangle', 'ellipse', 'issue-cloud'].includes(ann.type) && geom.points.length >= 2) {
+        const [p0, p1] = geom.points;
+        const cx = (p0.x + p1.x) / 2, cy = (p0.y + p1.y) / 2;
+        const hw = Math.abs(p1.x - p0.x) / 2, hh = Math.abs(p1.y - p0.y) / 2;
+        // Check if near any edge
+        const dx = Math.abs(pt.x - cx), dy = Math.abs(pt.y - cy);
+        if ((Math.abs(dx - hw) < threshold && dy <= hh + threshold) || (Math.abs(dy - hh) < threshold && dx <= hw + threshold)) {
+          const d = Math.min(Math.abs(dx - hw), Math.abs(dy - hh));
+          if (d < bestDist) { bestDist = d; best = { type: 'annotation', id: ann.id }; }
+        }
+      }
+      // For lines with many points, check segments
+      if (geom.points.length >= 2 && ['freehand', 'line', 'arrow'].includes(ann.type)) {
+        for (let i = 0; i < geom.points.length - 1; i++) {
+          const a = geom.points[i], b = geom.points[i + 1];
+          const d = distToSegment(pt, a, b);
+          if (d < bestDist) { bestDist = d; best = { type: 'annotation', id: ann.id }; }
+        }
+      }
+    }
+    // Check measurements
+    for (const m of measurements) {
+      if (!m.points?.length) continue;
+      for (let i = 0; i < m.points.length - 1; i++) {
+        const d = distToSegment(pt, m.points[i], m.points[i + 1]);
+        if (d < bestDist) { bestDist = d; best = { type: 'measurement', id: m.id }; }
+      }
+      for (const p of m.points) {
+        const d = Math.sqrt((p.x - pt.x) ** 2 + (p.y - pt.y) ** 2);
+        if (d < bestDist) { bestDist = d; best = { type: 'measurement', id: m.id }; }
+      }
+    }
+    // Check comments
+    for (const c of comments) {
+      if (c.positionX == null || c.positionY == null) continue;
+      const d = Math.sqrt((c.positionX - pt.x) ** 2 + (c.positionY - pt.y) ** 2);
+      if (d < bestDist) { bestDist = d; best = { type: 'comment', id: c.id }; }
+    }
+    // Check photo pins
+    for (const p of photoPins) {
+      const d = Math.sqrt((p.x - pt.x) ** 2 + (p.y - pt.y) ** 2);
+      if (d < bestDist) { bestDist = d; best = { type: 'photo', id: p.id }; }
+    }
+    // Check count markers
+    for (let i = 0; i < countMarkers.length; i++) {
+      const p = countMarkers[i];
+      const d = Math.sqrt((p.x - pt.x) ** 2 + (p.y - pt.y) ** 2);
+      if (d < bestDist) { bestDist = d; best = { type: 'count', id: `count-${i}` }; }
+    }
+    return best;
+  }, [annotations, measurements, comments, photoPins, countMarkers]);
+
+  // Distance from point to line segment
+  const distToSegment = (pt: DrawPoint, a: DrawPoint, b: DrawPoint): number => {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq === 0) return Math.sqrt((pt.x - a.x) ** 2 + (pt.y - a.y) ** 2);
+    let t = ((pt.x - a.x) * dx + (pt.y - a.y) * dy) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+    return Math.sqrt((pt.x - (a.x + t * dx)) ** 2 + (pt.y - (a.y + t * dy)) ** 2);
+  };
+
   const handleSvgMouseDown = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
     const pt = getOverlayCoords(e);
     if (!pt) return;
@@ -1342,6 +1424,22 @@ export const PlansWorkspace: React.FC = () => {
 
     // Select tool: start box selection
     if (ws.activeTool === 'select') {
+      // First check if clicking on a comment pin or photo pin
+      const clickedComment = comments.find(c =>
+        c.positionX != null && c.positionY != null &&
+        Math.sqrt((c.positionX! - pt.x) ** 2 + (c.positionY! - pt.y) ** 2) < 20
+      );
+      if (clickedComment) {
+        setCommentModal({ mode: 'view', commentId: clickedComment.id });
+        return;
+      }
+      const clickedPin = photoPins.find(p => Math.sqrt((p.x - pt.x) ** 2 + (p.y - pt.y) ** 2) < 20);
+      if (clickedPin) {
+        const idx = photoPins.indexOf(clickedPin);
+        setShowPhotoGallery({ pinId: clickedPin.id });
+        setGalleryIndex(idx >= 0 ? idx : 0);
+        return;
+      }
       setBoxSelectStart({ x: pt.x, y: pt.y });
       setBoxSelectEnd(null);
       return;
@@ -1368,7 +1466,7 @@ export const PlansWorkspace: React.FC = () => {
       // Check if clicking on existing comment pin
       const clickedComment = comments.find(c =>
         c.positionX != null && c.positionY != null &&
-        Math.sqrt((c.positionX - pt.x) ** 2 + (c.positionY - pt.y) ** 2) < 20
+        Math.sqrt((c.positionX! - pt.x) ** 2 + (c.positionY! - pt.y) ** 2) < 20
       );
       if (clickedComment) {
         setCommentModal({ mode: 'view', commentId: clickedComment.id });
@@ -1385,8 +1483,9 @@ export const PlansWorkspace: React.FC = () => {
         Math.sqrt((p.x - pt.x) ** 2 + (p.y - pt.y) ** 2) < 20
       );
       if (clickedPin) {
+        const idx = photoPins.indexOf(clickedPin);
         setShowPhotoGallery({ pinId: clickedPin.id });
-        setGalleryIndex(0);
+        setGalleryIndex(idx >= 0 ? idx : 0);
       } else {
         setPendingPhotoPoint(pt);
         setShowPhotoModal(true);
@@ -1395,47 +1494,45 @@ export const PlansWorkspace: React.FC = () => {
     }
 
     if (ws.activeTool === 'erase') {
-      // Find and remove nearest annotation — check ALL points, not just first
-      const threshold = 25;
-      let removedAnn = false;
-      setAnnotations(prev => {
-        const remaining = prev.filter(ann => {
-          const geom = ann.geometry;
-          if (!geom || !geom.points || geom.points.length === 0) return true;
-          // Check if click is near ANY point of the annotation
-          const isNear = geom.points.some((p: DrawPoint) => {
-            const dist = Math.sqrt((p.x - pt.x) ** 2 + (p.y - pt.y) ** 2);
-            return dist <= threshold;
-          });
-          if (isNear) removedAnn = true;
-          return !isNear;
-        });
-        return remaining;
-      });
-      // Also check measurements
-      if (!removedAnn) {
-        setMeasurements(prev => prev.filter(m => {
-          if (!m.points || m.points.length === 0) return true;
-          return !m.points.some((p: DrawPoint) => Math.sqrt((p.x - pt.x) ** 2 + (p.y - pt.y) ** 2) <= threshold);
-        }));
+      const target = findNearestElement(pt);
+      if (!target) return;
+      if (target.type === 'annotation') {
+        setAnnotations(prev => prev.filter(a => a.id !== target.id));
+      } else if (target.type === 'measurement') {
+        setMeasurements(prev => prev.filter(m => m.id !== target.id));
+      } else if (target.type === 'comment') {
+        setComments(prev => prev.filter(c => c.id !== target.id));
+        if (activeFile?.id) supabase.from('plan_comments').delete().eq('id', target.id).then(() => {});
+      } else if (target.type === 'photo') {
+        setPhotoPins(prev => prev.filter(p => p.id !== target.id));
+      } else if (target.type === 'count') {
+        const idx = parseInt(target.id.replace('count-', ''));
+        setCountMarkers(prev => prev.filter((_, i) => i !== idx));
       }
-      // Also check comments
-      if (!removedAnn) {
-        const removedComment = comments.find(c =>
-          c.positionX != null && c.positionY != null &&
-          Math.sqrt((c.positionX - pt.x) ** 2 + (c.positionY - pt.y) ** 2) <= threshold
-        );
-        if (removedComment) {
-          setComments(prev => prev.filter(c => c.id !== removedComment.id));
-          if (activeFile?.id) supabase.from('plan_comments').delete().eq('id', removedComment.id).then(() => {});
-        }
+      setEraserHoverId(null);
+      return;
+    }
+
+    // Polyline / Area measurement — click-by-click mode
+    if (ws.activeTool === 'measure-length' || ws.activeTool === 'measure-area') {
+      if (isDrawing) {
+        // Add next point
+        setDrawPoints(prev => [...prev, pt]);
+      } else {
+        // Start new polyline
+        setIsDrawing(true);
+        setDrawPoints([pt]);
       }
       return;
     }
 
+    // Issue-cloud: drag-based (start + end)
     setIsDrawing(true);
     setDrawPoints([pt]);
-  }, [ws.activeTool, getOverlayCoords, currentUser, activeFile]);
+  }, [ws.activeTool, getOverlayCoords, currentUser, activeFile, comments, photoPins, findNearestElement, isDrawing, isSelectingScreenshotArea, isCalibrating]);
+
+  // Track current mouse position for polyline cursor line
+  const [cursorPt, setCursorPt] = useState<DrawPoint | null>(null);
 
   const handleSvgMouseMove = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
     // Screenshot area selection
@@ -1459,6 +1556,19 @@ export const PlansWorkspace: React.FC = () => {
     const pt = getOverlayCoords(e);
     if (!pt) return;
 
+    // Eraser hover highlight
+    if (ws.activeTool === 'erase') {
+      const target = findNearestElement(pt);
+      setEraserHoverId(target ? target.id : null);
+      return;
+    }
+
+    // Track cursor for polyline preview
+    if ((ws.activeTool === 'measure-length' || ws.activeTool === 'measure-area') && isDrawing) {
+      setCursorPt(pt);
+      return;
+    }
+
     // Box selection drag
     if (ws.activeTool === 'select' && boxSelectStart) {
       setBoxSelectEnd({ x: pt.x, y: pt.y });
@@ -1467,14 +1577,60 @@ export const PlansWorkspace: React.FC = () => {
 
     if (!isDrawing) return;
 
-    if (ws.activeTool === 'pen' || ws.activeTool === 'highlighter' || ws.activeTool === 'measure-area' || ws.activeTool === 'measure-length') {
-      // Freehand / polyline tools — accumulate points
+    if (ws.activeTool === 'pen' || ws.activeTool === 'highlighter') {
+      // Freehand tools — accumulate points
       setDrawPoints(prev => [...prev, pt]);
     } else {
       // For shapes, only track start + current
       setDrawPoints(prev => [prev[0], pt]);
     }
-  }, [isDrawing, ws.activeTool, getOverlayCoords, boxSelectStart, isPanning, panStart, isSelectingScreenshotArea, screenshotStart]);
+  }, [isDrawing, ws.activeTool, getOverlayCoords, boxSelectStart, isPanning, panStart, isSelectingScreenshotArea, screenshotStart, findNearestElement]);
+
+  // Finalize polyline/area measurement (called from Enter key or double-click)
+  const finalizeMeasurement = useCallback(() => {
+    if (drawPoints.length < 2) { setIsDrawing(false); setDrawPoints([]); setCursorPt(null); return; }
+    const tool = ws.activeTool;
+    const scaleFactor = activeFile?.scale_ratio || 1;
+    let realValue: number;
+    let unit: string;
+    let measureType: 'length' | 'area';
+    const pts = [...drawPoints];
+
+    if (tool === 'measure-area') {
+      if (pts.length >= 3) pts.push(pts[0]);
+      let pixelArea = 0;
+      for (let i = 0; i < pts.length - 1; i++) {
+        pixelArea += pts[i].x * pts[i + 1].y - pts[i + 1].x * pts[i].y;
+      }
+      pixelArea = Math.abs(pixelArea) / 2;
+      realValue = Math.round(pixelArea * scaleFactor * scaleFactor) / 100;
+      unit = 'm²';
+      measureType = 'area';
+    } else {
+      let totalPixelDist = 0;
+      for (let i = 0; i < pts.length - 1; i++) {
+        totalPixelDist += Math.sqrt((pts[i + 1].x - pts[i].x) ** 2 + (pts[i + 1].y - pts[i].y) ** 2);
+      }
+      realValue = Math.round(totalPixelDist * scaleFactor * 100) / 100;
+      unit = 'mm';
+      measureType = 'length';
+    }
+
+    const measurement: MeasurementItem = {
+      id: `meas-${Date.now()}`,
+      type: measureType,
+      value: realValue,
+      unit,
+      points: pts,
+      createdBy: currentUser?.id || '',
+      createdAt: new Date().toISOString(),
+    };
+    setMeasurements(prev => [...prev, measurement]);
+    if (activeFile?.id) api.saveMeasurement(measurement, activeFile.id);
+    setIsDrawing(false);
+    setDrawPoints([]);
+    setCursorPt(null);
+  }, [drawPoints, ws.activeTool, activeFile, currentUser]);
 
   const handleSvgMouseUp = useCallback(() => {
     // Complete screenshot area selection
@@ -1500,7 +1656,6 @@ export const PlansWorkspace: React.FC = () => {
       const maxX = Math.max(boxSelectStart.x, boxSelectEnd.x);
       const minY = Math.min(boxSelectStart.y, boxSelectEnd.y);
       const maxY = Math.max(boxSelectStart.y, boxSelectEnd.y);
-      // Select annotations within box
       const selectedIds = annotations
         .filter(a => {
           const pts = a.geometry?.points || [];
@@ -1517,6 +1672,11 @@ export const PlansWorkspace: React.FC = () => {
     setBoxSelectStart(null);
     setBoxSelectEnd(null);
 
+    // Polyline/area measurement: don't finalize on mouseUp (they use click-by-click)
+    if (ws.activeTool === 'measure-length' || ws.activeTool === 'measure-area') {
+      return;
+    }
+
     if (!isDrawing || drawPoints.length < 2) {
       setIsDrawing(false);
       setDrawPoints([]);
@@ -1532,60 +1692,17 @@ export const PlansWorkspace: React.FC = () => {
     else if (tool === 'highlighter') annotationType = 'freehand';
     else if (tool === 'issue-cloud') annotationType = 'issue-cloud';
 
-    if (['measure-length', 'measure-area', 'measure-polyline'].includes(tool)) {
-      const scaleFactor = activeFile?.scale_ratio || 1;
-      let realValue: number;
-      let unit: string;
-      let measureType: 'length' | 'area';
-      const pts = [...drawPoints];
-
-      if (tool === 'measure-area') {
-        // Close the contour — add first point to end
-        if (pts.length >= 3) pts.push(pts[0]);
-        // Calculate area using Shoelace formula (in pixels), then scale
-        let pixelArea = 0;
-        for (let i = 0; i < pts.length - 1; i++) {
-          pixelArea += pts[i].x * pts[i + 1].y - pts[i + 1].x * pts[i].y;
-        }
-        pixelArea = Math.abs(pixelArea) / 2;
-        realValue = Math.round(pixelArea * scaleFactor * scaleFactor) / 100; // convert mm2 to cm2 roughly
-        unit = 'm2';
-        measureType = 'area';
-      } else {
-        // Length: sum all segment lengths for polyline
-        let totalPixelDist = 0;
-        for (let i = 0; i < pts.length - 1; i++) {
-          totalPixelDist += Math.sqrt((pts[i + 1].x - pts[i].x) ** 2 + (pts[i + 1].y - pts[i].y) ** 2);
-        }
-        realValue = Math.round(totalPixelDist * scaleFactor * 100) / 100;
-        unit = 'mm';
-        measureType = 'length';
-      }
-
-      const measurement: MeasurementItem = {
-        id: `meas-${Date.now()}`,
-        type: measureType,
-        value: realValue,
-        unit,
-        points: pts,
-        createdBy: currentUser?.id || '',
-        createdAt: new Date().toISOString(),
-      };
-      setMeasurements(prev => [...prev, measurement]);
-      if (activeFile?.id) api.saveMeasurement(measurement, activeFile.id);
-    } else {
-      const annotation: AnnotationItem = {
-        id: `ann-${Date.now()}`,
-        type: annotationType,
-        geometry: { points: [...drawPoints] },
-        strokeColor: tool === 'highlighter' ? '#fbbf24' : strokeColor,
-        strokeWidth: tool === 'highlighter' ? 12 : strokeWidth,
-        createdBy: currentUser?.id || '',
-        createdAt: new Date().toISOString(),
-      };
-      setAnnotations(prev => [...prev, annotation]);
-      if (activeFile?.id) api.saveAnnotation(annotation, activeFile.id);
-    }
+    const annotation: AnnotationItem = {
+      id: `ann-${Date.now()}`,
+      type: annotationType,
+      geometry: { points: [...drawPoints] },
+      strokeColor: tool === 'highlighter' ? '#fbbf24' : strokeColor,
+      strokeWidth: tool === 'highlighter' ? 12 : strokeWidth,
+      createdBy: currentUser?.id || '',
+      createdAt: new Date().toISOString(),
+    };
+    setAnnotations(prev => [...prev, annotation]);
+    if (activeFile?.id) api.saveAnnotation(annotation, activeFile.id);
 
     setIsDrawing(false);
     setDrawPoints([]);
@@ -1615,7 +1732,20 @@ export const PlansWorkspace: React.FC = () => {
       const tag = (e.target as HTMLElement).tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
+      // Enter finalizes polyline/area measurement
+      if (e.key === 'Enter' && isDrawing && (ws.activeTool === 'measure-length' || ws.activeTool === 'measure-area')) {
+        finalizeMeasurement();
+        return;
+      }
+
       if (e.key === 'Escape') {
+        // Cancel polyline drawing
+        if (isDrawing && (ws.activeTool === 'measure-length' || ws.activeTool === 'measure-area')) {
+          setIsDrawing(false);
+          setDrawPoints([]);
+          setCursorPt(null);
+          return;
+        }
         if (textInput) { setTextInput(null); return; }
         if (ws.isFullscreen) { dispatch({ type: 'TOGGLE_FULLSCREEN' }); return; }
         dispatch({ type: 'SET_ACTIVE_TOOL', tool: 'select' });
@@ -1644,7 +1774,7 @@ export const PlansWorkspace: React.FC = () => {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [ws.isFullscreen, textInput]);
+  }, [ws.isFullscreen, textInput, isDrawing, ws.activeTool, finalizeMeasurement]);
 
   // ---- SVG Overlay Rendering ----
 
@@ -1652,6 +1782,9 @@ export const PlansWorkspace: React.FC = () => {
     const parts: React.ReactNode[] = [];
 
     // Existing annotations
+    // Eraser highlight helper
+    const isEraseHovered = (id: string) => ws.activeTool === 'erase' && eraserHoverId === id;
+
     for (const ann of annotations) {
       const pts = ann.geometry?.points as DrawPoint[] | undefined;
       if (!pts || pts.length === 0) continue;
@@ -1659,14 +1792,17 @@ export const PlansWorkspace: React.FC = () => {
       const key = ann.id;
       const sc = ann.strokeColor;
       const sw = ann.strokeWidth;
+      const hovered = isEraseHovered(ann.id);
+      const hoverFilter = hovered ? 'drop-shadow(0 0 6px rgba(239,68,68,0.8))' : undefined;
+      const hoverOpacity = hovered ? 0.5 : undefined;
 
       switch (ann.type) {
         case 'freehand': {
           if (pts.length < 2) break;
           const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
           parts.push(
-            <path key={key} d={d} stroke={sc} strokeWidth={sw} fill="none" strokeLinecap="round" strokeLinejoin="round"
-              opacity={sw > 8 ? 0.4 : 1} />
+            <path key={key} d={d} stroke={hovered ? '#ef4444' : sc} strokeWidth={sw} fill="none" strokeLinecap="round" strokeLinejoin="round"
+              opacity={hoverOpacity ?? (sw > 8 ? 0.4 : 1)} style={{ filter: hoverFilter }} />
           );
           break;
         }
@@ -1676,7 +1812,7 @@ export const PlansWorkspace: React.FC = () => {
           const y = Math.min(pts[0].y, pts[1].y);
           const w = Math.abs(pts[1].x - pts[0].x);
           const h = Math.abs(pts[1].y - pts[0].y);
-          parts.push(<rect key={key} x={x} y={y} width={w} height={h} stroke={sc} strokeWidth={sw} fill="none" />);
+          parts.push(<rect key={key} x={x} y={y} width={w} height={h} stroke={hovered ? '#ef4444' : sc} strokeWidth={sw} fill="none" opacity={hoverOpacity} style={{ filter: hoverFilter }} />);
           break;
         }
         case 'ellipse': {
@@ -1685,7 +1821,7 @@ export const PlansWorkspace: React.FC = () => {
           const cy = (pts[0].y + pts[1].y) / 2;
           const rx = Math.abs(pts[1].x - pts[0].x) / 2;
           const ry = Math.abs(pts[1].y - pts[0].y) / 2;
-          parts.push(<ellipse key={key} cx={cx} cy={cy} rx={rx} ry={ry} stroke={sc} strokeWidth={sw} fill="none" />);
+          parts.push(<ellipse key={key} cx={cx} cy={cy} rx={rx} ry={ry} stroke={hovered ? '#ef4444' : sc} strokeWidth={sw} fill="none" opacity={hoverOpacity} style={{ filter: hoverFilter }} />);
           break;
         }
         case 'arrow':
@@ -1693,20 +1829,20 @@ export const PlansWorkspace: React.FC = () => {
           if (pts.length < 2) break;
           parts.push(
             <line key={key} x1={pts[0].x} y1={pts[0].y} x2={pts[1].x} y2={pts[1].y}
-              stroke={sc} strokeWidth={sw}
-              markerEnd={ann.type === 'arrow' ? 'url(#arrowhead)' : undefined} />
+              stroke={hovered ? '#ef4444' : sc} strokeWidth={sw}
+              markerEnd={ann.type === 'arrow' ? 'url(#arrowhead)' : undefined} opacity={hoverOpacity} style={{ filter: hoverFilter }} />
           );
           break;
         }
         case 'text':
         case 'callout': {
           parts.push(
-            <g key={key}>
+            <g key={key} opacity={hoverOpacity} style={{ filter: hoverFilter }}>
               {ann.type === 'callout' && (
                 <rect x={pts[0].x - 4} y={pts[0].y - 16} width={(ann.text?.length || 1) * 8 + 8} height={22}
-                  rx={4} fill="white" stroke={sc} strokeWidth={1} />
+                  rx={4} fill="white" stroke={hovered ? '#ef4444' : sc} strokeWidth={1} />
               )}
-              <text x={pts[0].x} y={pts[0].y} fill={sc} fontSize={14} fontFamily="sans-serif">
+              <text x={pts[0].x} y={pts[0].y} fill={hovered ? '#ef4444' : sc} fontSize={14} fontFamily="sans-serif">
                 {ann.text}
               </text>
             </g>
@@ -1719,40 +1855,43 @@ export const PlansWorkspace: React.FC = () => {
           const y = Math.min(pts[0].y, pts[1].y);
           const w = Math.abs(pts[1].x - pts[0].x);
           const h = Math.abs(pts[1].y - pts[0].y);
-          // Cloud shape with scalloped edges
-          const scallops = Math.max(4, Math.round((w + h) / 30));
-          let d = '';
-          // Top edge
-          for (let i = 0; i < scallops; i++) {
-            const sx = x + (w / scallops) * i;
-            const ex = x + (w / scallops) * (i + 1);
-            const r = (ex - sx) / 2;
-            d += `${i === 0 ? 'M' : ''} ${sx} ${y} A ${r} ${r * 0.7} 0 0 1 ${ex} ${y} `;
+          if (w < 5 || h < 5) break;
+          // Cloud shape with scalloped edges — proper SVG path
+          const numTop = Math.max(3, Math.round(w / 25));
+          const numSide = Math.max(2, Math.round(h / 25));
+          let d = `M ${x} ${y}`;
+          // Top edge (left to right)
+          const segW = w / numTop;
+          for (let i = 0; i < numTop; i++) {
+            const sx = x + segW * i;
+            const ex = x + segW * (i + 1);
+            const midX = (sx + ex) / 2;
+            d += ` Q ${midX} ${y - segW * 0.4} ${ex} ${y}`;
           }
-          // Right edge
-          const rScallops = Math.max(2, Math.round(h / 30));
-          for (let i = 0; i < rScallops; i++) {
-            const sy = y + (h / rScallops) * i;
-            const ey = y + (h / rScallops) * (i + 1);
-            const r = (ey - sy) / 2;
-            d += `A ${r * 0.7} ${r} 0 0 1 ${x + w} ${ey} `;
+          // Right edge (top to bottom)
+          const segH = h / numSide;
+          for (let i = 0; i < numSide; i++) {
+            const sy = y + segH * i;
+            const ey = y + segH * (i + 1);
+            const midY = (sy + ey) / 2;
+            d += ` Q ${x + w + segH * 0.4} ${midY} ${x + w} ${ey}`;
           }
-          // Bottom edge (reverse)
-          for (let i = scallops - 1; i >= 0; i--) {
-            const sx = x + (w / scallops) * (i + 1);
-            const ex = x + (w / scallops) * i;
-            const r = (sx - ex) / 2;
-            d += `A ${r} ${r * 0.7} 0 0 1 ${ex} ${y + h} `;
+          // Bottom edge (right to left)
+          for (let i = numTop - 1; i >= 0; i--) {
+            const sx = x + segW * (i + 1);
+            const ex = x + segW * i;
+            const midX = (sx + ex) / 2;
+            d += ` Q ${midX} ${y + h + segW * 0.4} ${ex} ${y + h}`;
           }
-          // Left edge (reverse)
-          for (let i = rScallops - 1; i >= 0; i--) {
-            const sy = y + (h / rScallops) * (i + 1);
-            const ey = y + (h / rScallops) * i;
-            const r = (sy - ey) / 2;
-            d += `A ${r * 0.7} ${r} 0 0 1 ${x} ${ey} `;
+          // Left edge (bottom to top)
+          for (let i = numSide - 1; i >= 0; i--) {
+            const sy = y + segH * (i + 1);
+            const ey = y + segH * i;
+            const midY = (sy + ey) / 2;
+            d += ` Q ${x - segH * 0.4} ${midY} ${x} ${ey}`;
           }
-          d += 'Z';
-          parts.push(<path key={key} d={d} stroke={sc} strokeWidth={sw} fill="rgba(239,68,68,0.08)" />);
+          d += ' Z';
+          parts.push(<path key={key} d={d} stroke={hovered ? '#ef4444' : sc} strokeWidth={sw} fill="rgba(239,68,68,0.06)" opacity={hoverOpacity} style={{ filter: hoverFilter }} />);
           break;
         }
       }
@@ -1761,18 +1900,25 @@ export const PlansWorkspace: React.FC = () => {
     // Measurements
     for (const m of measurements) {
       if (!m.points || m.points.length < 2) continue;
+      const mHovered = isEraseHovered(m.id);
+      const mColor = mHovered ? '#ef4444' : '#2563eb';
+      const mFilter = mHovered ? 'drop-shadow(0 0 6px rgba(239,68,68,0.8))' : undefined;
+      const pointStr = m.points.map(p => `${p.x},${p.y}`).join(' ');
+      // Label at midpoint of first and last
       const p0 = m.points[0];
-      const p1 = m.points[m.points.length - 1];
-      const midX = (p0.x + p1.x) / 2;
-      const midY = (p0.y + p1.y) / 2;
+      const pLast = m.points[m.points.length - 1];
+      const midX = (p0.x + pLast.x) / 2;
+      const midY = (p0.y + pLast.y) / 2;
+      // For area, show closing line
+      const isClosed = m.type === 'area';
       parts.push(
-        <g key={m.id}>
-          <line x1={p0.x} y1={p0.y} x2={p1.x} y2={p1.y}
-            stroke="#2563eb" strokeWidth={2} strokeDasharray="6 3" />
-          <circle cx={p0.x} cy={p0.y} r={4} fill="#2563eb" />
-          <circle cx={p1.x} cy={p1.y} r={4} fill="#2563eb" />
-          <rect x={midX - 30} y={midY - 12} width={60} height={18} rx={4} fill="white" stroke="#2563eb" strokeWidth={1} />
-          <text x={midX} y={midY + 2} textAnchor="middle" fontSize={11} fill="#2563eb" fontFamily="sans-serif" fontWeight="bold">
+        <g key={m.id} style={{ filter: mFilter }} opacity={mHovered ? 0.5 : 1}>
+          <polyline points={pointStr} stroke={mColor} strokeWidth={2} fill={isClosed ? 'rgba(37,99,235,0.08)' : 'none'} strokeDasharray="6 3" />
+          {m.points.map((p, i) => (
+            <circle key={`${m.id}-pt${i}`} cx={p.x} cy={p.y} r={3} fill={mColor} />
+          ))}
+          <rect x={midX - 35} y={midY - 14} width={70} height={20} rx={4} fill="white" stroke={mColor} strokeWidth={1} />
+          <text x={midX} y={midY + 2} textAnchor="middle" fontSize={11} fill={mColor} fontFamily="sans-serif" fontWeight="bold">
             {m.value} {m.unit}
           </text>
         </g>
@@ -1794,10 +1940,12 @@ export const PlansWorkspace: React.FC = () => {
     // Comment pins
     for (const c of comments) {
       if (c.positionX == null || c.positionY == null) continue;
+      const cHovered = isEraseHovered(c.id);
       parts.push(
-        <g key={`cpin-${c.id}`} style={{ cursor: 'pointer' }}>
+        <g key={`cpin-${c.id}`} style={{ cursor: 'pointer', filter: cHovered ? 'drop-shadow(0 0 6px rgba(239,68,68,0.8))' : undefined }}
+          opacity={cHovered ? 0.5 : 1}>
           <circle cx={c.positionX} cy={c.positionY} r={14}
-            fill={c.isResolved ? '#22c55e' : '#f59e0b'} stroke="white" strokeWidth={2} />
+            fill={cHovered ? '#ef4444' : c.isResolved ? '#22c55e' : '#f59e0b'} stroke="white" strokeWidth={2} />
           <text x={c.positionX} y={c.positionY + 5} textAnchor="middle" fontSize={12} fill="white" fontFamily="sans-serif" fontWeight="bold">
             💬
           </text>
@@ -1805,12 +1953,13 @@ export const PlansWorkspace: React.FC = () => {
       );
     }
 
-    // Photo pins
+    // Photo pins — no onClick here, handled by mouseDown handler
     for (const pin of photoPins) {
+      const phHovered = isEraseHovered(pin.id);
       parts.push(
-        <g key={`photo-${pin.id}`} style={{ cursor: 'pointer' }}
-          onClick={() => window.open(pin.url, '_blank')}>
-          <circle cx={pin.x} cy={pin.y} r={14} fill="#3b82f6" stroke="white" strokeWidth={2} />
+        <g key={`photo-${pin.id}`} style={{ cursor: 'pointer', filter: phHovered ? 'drop-shadow(0 0 6px rgba(239,68,68,0.8))' : undefined }}
+          opacity={phHovered ? 0.5 : 1}>
+          <circle cx={pin.x} cy={pin.y} r={14} fill={phHovered ? '#ef4444' : '#3b82f6'} stroke="white" strokeWidth={2} />
           <text x={pin.x} y={pin.y + 5} textAnchor="middle" fontSize={12} fill="white" fontFamily="sans-serif">📷</text>
           {pin.label && (
             <text x={pin.x + 18} y={pin.y + 4} fontSize={10} fill="#3b82f6" fontFamily="sans-serif">{pin.label}</text>
@@ -1838,8 +1987,8 @@ export const PlansWorkspace: React.FC = () => {
       }
     }
 
-    // Current drawing in progress
-    if (isDrawing && drawPoints.length >= 2) {
+    // Current drawing in progress (drag-based tools)
+    if (isDrawing && drawPoints.length >= 2 && !['measure-length', 'measure-area'].includes(ws.activeTool)) {
       const tool = ws.activeTool;
       if (tool === 'pen' || tool === 'highlighter') {
         const d = drawPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
@@ -1865,12 +2014,13 @@ export const PlansWorkspace: React.FC = () => {
         parts.push(<ellipse key="drawing-preview" cx={cx} cy={cy} rx={rx} ry={ry}
           stroke={strokeColor} strokeWidth={strokeWidth} fill="none" strokeDasharray="4 2" />);
       } else if (tool === 'issue-cloud') {
+        // Preview as dashed rectangle outline (no fill)
         const x = Math.min(drawPoints[0].x, drawPoints[1].x);
         const y = Math.min(drawPoints[0].y, drawPoints[1].y);
         const w = Math.abs(drawPoints[1].x - drawPoints[0].x);
         const h = Math.abs(drawPoints[1].y - drawPoints[0].y);
         parts.push(<rect key="drawing-preview" x={x} y={y} width={w} height={h}
-          stroke="#ef4444" strokeWidth={strokeWidth} fill="rgba(239,68,68,0.08)" strokeDasharray="6 3" rx={6} />);
+          stroke="#ef4444" strokeWidth={1} fill="none" strokeDasharray="6 3" rx={4} />);
       } else if (tool === 'arrow' || tool === 'line') {
         parts.push(
           <line key="drawing-preview" x1={drawPoints[0].x} y1={drawPoints[0].y}
@@ -1878,37 +2028,71 @@ export const PlansWorkspace: React.FC = () => {
             stroke={strokeColor} strokeWidth={strokeWidth} strokeDasharray="4 2"
             markerEnd={tool === 'arrow' ? 'url(#arrowhead)' : undefined} />
         );
-      } else if (tool.startsWith('measure-')) {
-        // Draw all accumulated segments for polyline measurements
-        if (drawPoints.length >= 2) {
-          const pointStr = drawPoints.map(p => `${p.x},${p.y}`).join(' ');
-          parts.push(
-            <polyline key="drawing-preview" points={pointStr}
-              stroke="#2563eb" strokeWidth={strokeWidth} fill="none" strokeDasharray="4 2" />
-          );
-          // For area measurement, show closing line
-          if (tool === 'measure-area' && drawPoints.length >= 3) {
-            parts.push(
-              <line key="measure-close" x1={drawPoints[drawPoints.length - 1].x} y1={drawPoints[drawPoints.length - 1].y}
-                x2={drawPoints[0].x} y2={drawPoints[0].y}
-                stroke="#2563eb" strokeWidth={1} strokeDasharray="2 2" opacity={0.5} />
-            );
-          }
-          // Show live measurement
-          let totalDist = 0;
-          for (let i = 0; i < drawPoints.length - 1; i++) {
-            totalDist += Math.sqrt((drawPoints[i + 1].x - drawPoints[i].x) ** 2 + (drawPoints[i + 1].y - drawPoints[i].y) ** 2);
-          }
-          const scale = activeFile?.scale_ratio || 1;
-          const last = drawPoints[drawPoints.length - 1];
-          parts.push(
-            <text key="measure-live" x={last.x + 10} y={last.y - 8}
-              fontSize={12} fill="#2563eb" fontWeight="bold" fontFamily="sans-serif">
-              {(totalDist * scale).toFixed(1)} mm
-            </text>
-          );
-        }
       }
+    }
+
+    // Click-by-click polyline/area measurement preview
+    if (isDrawing && drawPoints.length >= 1 && (ws.activeTool === 'measure-length' || ws.activeTool === 'measure-area')) {
+      // Draw placed points and segments
+      const allPts = [...drawPoints];
+      // Draw segments between placed points
+      if (allPts.length >= 2) {
+        const pointStr = allPts.map(p => `${p.x},${p.y}`).join(' ');
+        parts.push(
+          <polyline key="measure-placed" points={pointStr}
+            stroke="#2563eb" strokeWidth={2} fill="none" />
+        );
+      }
+      // Draw cursor tracking line from last point
+      if (cursorPt && allPts.length >= 1) {
+        const last = allPts[allPts.length - 1];
+        parts.push(
+          <line key="measure-cursor" x1={last.x} y1={last.y} x2={cursorPt.x} y2={cursorPt.y}
+            stroke="#2563eb" strokeWidth={1.5} strokeDasharray="4 2" />
+        );
+      }
+      // For area, show closing dashed line
+      if (ws.activeTool === 'measure-area' && allPts.length >= 2) {
+        const lastPt = cursorPt || allPts[allPts.length - 1];
+        parts.push(
+          <line key="measure-close" x1={lastPt.x} y1={lastPt.y} x2={allPts[0].x} y2={allPts[0].y}
+            stroke="#2563eb" strokeWidth={1} strokeDasharray="3 3" opacity={0.4} />
+        );
+      }
+      // Draw point markers
+      for (let i = 0; i < allPts.length; i++) {
+        parts.push(
+          <circle key={`measure-pt-${i}`} cx={allPts[i].x} cy={allPts[i].y} r={4}
+            fill="#2563eb" stroke="white" strokeWidth={1.5} />
+        );
+      }
+      // Show live total distance
+      let totalDist = 0;
+      for (let i = 0; i < allPts.length - 1; i++) {
+        totalDist += Math.sqrt((allPts[i + 1].x - allPts[i].x) ** 2 + (allPts[i + 1].y - allPts[i].y) ** 2);
+      }
+      if (cursorPt && allPts.length >= 1) {
+        const last = allPts[allPts.length - 1];
+        totalDist += Math.sqrt((cursorPt.x - last.x) ** 2 + (cursorPt.y - last.y) ** 2);
+      }
+      const scale = activeFile?.scale_ratio || 1;
+      const labelPt = cursorPt || allPts[allPts.length - 1];
+      parts.push(
+        <g key="measure-label">
+          <rect x={labelPt.x + 12} y={labelPt.y - 20} width={80} height={18} rx={4} fill="white" stroke="#2563eb" strokeWidth={1} />
+          <text x={labelPt.x + 52} y={labelPt.y - 7} textAnchor="middle"
+            fontSize={11} fill="#2563eb" fontWeight="bold" fontFamily="sans-serif">
+            {(totalDist * scale).toFixed(1)} mm
+          </text>
+        </g>
+      );
+      // Hint text
+      parts.push(
+        <text key="measure-hint" x={allPts[0].x} y={allPts[0].y - 12}
+          fontSize={10} fill="#64748b" fontFamily="sans-serif">
+          Kliknij aby dodac punkt · Enter aby zakonczyc
+        </text>
+      );
     }
 
     return parts;
@@ -1918,7 +2102,12 @@ export const PlansWorkspace: React.FC = () => {
 
   const renderOverlaySvg = (naturalW: number, naturalH: number) => {
     if (naturalW === 0 || naturalH === 0) return null;
-    const cursorStyle = isSelectingScreenshotArea ? 'crosshair' : isAnnotationTool(ws.activeTool) ? 'crosshair' : ws.activeTool === 'select' ? 'default' : ws.activeTool === 'pan' ? (isPanning ? 'grabbing' : 'grab') : 'default';
+    const cursorStyle = isSelectingScreenshotArea ? 'crosshair'
+      : ws.activeTool === 'erase' ? 'not-allowed'
+      : isAnnotationTool(ws.activeTool) || ws.activeTool === 'camera' ? 'crosshair'
+      : ws.activeTool === 'select' ? 'default'
+      : ws.activeTool === 'pan' ? (isPanning ? 'grabbing' : 'grab')
+      : 'default';
 
     return (
       <svg
@@ -1930,7 +2119,13 @@ export const PlansWorkspace: React.FC = () => {
         onMouseDown={handleSvgMouseDown}
         onMouseMove={handleSvgMouseMove}
         onMouseUp={handleSvgMouseUp}
-        onMouseLeave={() => { if (isDrawing) handleSvgMouseUp(); }}
+        onMouseLeave={() => { if (isDrawing && !['measure-length', 'measure-area'].includes(ws.activeTool)) handleSvgMouseUp(); setEraserHoverId(null); }}
+        onDoubleClick={() => {
+          // Double-click finalizes polyline/area measurement
+          if (isDrawing && (ws.activeTool === 'measure-length' || ws.activeTool === 'measure-area')) {
+            finalizeMeasurement();
+          }
+        }}
       >
         {/* Arrow marker definition */}
         <defs>
@@ -1942,20 +2137,24 @@ export const PlansWorkspace: React.FC = () => {
 
         {/* Text input overlay */}
         {textInput && (
-          <foreignObject x={textInput.x} y={textInput.y - 20} width={200} height={30}>
-            <input
-              type="text"
-              autoFocus
-              value={textInput.text}
-              onChange={e => setTextInput({ ...textInput, text: e.target.value })}
-              onKeyDown={e => {
-                if (e.key === 'Enter') handleTextAnnotationSubmit();
-                if (e.key === 'Escape') setTextInput(null);
-              }}
-              onBlur={handleTextAnnotationSubmit}
-              className="w-full px-2 py-1 text-xs border border-blue-500 rounded shadow-lg bg-white"
-              placeholder="Wpisz tekst..."
-            />
+          <foreignObject x={textInput.x - 5} y={textInput.y - 25} width={250} height={36}>
+            <div>
+              <input
+                type="text"
+                autoFocus
+                value={textInput.text}
+                onChange={e => setTextInput({ ...textInput, text: e.target.value })}
+                onKeyDown={e => {
+                  e.stopPropagation();
+                  if (e.key === 'Enter') handleTextAnnotationSubmit();
+                  if (e.key === 'Escape') setTextInput(null);
+                }}
+                onBlur={handleTextAnnotationSubmit}
+                onMouseDown={e => e.stopPropagation()}
+                style={{ width: '240px', padding: '4px 8px', fontSize: '13px', border: '2px solid #3b82f6', borderRadius: '6px', outline: 'none', background: 'white', boxShadow: '0 2px 8px rgba(0,0,0,0.15)' }}
+                placeholder="Wpisz tekst..."
+              />
+            </div>
           </foreignObject>
         )}
 
@@ -3123,6 +3322,7 @@ export const PlansWorkspace: React.FC = () => {
                   }
                   setCommentModal(null);
                   setCommentText('');
+                  dispatch({ type: 'SET_ACTIVE_TOOL', tool: 'select' });
                   notify('Komentarz dodany');
                 }}
                 className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
