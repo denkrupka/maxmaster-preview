@@ -254,7 +254,7 @@ export const PlansWorkspace: React.FC = () => {
     if (!currentUser?.company_id) return;
     try {
       const { data } = await supabase.from('projects').select('*')
-        .eq('company_id', currentUser.company_id).eq('is_active', true).order('name');
+        .eq('company_id', currentUser.company_id).order('name');
       if (data) {
         setProjects(data);
         if (data.length > 0 && !selectedProject) setSelectedProject(data[0]);
