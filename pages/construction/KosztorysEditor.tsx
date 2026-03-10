@@ -3486,12 +3486,18 @@ export const KosztorysEditorPage: React.FC = () => {
     if (notFoundAnywhere.length > 0) {
       setKnrProcessingMsg(`Sprawdzanie cache KNR (${notFoundAnywhere.length} pozycji)...`);
       try {
+        // Fetch cache in batches of 30 to avoid URL length limits
         const names = notFoundAnywhere.map(p => p.name);
-        const { data: cached } = await supabase
-          .from('knr_cache')
-          .select('position_name, position_unit, knr_code, knr_description, confidence')
-          .in('position_name', names);
-        if (cached && cached.length > 0) {
+        const cached: any[] = [];
+        for (let ci = 0; ci < names.length; ci += 30) {
+          const chunk = names.slice(ci, ci + 30);
+          const { data } = await supabase
+            .from('knr_cache')
+            .select('position_name, position_unit, knr_code, knr_description, confidence')
+            .in('position_name', chunk);
+          if (data) cached.push(...data);
+        }
+        if (cached.length > 0) {
           const cacheMap = new Map(cached.map(c => [c.position_name, c]));
           const stillNotFound: typeof notFoundAnywhere = [];
           for (const item of notFoundAnywhere) {
