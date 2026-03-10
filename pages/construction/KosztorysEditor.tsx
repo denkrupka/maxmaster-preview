@@ -1093,6 +1093,15 @@ export const KosztorysEditorPage: React.FC = () => {
   const [knrReviewSelectedId, setKnrReviewSelectedId] = useState<string | null>(null);
   const [knrVisibleCount, setKnrVisibleCount] = useState(200);
 
+  // AI Fill state
+  const [showAiFillDropdown, setShowAiFillDropdown] = useState(false);
+  const [aiFillModal, setAiFillModal] = useState<'resources' | 'prices' | null>(null);
+  const [aiFillTypes, setAiFillTypes] = useState<Set<string>>(new Set(['labor', 'material', 'equipment']));
+  const [aiFillConfirm, setAiFillConfirm] = useState<'empty' | 'all' | null>(null);
+  const [aiFillProcessing, setAiFillProcessing] = useState(false);
+  const [aiFillProgress, setAiFillProgress] = useState(0);
+  const [aiFillMsg, setAiFillMsg] = useState('');
+
   // Comments panel state
   const [showCommentsPanel, setShowCommentsPanel] = useState(false);
   const [commentsFilter, setCommentsFilter] = useState<'all' | 'verification' | 'completion' | 'none'>('all');
@@ -2648,6 +2657,129 @@ export const KosztorysEditorPage: React.FC = () => {
       `Uzupełniono ${updatedPositions} pozycji, dodano ${addedResources} nakładów`,
       'success'
     );
+  };
+
+  // AI Fill resources or prices
+  const handleAiFill = async (mode: 'resources' | 'prices', scope: 'empty' | 'all') => {
+    const types = [...aiFillTypes];
+    if (types.length === 0) { showNotificationMessage('Wybierz co najmniej jeden typ nakładu', 'warning'); return; }
+
+    setAiFillModal(null); setAiFillConfirm(null);
+    setAiFillProcessing(true); setAiFillProgress(0);
+    setAiFillMsg(`Przygotowanie pozycji...`);
+
+    try {
+      const allPos = Object.values(estimateData.positions);
+      let toProcess: KosztorysPosition[];
+
+      if (mode === 'resources') {
+        toProcess = scope === 'empty'
+          ? allPos.filter(p => p.name && (!p.resources || p.resources.length === 0))
+          : allPos.filter(p => p.name);
+      } else {
+        // prices: positions that have resources but missing prices
+        toProcess = scope === 'empty'
+          ? allPos.filter(p => p.resources?.some(r => types.includes(r.type) && (!r.unitPrice || r.unitPrice.value === 0)))
+          : allPos.filter(p => p.resources?.some(r => types.includes(r.type)));
+      }
+
+      if (toProcess.length === 0) {
+        showNotificationMessage('Brak pozycji do uzupełnienia', 'warning');
+        setAiFillProcessing(false); return;
+      }
+
+      const now = new Date();
+      const q = `Q${Math.ceil((now.getMonth() + 1) / 3)} ${now.getFullYear()}`;
+      const BATCH = 15;
+      const batches: KosztorysPosition[][] = [];
+      for (let i = 0; i < toProcess.length; i += BATCH) batches.push(toProcess.slice(i, i + BATCH));
+
+      const newData = { ...estimateData, positions: { ...estimateData.positions } };
+      let updatedCount = 0;
+
+      for (let bi = 0; bi < batches.length; bi++) {
+        const batch = batches[bi];
+        setAiFillProgress(Math.round(((bi) / batches.length) * 90));
+        setAiFillMsg(`AI: ${bi + 1}/${batches.length} partii (${mode === 'resources' ? 'nakłady' : 'ceny'})...`);
+
+        const bodyPositions = batch.map(p => ({
+          id: p.id, name: p.name, base: p.base || '', unit: p.unit?.label || 'szt.',
+          resources: mode === 'prices' ? (p.resources || []).filter(r => types.includes(r.type)).map(r => ({
+            type: r.type, name: r.name, unit: r.unit?.label || 'szt.', norm: r.norm?.value || 0,
+          })) : undefined,
+        }));
+
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const { data, error } = await supabase.functions.invoke('ai-fill-resources', {
+              body: { positions: bodyPositions, mode, resourceTypes: types, quarter: q },
+            });
+
+            if (!error && data?.success && data.data?.r) {
+              for (const item of data.data.r) {
+                const [idx, payload] = item;
+                if (idx < 0 || idx >= batch.length) continue;
+                const pos = batch[idx];
+                const posKey = pos.id;
+                newData.positions[posKey] = { ...newData.positions[posKey] };
+
+                if (mode === 'resources') {
+                  // payload = [[type, name, unit, norm, index], ...]
+                  const newResources: KosztorysResource[] = scope === 'all' ? [] : [...(newData.positions[posKey].resources || [])];
+                  for (const res of (payload as any[])) {
+                    const [rType, rName, rUnit, rNorm, rIndex] = res;
+                    if (!types.includes(rType)) continue;
+                    const resource = createNewResource(rType, rName, rNorm || 1, 0, rUnit || 'szt.');
+                    if (rIndex) resource.originIndex = { type: 'custom', index: rIndex };
+                    newResources.push(resource);
+                  }
+                  newData.positions[posKey].resources = newResources;
+                } else {
+                  // payload = [[resource_index, price], ...]
+                  const resources = [...(newData.positions[posKey].resources || [])];
+                  const typedResources = resources.filter(r => types.includes(r.type));
+                  for (const [rIdx, price] of (payload as [number, number][])) {
+                    if (rIdx >= 0 && rIdx < typedResources.length) {
+                      const globalIdx = resources.indexOf(typedResources[rIdx]);
+                      if (globalIdx >= 0) {
+                        resources[globalIdx] = { ...resources[globalIdx], unitPrice: { value: price, currency: 'PLN' } };
+                      }
+                    }
+                  }
+                  newData.positions[posKey].resources = resources;
+                }
+                updatedCount++;
+              }
+              break;
+            }
+            if (attempt < 2) await new Promise(r => setTimeout(r, 15000));
+          } catch (e) {
+            console.error(`AI fill batch ${bi} attempt ${attempt + 1}:`, e);
+            if (attempt < 2) await new Promise(r => setTimeout(r, 10000));
+          }
+        }
+
+        // Rate limit pause
+        if (bi < batches.length - 1) {
+          await new Promise(r => setTimeout(r, 15000));
+        }
+      }
+
+      setAiFillProgress(100);
+      startTransition(() => {
+        setEstimateData(newData);
+        setEditorState(prev => ({ ...prev, isDirty: true }));
+      });
+      showNotificationMessage(
+        `AI uzupełniło ${mode === 'resources' ? 'nakłady' : 'ceny'} dla ${updatedCount} pozycji`,
+        updatedCount > 0 ? 'success' : 'warning'
+      );
+    } catch (err: any) {
+      console.error('AI fill error:', err);
+      showNotificationMessage(`Błąd AI: ${err.message || 'nieznany'}`, 'error');
+    } finally {
+      setAiFillProcessing(false);
+    }
   };
 
   // Save estimate
@@ -6819,6 +6951,39 @@ export const KosztorysEditorPage: React.FC = () => {
             )}
           </div>
 
+          {/* AI Fill dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => {
+                if (Object.keys(estimateData.positions).length === 0) return;
+                setShowAiFillDropdown(!showAiFillDropdown);
+              }}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 text-sm rounded text-purple-600 hover:bg-purple-50 border border-purple-200"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              AI
+              <ChevronDown className="w-3 h-3" />
+            </button>
+            {showAiFillDropdown && (
+              <div className="absolute top-full left-0 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-50">
+                <button
+                  onClick={() => { setShowAiFillDropdown(false); setAiFillModal('resources'); }}
+                  className="w-full text-left px-3 py-2.5 text-sm hover:bg-purple-50 flex items-center gap-2"
+                >
+                  <Clipboard className="w-4 h-4 text-purple-500" />
+                  Uzupełnij nakłady z AI
+                </button>
+                <button
+                  onClick={() => { setShowAiFillDropdown(false); setAiFillModal('prices'); }}
+                  className="w-full text-left px-3 py-2.5 text-sm hover:bg-purple-50 flex items-center gap-2"
+                >
+                  <DollarSign className="w-4 h-4 text-purple-500" />
+                  Uzupełnij ceny z AI
+                </button>
+              </div>
+            )}
+          </div>
+
           <div className="w-px h-6 bg-gray-200 mx-1" />
 
           {/* Ceny */}
@@ -7145,7 +7310,7 @@ export const KosztorysEditorPage: React.FC = () => {
       )}
 
       {/* Click outside to close all dropdowns */}
-      {(showDzialDropdown || showNakladDropdown || showKomentarzeDropdown || showUsunDropdown || showPrzesunDropdown || showUzupelnijDropdown || showKNRDropdown || showTagDropdown || showCommentsSortDropdown) && (
+      {(showDzialDropdown || showNakladDropdown || showKomentarzeDropdown || showUsunDropdown || showPrzesunDropdown || showUzupelnijDropdown || showKNRDropdown || showTagDropdown || showCommentsSortDropdown || showAiFillDropdown) && (
         <div className="fixed inset-0 z-40" onClick={() => {
           setShowDzialDropdown(false);
           setShowNakladDropdown(false);
@@ -7157,6 +7322,7 @@ export const KosztorysEditorPage: React.FC = () => {
           setTagSearch('');
           setShowKNRDropdown(false);
           setShowCommentsSortDropdown(false);
+          setShowAiFillDropdown(false);
         }} />
       )}
 
@@ -11469,6 +11635,140 @@ export const KosztorysEditorPage: React.FC = () => {
                 Tak, zastąp wszystkie
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI Fill — Checkbox Selection Modal */}
+      {aiFillModal && !aiFillConfirm && !aiFillProcessing && (
+        <div className="fixed inset-0 z-[60] overflow-y-auto bg-gray-500/75 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl max-w-sm w-full shadow-xl">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
+              <h2 className="text-base font-bold text-purple-700 flex items-center gap-2">
+                <Sparkles className="w-5 h-5" />
+                {aiFillModal === 'resources' ? 'Uzupełnij nakłady z AI' : 'Uzupełnij ceny z AI'}
+              </h2>
+              <button onClick={() => setAiFillModal(null)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4">
+              <p className="text-sm text-gray-600 mb-3">Wybierz nakłady do uzupełnienia:</p>
+              <div className="space-y-2 mb-4">
+                {[
+                  { key: 'labor', label: 'Robocizna', icon: '👷' },
+                  { key: 'material', label: 'Materiał', icon: '🧱' },
+                  { key: 'equipment', label: 'Sprzęt', icon: '🏗️' },
+                ].map(({ key, label, icon }) => (
+                  <label key={key} className="flex items-center gap-3 p-2 hover:bg-gray-50 rounded cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={aiFillTypes.has(key)}
+                      onChange={() => {
+                        const next = new Set(aiFillTypes);
+                        if (next.has(key)) next.delete(key); else next.add(key);
+                        setAiFillTypes(next);
+                      }}
+                      className="w-4 h-4 text-purple-600 rounded border-gray-300"
+                    />
+                    <span className="text-sm">{icon} {label}</span>
+                  </label>
+                ))}
+              </div>
+              <div className="space-y-2">
+                <button
+                  onClick={() => {
+                    if (aiFillTypes.size === 0) return;
+                    handleAiFill(aiFillModal, 'empty');
+                    setAiFillModal(null);
+                  }}
+                  disabled={aiFillTypes.size === 0}
+                  className="w-full px-4 py-2.5 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Uzupełnij tylko puste pozycje
+                </button>
+                <button
+                  onClick={() => {
+                    if (aiFillTypes.size === 0) return;
+                    setAiFillConfirm('all');
+                  }}
+                  disabled={aiFillTypes.size === 0}
+                  className="w-full px-4 py-2.5 text-sm border border-red-300 text-red-600 rounded-lg hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Uzupełnij wszystkie pozycje
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI Fill — Confirmation Modal (fill all = overwrite warning) */}
+      {aiFillConfirm === 'all' && aiFillModal && (
+        <div className="fixed inset-0 z-[70] overflow-y-auto bg-gray-500/75 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl max-w-md w-full shadow-xl">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
+              <h2 className="text-base font-bold text-red-600 flex items-center gap-2">
+                <AlertCircle className="w-5 h-5" />
+                Potwierdzenie
+              </h2>
+              <button onClick={() => setAiFillConfirm(null)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4">
+              <p className="text-sm text-gray-700 mb-3">
+                <strong>Uwaga!</strong> Ta operacja nadpisze {aiFillModal === 'resources' ? 'istniejące nakłady' : 'istniejące ceny'}
+                {' '}we <strong>wszystkich</strong> pozycjach kosztorysu.
+              </p>
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+                <p className="text-xs text-red-700">
+                  <strong>Zostaną usunięte:</strong> wszystkie {aiFillModal === 'resources'
+                    ? 'ręcznie dodane nakłady wybranych typów'
+                    : 'ręcznie ustawione ceny'} i zastąpione danymi z AI.
+                </p>
+              </div>
+              <p className="text-sm text-gray-600">Czy na pewno chcesz kontynuować?</p>
+            </div>
+            <div className="p-3 border-t border-gray-200 flex justify-end gap-2">
+              <button
+                onClick={() => setAiFillConfirm(null)}
+                className="px-4 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                Anuluj
+              </button>
+              <button
+                onClick={() => {
+                  const mode = aiFillModal;
+                  setAiFillConfirm(null);
+                  setAiFillModal(null);
+                  handleAiFill(mode, 'all');
+                }}
+                className="px-4 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700"
+              >
+                Tak, nadpisz wszystkie
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI Fill — Processing Overlay */}
+      {aiFillProcessing && (
+        <div className="fixed inset-0 z-[80] bg-gray-500/75 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl max-w-sm w-full shadow-xl p-6 text-center">
+            <div className="mb-4">
+              <Sparkles className="w-8 h-8 text-purple-500 mx-auto animate-pulse" />
+            </div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">AI uzupełnia dane...</h3>
+            <p className="text-sm text-gray-500 mb-4">{aiFillMsg || 'Przygotowanie...'}</p>
+            <div className="w-full bg-gray-200 rounded-full h-3 mb-2">
+              <div
+                className="bg-purple-600 h-3 rounded-full transition-all duration-500"
+                style={{ width: `${Math.min(aiFillProgress, 100)}%` }}
+              />
+            </div>
+            <p className="text-xs text-gray-400">{Math.round(aiFillProgress)}%</p>
           </div>
         </div>
       )}
