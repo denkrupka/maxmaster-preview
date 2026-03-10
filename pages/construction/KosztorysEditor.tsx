@@ -3530,6 +3530,10 @@ export const KosztorysEditorPage: React.FC = () => {
         for (let i = 0; i < batches.length; i++) {
           await processBatch(batches[i], i);
           if (i < batches.length - 1) {
+            const remaining = batches.length - i - 1;
+            const etaSec = remaining * 12; // ~12s per batch (8s wait + ~4s processing)
+            const etaMin = Math.ceil(etaSec / 60);
+            setKnrProcessingMsg(`AI: ${completedBatches}/${batches.length} partii · ~${etaMin} min`);
             await new Promise(r => setTimeout(r, 8000));
           }
         }
