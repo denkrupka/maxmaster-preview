@@ -3588,7 +3588,10 @@ export const KosztorysEditorPage: React.FC = () => {
           supabase.from('knr_cache').upsert(
             [...deduped.values()].map(r => ({ position_name: r.name, position_unit: r.unit, knr_code: r.code, knr_description: r.desc, confidence: r.conf })),
             { onConflict: 'position_name,position_unit' }
-          ).then(() => console.log(`Cached ${deduped.size} KNR results`));
+          ).then(({ error }) => {
+            if (error) console.error('Cache write error:', error);
+            else console.log(`Cached ${deduped.size} KNR results`);
+          });
         }
 
         // Add remaining positions not found by AI
@@ -3614,6 +3617,7 @@ export const KosztorysEditorPage: React.FC = () => {
 
     setKnrProcessingProgress(100);
     setKnrImportStats(stats);
+    console.log(`KNR review: ${reviewItems.length} items (${stats.foundInPortal} catalog, ${stats.foundByAi} AI, toProcess=${toProcess.length})`);
     setKnrReviewItems(reviewItems);
     setKnrReviewIndex(0);
 
@@ -13801,6 +13805,7 @@ export const KosztorysEditorPage: React.FC = () => {
               const allPositions = Object.values(importedData.positions);
               const withKnr = allPositions.filter(p => p.base && p.base.trim());
               const withoutKnr = allPositions.filter(p => !p.base || !p.base.trim());
+              console.log(`Import: ${allPositions.length} total, ${withKnr.length} with KNR, ${withoutKnr.length} without KNR`);
               closeModal(); setShowImportModal(false);
               if (withoutKnr.length > 0) {
                 setKnrPendingData(importedData);
