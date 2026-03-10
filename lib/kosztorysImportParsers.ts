@@ -505,19 +505,34 @@ function parseXmlPosition(el: Element): KosztorysPosition {
 }
 
 // =====================================================
-// XLSX PARSER
+// XLSX PARSER — with column mapping preview
 // =====================================================
 
+export interface XlsxColumnMapping {
+  colLp: number;
+  colBase: number;
+  colName: number;
+  colUnit: number;
+  colQty: number;
+  headerRowIdx: number;
+}
+
+export interface XlsxPreview {
+  sheetNames: string[];
+  activeSheet: string;
+  totalRows: number;
+  totalCols: number;
+  headerRow: string[];
+  previewRows: string[][];  // first 15 data rows
+  autoMapping: XlsxColumnMapping;
+  allRows: any[][];  // raw rows for later parsing
+}
+
 /**
- * Parse an XLSX file (przedmiar / kosztorys) into KosztorysCostEstimateData.
- *
- * Heuristics:
- * 1. Scans rows for columns: Lp/Nr, Podstawa, Opis/Nazwa, j.m., Ilość/Nakład
- * 2. Rows with short Lp like "1", "2" etc. and no sub-number are sections (działy)
- * 3. Rows with compound Lp like "1.1", "2.3" are positions (pozycje)
- * 4. Falls back: if no sections detected, creates one "Dział 1" and puts all rows as positions
+ * Preview XLSX file — returns sheet info, auto-detected columns, and sample rows.
+ * The user can then adjust the mapping before final parse.
  */
-export function parseXlsxFile(buffer: ArrayBuffer): KosztorysCostEstimateData {
+export function previewXlsxFile(buffer: ArrayBuffer): XlsxPreview {
   const workbook = XLSX.read(buffer, { type: 'array' });
   const sheetName = workbook.SheetNames[0];
   if (!sheetName) throw new Error('Plik XLSX nie zawiera żadnych arkuszy');
@@ -526,61 +541,126 @@ export function parseXlsxFile(buffer: ArrayBuffer): KosztorysCostEstimateData {
 
   if (rows.length < 2) throw new Error('Plik XLSX jest pusty lub zawiera zbyt mało danych');
 
-  // ---- Detect header row and column indices ----
+  // Find max column count
+  let maxCols = 0;
+  for (let r = 0; r < Math.min(rows.length, 30); r++) {
+    if (rows[r]?.length > maxCols) maxCols = rows[r].length;
+  }
+
+  // Auto-detect header row and column indices
+  const mapping = autoDetectXlsxColumns(rows, maxCols);
+
+  const headerRow = rows[mapping.headerRowIdx]?.map((c: any) => String(c ?? '').trim()) || [];
+  const previewRows: string[][] = [];
+  for (let r = mapping.headerRowIdx + 1; r < Math.min(rows.length, mapping.headerRowIdx + 16); r++) {
+    if (rows[r]) previewRows.push(rows[r].map((c: any) => String(c ?? '').trim()));
+  }
+
+  return {
+    sheetNames: workbook.SheetNames,
+    activeSheet: sheetName,
+    totalRows: rows.length,
+    totalCols: maxCols,
+    headerRow,
+    previewRows,
+    autoMapping: mapping,
+    allRows: rows,
+  };
+}
+
+function autoDetectXlsxColumns(rows: any[][], maxCols: number): XlsxColumnMapping {
   let headerRowIdx = -1;
   let colLp = -1, colBase = -1, colName = -1, colUnit = -1, colQty = -1;
 
-  const lpPatterns = /^(lp\.?|nr\.?|l\.p\.?|numer|poz\.?)$/i;
-  const basePatterns = /^(podstawa|baza|base|katalog|knnr?|knr)$/i;
-  const namePatterns = /^(opis|nazwa|name|description|pozycja|tytul|tytuł)$/i;
-  const unitPatterns = /^(j\.?\s?m\.?|jedn\.?|jednostka|unit)$/i;
-  const qtyPatterns = /^(ilo[sś][cć]|nakład|naklad|quantity|qty|ilosc|przedmiar|obmiar)$/i;
+  const lpPatterns = /^(lp\.?|nr\.?|l\.?\s?p\.?|numer|poz\.?|nr\s+poz)$/i;
+  const basePatterns = /^(podstawa|baza|base|katalog|knnr?|knr|norma|numer\s+kat)$/i;
+  const namePatterns = /^(opis|nazwa|name|description|pozycja|tytu[lł]|opis\s+pozycji|opis\s+rob[oó]t|wyszczeg[oó]lnienie|tre[sś][cć])$/i;
+  const unitPatterns = /^(j\.?\s?m\.?|jedn\.?|jednostka|unit|jm)$/i;
+  const qtyPatterns = /^(ilo[sś][cć]|nak[lł]ad|naklad|quantity|qty|ilosc|przedmiar|obmiar|ilo[sś][cć]\s+rob[oó]t)$/i;
 
-  for (let r = 0; r < Math.min(rows.length, 15); r++) {
+  for (let r = 0; r < Math.min(rows.length, 20); r++) {
     const row = rows[r];
     if (!row || row.length < 3) continue;
+
+    // Reset for this candidate header
+    let cLp = -1, cBase = -1, cName = -1, cUnit = -1, cQty = -1;
     let matchCount = 0;
+
     for (let c = 0; c < row.length; c++) {
-      const cell = String(row[c]).trim();
+      const cell = String(row[c] ?? '').trim();
       if (!cell) continue;
-      if (lpPatterns.test(cell)) { colLp = c; matchCount++; }
-      else if (basePatterns.test(cell)) { colBase = c; matchCount++; }
-      else if (namePatterns.test(cell)) { colName = c; matchCount++; }
-      else if (unitPatterns.test(cell)) { colUnit = c; matchCount++; }
-      else if (qtyPatterns.test(cell)) { colQty = c; matchCount++; }
+      if (lpPatterns.test(cell)) { cLp = c; matchCount++; }
+      else if (basePatterns.test(cell)) { cBase = c; matchCount++; }
+      else if (namePatterns.test(cell)) { cName = c; matchCount++; }
+      else if (unitPatterns.test(cell)) { cUnit = c; matchCount++; }
+      else if (qtyPatterns.test(cell)) { cQty = c; matchCount++; }
     }
     if (matchCount >= 2) {
       headerRowIdx = r;
+      colLp = cLp; colBase = cBase; colName = cName; colUnit = cUnit; colQty = cQty;
       break;
     }
-    // Reset if not enough matches
-    colLp = -1; colBase = -1; colName = -1; colUnit = -1; colQty = -1;
   }
 
-  // Fallback: no header detected — assume first row is header or use positional columns
+  // Fallback: use heuristics on data content
   if (headerRowIdx === -1) {
     headerRowIdx = 0;
-    // Try positional: Lp=0, Podstawa=1, Opis=2, Jm=3, Ilość=4
-    colLp = 0;
-    colBase = rows[0]?.length > 4 ? 1 : -1;
-    colName = rows[0]?.length > 4 ? 2 : 1;
-    colUnit = rows[0]?.length > 4 ? 3 : 2;
-    colQty = rows[0]?.length > 4 ? 4 : 3;
-  }
+    // Find the column with longest text strings — likely "name"
+    const textLengths: number[] = new Array(maxCols).fill(0);
+    const numericCounts: number[] = new Array(maxCols).fill(0);
+    const shortTextCounts: number[] = new Array(maxCols).fill(0);
 
-  // If colName still -1, try to find the widest text column
-  if (colName === -1) {
-    let maxLen = 0;
-    for (let c = 0; c < (rows[headerRowIdx + 1]?.length || 0); c++) {
-      const len = String(rows[headerRowIdx + 1]?.[c] || '').length;
-      if (len > maxLen && c !== colLp && c !== colUnit && c !== colQty && c !== colBase) {
-        maxLen = len;
+    for (let r = 1; r < Math.min(rows.length, 30); r++) {
+      for (let c = 0; c < (rows[r]?.length || 0); c++) {
+        const val = rows[r][c];
+        const str = String(val ?? '').trim();
+        textLengths[c] += str.length;
+        if (typeof val === 'number' || /^\d+([.,]\d+)?$/.test(str)) numericCounts[c]++;
+        if (str.length > 0 && str.length <= 8) shortTextCounts[c]++;
+      }
+    }
+
+    // Name = column with highest total text length (excluding pure numeric)
+    let maxTextLen = 0;
+    for (let c = 0; c < maxCols; c++) {
+      if (textLengths[c] > maxTextLen && numericCounts[c] < 10) {
+        maxTextLen = textLengths[c];
         colName = c;
       }
     }
+
+    // Unit = short text column (2-5 chars typically) that's not Lp or Name
+    for (let c = 0; c < maxCols; c++) {
+      if (c === colName) continue;
+      const avgLen = textLengths[c] / Math.max(1, Math.min(rows.length - 1, 29));
+      if (avgLen >= 1 && avgLen <= 6 && shortTextCounts[c] > 5 && numericCounts[c] < 5) {
+        colUnit = c;
+        break;
+      }
+    }
+
+    // Qty = mostly numeric column that's not Lp
+    for (let c = maxCols - 1; c >= 0; c--) {
+      if (c === colName && c === colUnit) continue;
+      if (numericCounts[c] > 10) { colQty = c; break; }
+    }
+
+    // Lp = first column or first small-int column
+    colLp = 0;
   }
 
-  // ---- Parse data rows ----
+  return { colLp, colBase, colName, colUnit, colQty, headerRowIdx };
+}
+
+/**
+ * Parse XLSX with explicit column mapping (after user review/adjustment).
+ */
+export function parseXlsxWithMapping(
+  rows: any[][],
+  mapping: XlsxColumnMapping
+): KosztorysCostEstimateData {
+  const { colLp, colBase, colName, colUnit, colQty, headerRowIdx } = mapping;
+
   interface RawRow {
     lp: string;
     base: string;
@@ -595,7 +675,7 @@ export function parseXlsxFile(buffer: ArrayBuffer): KosztorysCostEstimateData {
     const row = rows[r];
     if (!row) continue;
     const name = colName >= 0 ? String(row[colName] ?? '').trim() : '';
-    if (!name) continue; // skip empty rows
+    if (!name) continue;
 
     const lp = colLp >= 0 ? String(row[colLp] ?? '').trim() : '';
     const base = colBase >= 0 ? String(row[colBase] ?? '').trim() : '';
@@ -608,8 +688,6 @@ export function parseXlsxFile(buffer: ArrayBuffer): KosztorysCostEstimateData {
 
   if (dataRows.length === 0) throw new Error('Nie znaleziono danych w pliku XLSX');
 
-  // ---- Classify rows into sections and positions ----
-  // Section heuristic: row has Lp that is a simple integer (no dot), no unit, OR name looks like a header
   const result: KosztorysCostEstimateData = {
     root: {
       sectionIds: [],
@@ -676,6 +754,14 @@ export function parseXlsxFile(buffer: ArrayBuffer): KosztorysCostEstimateData {
   }
 
   return result;
+}
+
+/**
+ * Backward-compatible wrapper: auto-detect columns and parse in one step.
+ */
+export function parseXlsxFile(buffer: ArrayBuffer): KosztorysCostEstimateData {
+  const preview = previewXlsxFile(buffer);
+  return parseXlsxWithMapping(preview.allRows, preview.autoMapping);
 }
 
 // =====================================================

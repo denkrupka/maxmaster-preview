@@ -42,8 +42,11 @@ import {
   parseJsonFile,
   parseXmlFile,
   parseXlsxFile,
+  previewXlsxFile,
+  parseXlsxWithMapping,
   convertGeminiResponseToEstimate,
 } from '../../lib/kosztorysImportParsers';
+import type { XlsxPreview, XlsxColumnMapping } from '../../lib/kosztorysImportParsers';
 import type {
   KosztorysCostEstimate,
   KosztorysCostEstimateData,
@@ -1043,6 +1046,8 @@ export const KosztorysEditorPage: React.FC = () => {
   const [importProgress, setImportProgress] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
   const [importDragActive, setImportDragActive] = useState(false);
+  const [xlsxPreview, setXlsxPreview] = useState<XlsxPreview | null>(null);
+  const [xlsxMapping, setXlsxMapping] = useState<XlsxColumnMapping | null>(null);
 
   // KNR import flow state
   type KnrImportStep = 'choice' | 'ai-mode' | 'ai-scope' | 'processing' | 'review' | 'stats';
@@ -3198,9 +3203,15 @@ export const KosztorysEditorPage: React.FC = () => {
         const text = await file.text();
         importedData = parseXmlFile(text);
       } else if (ext === 'xlsx' || ext === 'xls') {
-        setImportProgress('Parsowanie pliku Excel...');
+        setImportProgress('Wczytywanie pliku Excel...');
         const buffer = await file.arrayBuffer();
-        importedData = parseXlsxFile(buffer);
+        const preview = previewXlsxFile(buffer);
+        // Show column mapping modal — don't parse yet
+        setXlsxPreview(preview);
+        setXlsxMapping({ ...preview.autoMapping });
+        setImportLoading(false);
+        setImportProgress('');
+        return; // Exit — parsing happens after user confirms mapping
       } else if (['pdf', 'jpg', 'jpeg', 'png', 'webp'].includes(ext)) {
         setImportProgress('Przesyłanie do AI (Gemini)...');
         const buffer = await file.arrayBuffer();
@@ -3416,8 +3427,8 @@ export const KosztorysEditorPage: React.FC = () => {
 
       try {
         // Create batches of 30, fire up to 4 in parallel
-        const BATCH_SIZE = 30;
-        const PARALLEL = 4;
+        const BATCH_SIZE = 25;
+        const PARALLEL = 2;
         const batches: { posId: string; name: string; unit: string }[][] = [];
         for (let i = 0; i < notFoundInPortal.length; i += BATCH_SIZE) {
           batches.push(notFoundInPortal.slice(i, i + BATCH_SIZE));
@@ -13611,6 +13622,134 @@ export const KosztorysEditorPage: React.FC = () => {
         </div>
       )}
 
+      {/* ===== XLSX COLUMN MAPPING MODAL ===== */}
+      {xlsxPreview && xlsxMapping && (
+        <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center" onClick={() => { setXlsxPreview(null); setXlsxMapping(null); }}>
+          <div className="bg-white rounded-xl shadow-2xl w-[900px] max-w-[95vw] max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-bold text-gray-900">Mapowanie kolumn — {xlsxPreview.activeSheet}</h2>
+                <p className="text-xs text-gray-500 mt-0.5">{xlsxPreview.totalRows} wierszy, {xlsxPreview.totalCols} kolumn</p>
+              </div>
+              <button onClick={() => { setXlsxPreview(null); setXlsxMapping(null); }} className="p-1 hover:bg-gray-100 rounded-lg"><X className="w-5 h-5 text-gray-400" /></button>
+            </div>
+            <div className="p-4">
+              <p className="text-xs text-gray-600 mb-3">Wskaż, która kolumna odpowiada danym polom. Wiersz nagłówkowy: <b>{xlsxMapping.headerRowIdx + 1}</b></p>
+              <div className="grid grid-cols-6 gap-2 mb-4">
+                <div>
+                  <label className="block text-[10px] font-medium text-gray-500 mb-1">Lp / Nr</label>
+                  <select value={xlsxMapping.colLp} onChange={e => setXlsxMapping(prev => prev ? { ...prev, colLp: +e.target.value } : prev)}
+                    className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5">
+                    <option value={-1}>— brak —</option>
+                    {xlsxPreview.headerRow.map((h, i) => <option key={i} value={i}>{h || `Kol. ${i + 1}`}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-medium text-gray-500 mb-1">Podstawa (KNR)</label>
+                  <select value={xlsxMapping.colBase} onChange={e => setXlsxMapping(prev => prev ? { ...prev, colBase: +e.target.value } : prev)}
+                    className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5">
+                    <option value={-1}>— brak —</option>
+                    {xlsxPreview.headerRow.map((h, i) => <option key={i} value={i}>{h || `Kol. ${i + 1}`}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-medium text-blue-600 mb-1 font-bold">Opis / Nazwa ★</label>
+                  <select value={xlsxMapping.colName} onChange={e => setXlsxMapping(prev => prev ? { ...prev, colName: +e.target.value } : prev)}
+                    className="w-full text-xs border-2 border-blue-400 rounded-lg px-2 py-1.5 bg-blue-50">
+                    <option value={-1}>— brak —</option>
+                    {xlsxPreview.headerRow.map((h, i) => <option key={i} value={i}>{h || `Kol. ${i + 1}`}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-medium text-gray-500 mb-1">J.m.</label>
+                  <select value={xlsxMapping.colUnit} onChange={e => setXlsxMapping(prev => prev ? { ...prev, colUnit: +e.target.value } : prev)}
+                    className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5">
+                    <option value={-1}>— brak —</option>
+                    {xlsxPreview.headerRow.map((h, i) => <option key={i} value={i}>{h || `Kol. ${i + 1}`}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-medium text-gray-500 mb-1">Ilość</label>
+                  <select value={xlsxMapping.colQty} onChange={e => setXlsxMapping(prev => prev ? { ...prev, colQty: +e.target.value } : prev)}
+                    className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5">
+                    <option value={-1}>— brak —</option>
+                    {xlsxPreview.headerRow.map((h, i) => <option key={i} value={i}>{h || `Kol. ${i + 1}`}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-medium text-gray-500 mb-1">Wiersz nagłówka</label>
+                  <input type="number" min={1} max={20} value={xlsxMapping.headerRowIdx + 1}
+                    onChange={e => setXlsxMapping(prev => prev ? { ...prev, headerRowIdx: Math.max(0, +e.target.value - 1) } : prev)}
+                    className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5" />
+                </div>
+              </div>
+              {/* Preview table */}
+              <div className="border border-gray-200 rounded-lg overflow-auto max-h-[340px]">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-100 sticky top-0">
+                    <tr>
+                      <th className="px-2 py-1.5 text-left text-gray-400 font-normal w-8">#</th>
+                      {xlsxPreview.headerRow.map((h, i) => {
+                        let highlight = '';
+                        let label = '';
+                        if (i === xlsxMapping.colName) { highlight = 'bg-blue-100 text-blue-800 font-bold'; label = ' [Nazwa]'; }
+                        else if (i === xlsxMapping.colBase) { highlight = 'bg-green-100 text-green-800 font-bold'; label = ' [KNR]'; }
+                        else if (i === xlsxMapping.colUnit) { highlight = 'bg-amber-100 text-amber-800 font-bold'; label = ' [J.m.]'; }
+                        else if (i === xlsxMapping.colQty) { highlight = 'bg-purple-100 text-purple-800 font-bold'; label = ' [Ilość]'; }
+                        else if (i === xlsxMapping.colLp) { highlight = 'bg-gray-200 text-gray-700 font-bold'; label = ' [Lp]'; }
+                        return <th key={i} className={`px-2 py-1.5 text-left whitespace-nowrap ${highlight}`}>{h || `Kol.${i + 1}`}{label}</th>;
+                      })}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {xlsxPreview.previewRows.map((row, rIdx) => (
+                      <tr key={rIdx} className="border-t border-gray-100 hover:bg-gray-50">
+                        <td className="px-2 py-1 text-gray-400">{xlsxMapping.headerRowIdx + 2 + rIdx}</td>
+                        {xlsxPreview.headerRow.map((_, cIdx) => {
+                          const val = row[cIdx] || '';
+                          let highlight = '';
+                          if (cIdx === xlsxMapping.colName) highlight = 'bg-blue-50 font-medium';
+                          else if (cIdx === xlsxMapping.colBase) highlight = 'bg-green-50';
+                          else if (cIdx === xlsxMapping.colUnit) highlight = 'bg-amber-50';
+                          else if (cIdx === xlsxMapping.colQty) highlight = 'bg-purple-50';
+                          return <td key={cIdx} className={`px-2 py-1 max-w-[200px] truncate ${highlight}`} title={val}>{val}</td>;
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 p-4 border-t">
+              <button onClick={() => { setXlsxPreview(null); setXlsxMapping(null); }} className="px-4 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg">Anuluj</button>
+              <button onClick={() => {
+                if (!xlsxPreview || !xlsxMapping || xlsxMapping.colName < 0) return;
+                try {
+                  const importedData = parseXlsxWithMapping(xlsxPreview.allRows, xlsxMapping);
+                  const allPositions = Object.values(importedData.positions);
+                  const withKnr = allPositions.filter(p => p.base && p.base.trim());
+                  const withoutKnr = allPositions.filter(p => !p.base || !p.base.trim());
+                  setXlsxPreview(null); setXlsxMapping(null); setShowImportModal(false);
+                  if (withoutKnr.length > 0) {
+                    setKnrPendingData(importedData);
+                    setKnrImportStats({ totalPositions: allPositions.length, positionsWithKnr: withKnr.length, positionsWithoutKnr: withoutKnr.length, foundInPortal: 0, foundByAi: 0, accepted: 0, rejected: 0 });
+                    setKnrImportStep('choice');
+                  } else {
+                    applyImportedData(importedData);
+                  }
+                } catch (err: any) {
+                  setImportError(err.message || 'Błąd parsowania pliku');
+                  setXlsxPreview(null); setXlsxMapping(null);
+                }
+              }} disabled={xlsxMapping.colName < 0}
+                className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50">
+                Importuj z tym mapowaniem
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ===== KNR IMPORT FLOW MODALS ===== */}
       {knrImportStep && (
         <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center" onClick={() => { if (knrImportStep !== 'processing') { setKnrImportStep(null); setKnrPendingData(null); } }}>
@@ -13766,12 +13905,8 @@ export const KosztorysEditorPage: React.FC = () => {
                       const pending = knrReviewItems.filter(i => !i.accepted && !i.removed);
                       if (pending.length === 0) return;
                       const current = pending[0];
-                      // Ask: leave without KNR or remove?
-                      if (confirm('Usunąć pozycję z importu?\n\nOK = Usuń pozycję\nAnuluj = Zostaw bez KNR')) {
-                        setKnrReviewItems(prev => prev.map(i => i.posId === current.posId ? { ...i, removed: true } : i));
-                      } else {
-                        setKnrReviewItems(prev => prev.map(i => i.posId === current.posId ? { ...i, accepted: true, knrCode: '' } : i));
-                      }
+                      // Accept position without KNR (clear the suggested code)
+                      setKnrReviewItems(prev => prev.map(i => i.posId === current.posId ? { ...i, accepted: true, knrCode: '' } : i));
                     }} className="px-3 py-1.5 text-xs border border-red-300 text-red-600 rounded-lg hover:bg-red-50 flex items-center gap-1.5">
                       <X className="w-3.5 h-3.5" /> Odrzuć KNR
                     </button>
