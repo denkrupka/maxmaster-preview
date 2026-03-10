@@ -704,29 +704,69 @@ export function parseXlsxWithMapping(
   };
 
   let currentSection: KosztorysSection | null = null;
+  let currentSubsection: KosztorysSection | null = null;
   let sectionCounter = 0;
+  let subsectionCounter = 0;
 
-  const isSectionRow = (row: RawRow): boolean => {
-    // Simple integer Lp without unit and qty — likely a section header
-    if (/^\d+$/.test(row.lp) && !row.unit && row.qty === 0 && !row.base) return true;
-    // Roman numeral
-    if (/^[IVXLCDM]+\.?$/i.test(row.lp) && !row.unit) return true;
-    // Name starts with "Dział", "Rozdział", "Element"
-    if (/^(dzia[lł]|rozdzia[lł]|element)\s/i.test(row.name) && !row.unit) return true;
-    return false;
+  // Detect if a row is a section (dział) or subsection (poddział) header
+  type SectionLevel = 'section' | 'subsection' | 'position';
+  const classifyRow = (row: RawRow): SectionLevel => {
+    const noUnit = !row.unit;
+    const noQty = row.qty === 0;
+    const noBase = !row.base;
+
+    // Name-based detection: "Dział", "Rozdział", "Element" = section; "Poddział", "Oddział" = subsection
+    if (/^(dzia[lł]|rozdzia[lł]|element)\s/i.test(row.name) && noUnit) return 'section';
+    if (/^(poddzia[lł]|oddzia[lł]|podrozdzia[lł])\s/i.test(row.name) && noUnit) return 'subsection';
+
+    // Roman numeral without unit/qty/base — top-level section
+    if (/^[IVXLCDM]+\.?$/i.test(row.lp) && noUnit && noQty && noBase) return 'section';
+
+    // Hierarchical numbering: "1.1", "2.3" etc — subsection; plain "1", "2" — section
+    if (noUnit && noQty && noBase) {
+      if (/^\d+\.\d+/.test(row.lp)) return 'subsection';
+      if (/^\d+$/.test(row.lp)) return 'section';
+    }
+
+    // Long name (>40 chars) without unit/qty/base and no Lp number — could be a section/subsection title
+    // Only if inside a section and the name is clearly descriptive (no digits-only name)
+    if (noUnit && noQty && noBase && !row.lp && row.name.length > 30 && !/^\d+$/.test(row.name)) {
+      // If we already have a section, treat as subsection; otherwise section
+      return currentSection ? 'subsection' : 'section';
+    }
+
+    return 'position';
   };
 
   for (const row of dataRows) {
-    if (isSectionRow(row)) {
+    const level = classifyRow(row);
+
+    if (level === 'section') {
       sectionCounter++;
+      subsectionCounter = 0;
+      currentSubsection = null;
       const section = createNewSection(row.name, row.lp || String(sectionCounter));
       result.sections[section.id] = section;
       result.root.sectionIds.push(section.id);
       currentSection = section;
-    } else {
-      // It's a position
+    } else if (level === 'subsection') {
+      subsectionCounter++;
       if (!currentSection) {
-        // Create default section
+        // Create a parent section if we encounter a subsection without one
+        sectionCounter++;
+        const section = createNewSection('Dział 1', '1');
+        result.sections[section.id] = section;
+        result.root.sectionIds.push(section.id);
+        currentSection = section;
+      }
+      const ordinal = row.lp || `${currentSection.ordinalNumber}.${subsectionCounter}`;
+      const subsection = createNewSection(row.name, ordinal);
+      result.sections[subsection.id] = subsection;
+      currentSection.subsectionIds.push(subsection.id);
+      currentSubsection = subsection;
+    } else {
+      // It's a position — add to subsection if exists, otherwise section
+      if (!currentSection) {
         sectionCounter++;
         const section = createNewSection('Dział 1', '1');
         result.sections[section.id] = section;
@@ -749,7 +789,8 @@ export function parseXlsxWithMapping(
       }
 
       result.positions[position.id] = position;
-      currentSection.positionIds.push(position.id);
+      const targetSection = currentSubsection || currentSection;
+      targetSection.positionIds.push(position.id);
     }
   }
 

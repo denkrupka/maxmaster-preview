@@ -613,7 +613,7 @@ export const GanttPage: React.FC = () => {
     const pid = selectedProject.id;
     const taskIds = freshTaskIds || allFlatTasks.map(t => t.id);
     try {
-      const queries: Promise<any>[] = [
+      const queries: any[] = [
         supabase.from('gantt_baselines').select('*').eq('project_id', pid).order('created_at', { ascending: false }),
         supabase.from('gantt_zones').select('*').eq('project_id', pid).order('sort_order'),
         supabase.from('gantt_norms').select('*').eq('company_id', currentUser?.company_id || ''),
@@ -1478,7 +1478,7 @@ export const GanttPage: React.FC = () => {
         setSaving(true);
         await supabase.from('gantt_dependencies').delete().eq('project_id', selectedProject.id);
         await supabase.from('gantt_tasks').delete().eq('project_id', selectedProject.id);
-        const idMap = new Map<string, string>();
+        const idMap: Record<string, string> = {};
         for (const t of data.tasks) {
           const { data: inserted } = await supabase.from('gantt_tasks').insert({
             project_id: selectedProject.id, title: t.title, parent_id: null,
@@ -1492,22 +1492,22 @@ export const GanttPage: React.FC = () => {
             zone_id: t.zone_id || null, norm_id: t.norm_id || null,
             quantity: t.quantity || null, quantity_unit: t.quantity_unit || null
           }).select('id').single();
-          if (inserted) idMap.set(t.id, inserted.id);
+          if (inserted) idMap[t.id] = inserted.id;
         }
         // Update parent references
         for (const t of data.tasks) {
-          if (t.parent_id && idMap.has(t.id) && idMap.has(t.parent_id)) {
-            await supabase.from('gantt_tasks').update({ parent_id: idMap.get(t.parent_id) }).eq('id', idMap.get(t.id));
+          if (t.parent_id && idMap[t.id] && idMap[t.parent_id]) {
+            await supabase.from('gantt_tasks').update({ parent_id: idMap[t.parent_id] }).eq('id', idMap[t.id]);
           }
         }
         // Import dependencies
         if (data.dependencies?.length) {
           for (const d of data.dependencies) {
-            if (idMap.has(d.predecessor_id) && idMap.has(d.successor_id)) {
+            if (idMap[d.predecessor_id] && idMap[d.successor_id]) {
               await supabase.from('gantt_dependencies').insert({
                 project_id: selectedProject.id,
-                predecessor_id: idMap.get(d.predecessor_id),
-                successor_id: idMap.get(d.successor_id),
+                predecessor_id: idMap[d.predecessor_id],
+                successor_id: idMap[d.successor_id],
                 dependency_type: d.dependency_type || 'FS',
                 lag: d.lag || 0
               });
@@ -1727,9 +1727,9 @@ export const GanttPage: React.FC = () => {
       const { data: items } = await supabase.from('kosztorys_estimate_items').select('*')
         .eq('estimate_id', estimateId).eq('is_deleted', false).order('position_number');
       if (items?.length) {
-        const groupMap = new Map<string, any[]>();
-        items.forEach(item => { const g = item.room_group || 'Ogólne'; if (!groupMap.has(g)) groupMap.set(g, []); groupMap.get(g)!.push(item); });
-        const stages = Array.from(groupMap.keys()).map((name, i) => ({ id: `kgrp_${i}`, name, sort_order: i }));
+        const groupMap: Record<string, any[]> = {};
+        items.forEach(item => { const g = item.room_group || 'Ogólne'; if (!groupMap[g]) groupMap[g] = []; groupMap[g].push(item); });
+        const stages = Object.keys(groupMap).map((name, i) => ({ id: `kgrp_${i}`, name, sort_order: i }));
         const taskItems = items.map((item: any, i: number) => ({
           id: item.id, stage_id: stages.find(s => s.name === (item.room_group || 'Ogólne'))?.id,
           name: item.task_description || item.installation_element || `Pozycja ${item.position_number}`, duration: 1, sort_order: item.position_number || i
@@ -3588,7 +3588,7 @@ export const GanttPage: React.FC = () => {
                         {act.status === 'submitted' && (
                           <>
                             <button onClick={async () => {
-                              await supabase.from('gantt_accepted_acts').update({ status: 'accepted', accepted_by: user?.id, accepted_at: new Date().toISOString() }).eq('id', act.id);
+                              await supabase.from('gantt_accepted_acts').update({ status: 'accepted', accepted_by: currentUser?.id, accepted_at: new Date().toISOString() }).eq('id', act.id);
                               loadAdvancedData();
                               showSuccess('Akt przyjęty.');
                             }} className="px-1.5 py-0.5 text-[9px] bg-green-100 text-green-700 rounded hover:bg-green-200 font-medium">Przyjmij</button>
@@ -3775,7 +3775,7 @@ export const GanttPage: React.FC = () => {
                         <div className="text-slate-400">{new Date(ev.created_at).toLocaleString('pl-PL')}</div>
                       </div>
                       <div className="flex items-center gap-1 flex-shrink-0">
-                        {ev.verified ? <Check className="w-4 h-4 text-green-500" title="Zweryfikowano" /> : (
+                        {ev.verified ? <span title="Zweryfikowano"><Check className="w-4 h-4 text-green-500" /></span> : (
                           <button onClick={async () => {
                             await supabase.from('gantt_evidence').update({ verified: true }).eq('id', ev.id);
                             const { data: evData } = await supabase.from('gantt_evidence').select('*').eq('gantt_task_id', evidenceTaskId!).order('created_at', { ascending: false });

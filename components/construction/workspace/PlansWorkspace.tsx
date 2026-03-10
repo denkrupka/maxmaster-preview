@@ -1134,7 +1134,7 @@ export const PlansWorkspace: React.FC = () => {
     } catch (err: any) {
       console.error('handleSave error:', err);
       // Revert: mark original as current again
-      await supabase.from('plans').update({ is_current_version: true }).eq('id', selectedPlan.id).catch(() => {});
+      try { await supabase.from('plans').update({ is_current_version: true }).eq('id', selectedPlan.id); } catch (_) {}
       notify(err.message || 'Blad zapisu', 'error');
     }
   }, [selectedPlan, isDirty, activeFile, annotations, measurements, comments, photoPins, currentUser, notify]);

@@ -13623,7 +13623,14 @@ export const KosztorysEditorPage: React.FC = () => {
       )}
 
       {/* ===== XLSX COLUMN MAPPING MODAL ===== */}
-      {xlsxPreview && xlsxMapping && (
+      {xlsxPreview && xlsxMapping && (() => {
+          const hdrIdx = xlsxMapping.headerRowIdx;
+          const dynHeaderRow = xlsxPreview.allRows[hdrIdx]?.map((c: any) => String(c ?? '').trim()) || [];
+          const dynPreviewRows: string[][] = [];
+          for (let r = hdrIdx + 1; r < Math.min(xlsxPreview.allRows.length, hdrIdx + 16); r++) {
+            if (xlsxPreview.allRows[r]) dynPreviewRows.push(xlsxPreview.allRows[r].map((c: any) => String(c ?? '').trim()));
+          }
+          return (
         <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center" onClick={() => { setXlsxPreview(null); setXlsxMapping(null); }}>
           <div className="bg-white rounded-xl shadow-2xl w-[900px] max-w-[95vw] max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
             <div className="px-6 py-4 border-b flex items-center justify-between">
@@ -13641,7 +13648,7 @@ export const KosztorysEditorPage: React.FC = () => {
                   <select value={xlsxMapping.colLp} onChange={e => setXlsxMapping(prev => prev ? { ...prev, colLp: +e.target.value } : prev)}
                     className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5">
                     <option value={-1}>— brak —</option>
-                    {xlsxPreview.headerRow.map((h, i) => <option key={i} value={i}>{h || `Kol. ${i + 1}`}</option>)}
+                    {dynHeaderRow.map((h, i) => <option key={i} value={i}>{h || `Kol. ${i + 1}`}</option>)}
                   </select>
                 </div>
                 <div>
@@ -13649,7 +13656,7 @@ export const KosztorysEditorPage: React.FC = () => {
                   <select value={xlsxMapping.colBase} onChange={e => setXlsxMapping(prev => prev ? { ...prev, colBase: +e.target.value } : prev)}
                     className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5">
                     <option value={-1}>— brak —</option>
-                    {xlsxPreview.headerRow.map((h, i) => <option key={i} value={i}>{h || `Kol. ${i + 1}`}</option>)}
+                    {dynHeaderRow.map((h, i) => <option key={i} value={i}>{h || `Kol. ${i + 1}`}</option>)}
                   </select>
                 </div>
                 <div>
@@ -13657,7 +13664,7 @@ export const KosztorysEditorPage: React.FC = () => {
                   <select value={xlsxMapping.colName} onChange={e => setXlsxMapping(prev => prev ? { ...prev, colName: +e.target.value } : prev)}
                     className="w-full text-xs border-2 border-blue-400 rounded-lg px-2 py-1.5 bg-blue-50">
                     <option value={-1}>— brak —</option>
-                    {xlsxPreview.headerRow.map((h, i) => <option key={i} value={i}>{h || `Kol. ${i + 1}`}</option>)}
+                    {dynHeaderRow.map((h, i) => <option key={i} value={i}>{h || `Kol. ${i + 1}`}</option>)}
                   </select>
                 </div>
                 <div>
@@ -13665,7 +13672,7 @@ export const KosztorysEditorPage: React.FC = () => {
                   <select value={xlsxMapping.colUnit} onChange={e => setXlsxMapping(prev => prev ? { ...prev, colUnit: +e.target.value } : prev)}
                     className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5">
                     <option value={-1}>— brak —</option>
-                    {xlsxPreview.headerRow.map((h, i) => <option key={i} value={i}>{h || `Kol. ${i + 1}`}</option>)}
+                    {dynHeaderRow.map((h, i) => <option key={i} value={i}>{h || `Kol. ${i + 1}`}</option>)}
                   </select>
                 </div>
                 <div>
@@ -13673,7 +13680,7 @@ export const KosztorysEditorPage: React.FC = () => {
                   <select value={xlsxMapping.colQty} onChange={e => setXlsxMapping(prev => prev ? { ...prev, colQty: +e.target.value } : prev)}
                     className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5">
                     <option value={-1}>— brak —</option>
-                    {xlsxPreview.headerRow.map((h, i) => <option key={i} value={i}>{h || `Kol. ${i + 1}`}</option>)}
+                    {dynHeaderRow.map((h, i) => <option key={i} value={i}>{h || `Kol. ${i + 1}`}</option>)}
                   </select>
                 </div>
                 <div>
@@ -13689,7 +13696,7 @@ export const KosztorysEditorPage: React.FC = () => {
                   <thead className="bg-gray-100 sticky top-0">
                     <tr>
                       <th className="px-2 py-1.5 text-left text-gray-400 font-normal w-8">#</th>
-                      {xlsxPreview.headerRow.map((h, i) => {
+                      {dynHeaderRow.map((h, i) => {
                         let highlight = '';
                         let label = '';
                         if (i === xlsxMapping.colName) { highlight = 'bg-blue-100 text-blue-800 font-bold'; label = ' [Nazwa]'; }
@@ -13702,10 +13709,10 @@ export const KosztorysEditorPage: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {xlsxPreview.previewRows.map((row, rIdx) => (
+                    {dynPreviewRows.map((row, rIdx) => (
                       <tr key={rIdx} className="border-t border-gray-100 hover:bg-gray-50">
                         <td className="px-2 py-1 text-gray-400">{xlsxMapping.headerRowIdx + 2 + rIdx}</td>
-                        {xlsxPreview.headerRow.map((_, cIdx) => {
+                        {dynHeaderRow.map((_, cIdx) => {
                           const val = row[cIdx] || '';
                           let highlight = '';
                           if (cIdx === xlsxMapping.colName) highlight = 'bg-blue-50 font-medium';
@@ -13748,7 +13755,8 @@ export const KosztorysEditorPage: React.FC = () => {
             </div>
           </div>
         </div>
-      )}
+          );
+        })()}
 
       {/* ===== KNR IMPORT FLOW MODALS ===== */}
       {knrImportStep && (

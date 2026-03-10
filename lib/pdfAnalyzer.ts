@@ -1823,7 +1823,7 @@ export function matchAiResultToGeometry(
     rooms: [],
     legend,
     scaleInfo,
-    extraction: extraction || { paths: [], texts: [], pageWidth: 0, pageHeight: 0 },
+    extraction: extraction || { paths: [], texts: [], images: [], pageWidth: 0, pageHeight: 0 },
   };
 
   return { analysis, extra };

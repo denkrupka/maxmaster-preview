@@ -440,7 +440,7 @@ export const OffersPage: React.FC = () => {
   const [kartotekaExpandedCats, setKartotekaExpandedCats] = useState<Set<string>>(new Set());
   const [kartotekaViewMode, setKartotekaViewMode] = useState<'list' | 'grid'>('list');
   const [kartotekaDetailItem, setKartotekaDetailItem] = useState<any | null>(null);
-  const [kartotekaMainTab, setKartotekaMainTab] = useState<'katalog' | 'hurtownie' | 'wynajem'>('katalog');
+  const [kartotekaMainTab, setKartotekaMainTab] = useState<string>('katalog');
   const [showWholesalerConfig, setShowWholesalerConfig] = useState(false);
   const [showRentalConfig, setShowRentalConfig] = useState(false);
   const [wholesalerIntegrations, setWholesalerIntegrations] = useState<any[]>([]);

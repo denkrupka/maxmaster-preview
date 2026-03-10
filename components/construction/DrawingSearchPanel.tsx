@@ -38,7 +38,7 @@ export default function DrawingSearchPanel({
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // Cache PDF text content to avoid re-fetching on each keystroke
   const pdfTextCacheRef = useRef<{ pageNum: number; items: { str: string; tx: number; ty: number; w: number; h: number; vpH: number }[] }[]>([]);
   const pdfCacheDocRef = useRef<PDFDocumentProxy | null>(null);

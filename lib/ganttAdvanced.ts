@@ -118,6 +118,7 @@ export interface GanttAcceptedAct {
   description?: string;
   total_amount: number;
   status: 'draft' | 'submitted' | 'accepted' | 'rejected';
+  notes?: string;
   accepted_by?: string;
   accepted_at?: string;
 }
