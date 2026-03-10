@@ -3,7 +3,7 @@
  * Based on eKosztorysowanie.pl interface and functionality
  */
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, startTransition } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Menu, Printer, Plus, FolderPlus, FileText, Hash, Layers,
@@ -3292,26 +3292,31 @@ export const KosztorysEditorPage: React.FC = () => {
     const sc = Object.keys(data.sections).length;
     const pc = Object.keys(data.positions).length;
 
-    // Show loading immediately, defer heavy state update to next frame
+    // Show loading overlay immediately (high priority)
     setApplyingImport(true);
     setKnrImportStep(null);
     setKnrPendingData(null);
 
+    // Use startTransition to make heavy state updates non-blocking
+    // This lets the spinner render before React processes the data
     requestAnimationFrame(() => {
-      setTimeout(() => {
-        setEstimateData(data);
-        const allSectionIds = Object.keys(data.sections);
+      startTransition(() => {
+        // Keep all sections COLLAPSED to avoid rendering 600+ rows at once
         setEditorState(prev => ({
           ...prev,
-          expandedSections: new Set(allSectionIds),
+          expandedSections: new Set<string>(),
           isDirty: true,
         }));
+        setEstimateData(data);
         setViewMode('przedmiar');
         setActiveNavItem('przedmiar');
         setLeftPanelMode('overview');
+      });
+      // Give React time to commit the transition, then hide overlay
+      setTimeout(() => {
         setApplyingImport(false);
         showNotificationMessage(`Zaimportowano ${sc} działów i ${pc} pozycji`, 'success');
-      }, 50);
+      }, 300);
     });
   };
 
