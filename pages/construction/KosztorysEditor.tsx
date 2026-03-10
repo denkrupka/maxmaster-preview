@@ -3528,15 +3528,13 @@ export const KosztorysEditorPage: React.FC = () => {
 
       try {
         const BATCH_SIZE = 50;
-        const batches: { posId: string; name: string; unit: string }[][] = [];
-        for (let i = 0; i < notFoundAnywhere.length; i += BATCH_SIZE) {
-          batches.push(notFoundAnywhere.slice(i, i + BATCH_SIZE));
-        }
-
         let completedBatches = 0;
+        const totalBatches = Math.ceil(notFoundAnywhere.length / BATCH_SIZE);
         const aiResults: { name: string; unit: string; code: string; desc: string; conf: number }[] = [];
+        const foundByAiIds = new Set<string>(); // track which posIds were found
 
-        const processBatch = async (chunk: typeof notFoundAnywhere, batchIdx: number) => {
+        const processBatch = async (startIdx: number, batchIdx: number) => {
+          const chunk = notFoundAnywhere.slice(startIdx, startIdx + BATCH_SIZE);
           for (let attempt = 0; attempt < 3; attempt++) {
             try {
               const { data: aiData, error: aiError } = await supabase.functions.invoke('knr-ai-lookup', {
@@ -3553,7 +3551,7 @@ export const KosztorysEditorPage: React.FC = () => {
                       source: 'ai', confidence: result.confidence || 0.5,
                     });
                     aiResults.push({ name: chunk[idx].name, unit: chunk[idx].unit, code: result.knr_code, desc: result.knr_description || '', conf: result.confidence || 0.5 });
-                    chunk[idx] = null as any;
+                    foundByAiIds.add(chunk[idx].posId);
                   }
                 }
                 break;
@@ -3566,23 +3564,23 @@ export const KosztorysEditorPage: React.FC = () => {
             }
           }
           completedBatches++;
-          setKnrProcessingProgress(55 + Math.round((completedBatches / batches.length) * 40));
-          setKnrProcessingMsg(`AI: ${completedBatches}/${batches.length} partii...`);
+          setKnrProcessingProgress(55 + Math.round((completedBatches / totalBatches) * 40));
+          setKnrProcessingMsg(`AI: ${completedBatches}/${totalBatches} partii...`);
         };
 
         // Sequential with 15s pause to stay under 8K output tokens/min
-        for (let i = 0; i < batches.length; i++) {
-          await processBatch(batches[i], i);
-          if (i < batches.length - 1) {
-            const remaining = batches.length - i - 1;
+        for (let i = 0; i < notFoundAnywhere.length; i += BATCH_SIZE) {
+          await processBatch(i, Math.floor(i / BATCH_SIZE));
+          if (i + BATCH_SIZE < notFoundAnywhere.length) {
+            const remaining = totalBatches - completedBatches;
             const etaSec = remaining * 20;
             const etaMin = Math.ceil(etaSec / 60);
-            setKnrProcessingMsg(`AI: ${completedBatches}/${batches.length} · ~${etaMin} min`);
+            setKnrProcessingMsg(`AI: ${completedBatches}/${totalBatches} · ~${etaMin} min`);
             await new Promise(r => setTimeout(r, 15000));
           }
         }
 
-        // Save AI results to cache for future imports (fire-and-forget)
+        // Save AI results to cache (fire-and-forget)
         if (aiResults.length > 0) {
           supabase.from('knr_cache').upsert(
             aiResults.map(r => ({ position_name: r.name, position_unit: r.unit, knr_code: r.code, knr_description: r.desc, confidence: r.conf })),
@@ -3590,9 +3588,9 @@ export const KosztorysEditorPage: React.FC = () => {
           ).then(() => console.log(`Cached ${aiResults.length} KNR results`));
         }
 
-        // Remaining not found by AI either
+        // Add remaining positions not found by AI
         for (const item of notFoundAnywhere) {
-          if (!item) continue;
+          if (foundByAiIds.has(item.posId)) continue;
           reviewItems.push({
             posId: item.posId, posName: item.name, posUnit: item.unit,
             knrCode: '', knrDescription: '', source: 'ai', confidence: 0,
@@ -3600,8 +3598,9 @@ export const KosztorysEditorPage: React.FC = () => {
         }
       } catch (err) {
         console.error('AI KNR lookup error:', err);
+        const alreadyInReview = new Set(reviewItems.map(r => r.posId));
         for (const item of notFoundAnywhere) {
-          if (!item) continue;
+          if (alreadyInReview.has(item.posId)) continue;
           reviewItems.push({
             posId: item.posId, posName: item.name, posUnit: item.unit,
             knrCode: '', knrDescription: '', source: 'ai', confidence: 0,
