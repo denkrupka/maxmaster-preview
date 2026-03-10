@@ -2690,18 +2690,17 @@ export const KosztorysEditorPage: React.FC = () => {
 
       const now = new Date();
       const q = `Q${Math.ceil((now.getMonth() + 1) / 3)} ${now.getFullYear()}`;
-      const BATCH = 15;
+      const BATCH = 50;
+      const CONCURRENT = 3;
       const batches: KosztorysPosition[][] = [];
       for (let i = 0; i < toProcess.length; i += BATCH) batches.push(toProcess.slice(i, i + BATCH));
 
       const newData = { ...estimateData, positions: { ...estimateData.positions } };
       let updatedCount = 0;
+      let completedBatches = 0;
 
-      for (let bi = 0; bi < batches.length; bi++) {
+      const processBatch = async (bi: number) => {
         const batch = batches[bi];
-        setAiFillProgress(Math.round(((bi) / batches.length) * 90));
-        setAiFillMsg(`AI: ${bi + 1}/${batches.length} partii (${mode === 'resources' ? 'nakłady' : 'ceny'})...`);
-
         const bodyPositions = batch.map(p => ({
           id: p.id, name: p.name, base: p.base || '', unit: p.unit?.label || 'szt.',
           resources: mode === 'prices' ? (p.resources || []).filter(r => types.includes(r.type)).map(r => ({
@@ -2724,7 +2723,6 @@ export const KosztorysEditorPage: React.FC = () => {
                 newData.positions[posKey] = { ...newData.positions[posKey] };
 
                 if (mode === 'resources') {
-                  // payload = [[type, name, unit, norm, index], ...]
                   const newResources: KosztorysResource[] = scope === 'all' ? [] : [...(newData.positions[posKey].resources || [])];
                   for (const res of (payload as any[])) {
                     const [rType, rName, rUnit, rNorm, rIndex] = res;
@@ -2735,7 +2733,6 @@ export const KosztorysEditorPage: React.FC = () => {
                   }
                   newData.positions[posKey].resources = newResources;
                 } else {
-                  // payload = [[resource_index, price], ...]
                   const resources = [...(newData.positions[posKey].resources || [])];
                   const typedResources = resources.filter(r => types.includes(r.type));
                   for (const [rIdx, price] of (payload as [number, number][])) {
@@ -2752,17 +2749,22 @@ export const KosztorysEditorPage: React.FC = () => {
               }
               break;
             }
-            if (attempt < 2) await new Promise(r => setTimeout(r, 15000));
+            if (attempt < 2) await new Promise(r => setTimeout(r, 5000));
           } catch (e) {
             console.error(`AI fill batch ${bi} attempt ${attempt + 1}:`, e);
-            if (attempt < 2) await new Promise(r => setTimeout(r, 10000));
+            if (attempt < 2) await new Promise(r => setTimeout(r, 5000));
           }
         }
 
-        // Rate limit pause
-        if (bi < batches.length - 1) {
-          await new Promise(r => setTimeout(r, 15000));
-        }
+        completedBatches++;
+        setAiFillProgress(Math.round((completedBatches / batches.length) * 95));
+        setAiFillMsg(`AI: ${completedBatches}/${batches.length} partii (${mode === 'resources' ? 'nakłady' : 'ceny'})...`);
+      };
+
+      // Process batches in parallel (CONCURRENT at a time)
+      for (let i = 0; i < batches.length; i += CONCURRENT) {
+        const chunk = batches.slice(i, i + CONCURRENT).map((_, j) => processBatch(i + j));
+        await Promise.all(chunk);
       }
 
       setAiFillProgress(100);
@@ -11759,20 +11761,34 @@ export const KosztorysEditorPage: React.FC = () => {
 
       {/* AI Fill — Processing Overlay */}
       {aiFillProcessing && (
-        <div className="fixed inset-0 z-[80] bg-gray-500/75 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl max-w-sm w-full shadow-xl p-6 text-center">
-            <div className="mb-4">
-              <Sparkles className="w-8 h-8 text-purple-500 mx-auto animate-pulse" />
-            </div>
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">AI uzupełnia dane...</h3>
-            <p className="text-sm text-gray-500 mb-4">{aiFillMsg || 'Przygotowanie...'}</p>
-            <div className="w-full bg-gray-200 rounded-full h-3 mb-2">
+        <div className="fixed inset-0 z-[80] bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-sm w-full shadow-2xl p-6 text-center">
+            <div className="mb-4 relative w-16 h-16 mx-auto">
+              <div className="absolute inset-0 rounded-full border-4 border-purple-200" />
               <div
-                className="bg-purple-600 h-3 rounded-full transition-all duration-500"
-                style={{ width: `${Math.min(aiFillProgress, 100)}%` }}
+                className="absolute inset-0 rounded-full border-4 border-transparent border-t-purple-600"
+                style={{ animation: 'spin 1s linear infinite' }}
+              />
+              <Sparkles className="w-6 h-6 text-purple-500 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
+            </div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-1">AI uzupełnia dane...</h3>
+            <p className="text-sm text-gray-500 mb-4">{aiFillMsg || 'Przygotowanie...'}</p>
+            <div className="w-full bg-gray-100 rounded-full h-4 mb-2 overflow-hidden relative">
+              <div
+                className="h-4 rounded-full transition-all duration-700 ease-out relative overflow-hidden"
+                style={{
+                  width: `${Math.max(Math.min(aiFillProgress, 100), 2)}%`,
+                  background: 'linear-gradient(90deg, #7c3aed, #a78bfa, #7c3aed)',
+                  backgroundSize: '200% 100%',
+                  animation: 'shimmer 1.5s ease-in-out infinite',
+                }}
               />
             </div>
-            <p className="text-xs text-gray-400">{Math.round(aiFillProgress)}%</p>
+            <p className="text-sm font-medium text-purple-600">{Math.round(aiFillProgress)}%</p>
+            <style>{`
+              @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+              @keyframes spin { to{transform:rotate(360deg)} }
+            `}</style>
           </div>
         </div>
       )}
