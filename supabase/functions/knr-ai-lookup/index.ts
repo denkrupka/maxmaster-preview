@@ -1,10 +1,8 @@
 // Supabase Edge Function: AI-based KNR code lookup
-// Takes position names and returns suggested KNR codes via Claude AI
-// Supports multiple API keys for round-robin rate limit distribution
+// Compact output format for speed — max positions per request
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 
-// Load all available API keys (CLAUDE_API_KEY, CLAUDE_API_KEY_2, CLAUDE_API_KEY_3, ...)
 const API_KEYS: string[] = [];
 const primary = Deno.env.get('CLAUDE_API_KEY');
 if (primary) API_KEYS.push(primary);
@@ -47,45 +45,29 @@ serve(async (req) => {
       );
     }
 
-    // Build prompt with positions list
+    // Build compact position list
     const positionsList = positions.map((p: { id: string; name: string; unit?: string }, i: number) =>
-      `${i + 1}. Nazwa: "${p.name}"${p.unit ? `, j.m.: ${p.unit}` : ''}`
+      `${i}. ${p.name}${p.unit ? ` [${p.unit}]` : ''}`
     ).join('\n');
 
-    const prompt = `Jesteś ekspertem od polskich katalogów nakładów rzeczowych (KNR, KNNR, KSNR, KNR-W, KNNR-W).
+    // Compact prompt — minimal output format to save tokens
+    const prompt = `Ekspert KNR/KNNR. Dla każdej pozycji podaj numer KNR.
 
-Dla każdej pozycji kosztorysowej poniżej, zaproponuj najbardziej odpowiedni numer KNR/KNNR.
-
-Format numeru: "TYP KATALOG TABELA-WARIANT", np.:
-- "KNR 4-03 0313-10"
-- "KNNR 5 0407-01"
-- "KNR 2-02 0803-02"
-- "KNR-W 2-18 0704-01"
-
-Dostępne typy katalogów: KNR, KNNR, KNR-W, KNNR-W, KSNR, KNP, NNRNKB.
-
-Pozycje do analizy:
+Pozycje:
 ${positionsList}
 
-Zwróć TYLKO czysty JSON (bez markdown, bez komentarzy) w formacie:
-{
-  "results": [
-    {
-      "index": 0,
-      "knr_code": "KNR X-XX XXXX-XX",
-      "knr_description": "oficjalna nazwa pozycji z katalogu KNR",
-      "confidence": 0.85,
-      "reasoning": "krótkie uzasadnienie"
-    }
-  ]
-}
+Zwróć TYLKO JSON (bez markdown):
+{"r":[[index,"KNR kod","opis z katalogu",confidence],...]}
 
-Pole "index" odpowiada numerowi pozycji (0-based).
-Pole "knr_description" to oficjalny opis pozycji z katalogu KNR (jak ta pozycja nazywa się w katalogu).
-Pole "confidence" to pewność dopasowania od 0.0 do 1.0.
-Jeśli nie jesteś pewny danej pozycji (confidence < 0.3), ustaw knr_code na pusty string "".`;
+Przykład: {"r":[[0,"KNR 4-03 0313-10","Montaż rur PE",0.8],[1,"KNNR 5 0407-01","Układanie kabli",0.7]]}
 
-    // Try with round-robin key, fallback to next key on rate limit
+Zasady:
+- "KNR kod" w formacie "TYP KATALOG TABELA-WARIANT" (np. "KNR 2-02 0803-02")
+- "opis" — krótki oficjalny opis z katalogu (max 60 znaków)
+- confidence 0.0-1.0
+- Jeśli nie pewny (confidence<0.3) — pomiń tę pozycję
+- Katalogi: KNR, KNNR, KNR-W, KNNR-W, KSNR, KNP, NNRNKB`;
+
     let lastError = '';
     for (let attempt = 0; attempt < API_KEYS.length; attempt++) {
       const apiKey = getNextKey();
@@ -99,7 +81,7 @@ Jeśli nie jesteś pewny danej pozycji (confidence < 0.3), ustaw knr_code na pus
         },
         body: JSON.stringify({
           model: 'claude-sonnet-4-20250514',
-          max_tokens: 2048,
+          max_tokens: 4096,
           messages: [
             { role: 'user', content: prompt },
           ],
@@ -109,7 +91,7 @@ Jeśli nie jesteś pewny danej pozycji (confidence < 0.3), ustaw knr_code na pus
       if (claudeResponse.status === 429) {
         lastError = await claudeResponse.text();
         console.warn(`Key ${attempt + 1}/${API_KEYS.length} rate limited, trying next...`);
-        continue; // try next key
+        continue;
       }
 
       if (!claudeResponse.ok) {
@@ -127,21 +109,26 @@ Jeśli nie jesteś pewny danej pozycji (confidence < 0.3), ustaw knr_code na pus
 
       let jsonText = rawText.trim();
       const jsonMatch = jsonText.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (jsonMatch) {
-        jsonText = jsonMatch[1].trim();
-      }
+      if (jsonMatch) jsonText = jsonMatch[1].trim();
 
-      const parsedData = JSON.parse(jsonText);
+      const parsed = JSON.parse(jsonText);
+
+      // Convert compact format to standard format
+      const results = (parsed.r || []).map((item: any[]) => ({
+        index: item[0],
+        knr_code: item[1] || '',
+        knr_description: item[2] || '',
+        confidence: item[3] || 0,
+      }));
 
       return new Response(
-        JSON.stringify({ success: true, data: parsedData, keysAvailable: API_KEYS.length }),
+        JSON.stringify({ success: true, data: { results } }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // All keys exhausted
     return new Response(
-      JSON.stringify({ error: 'All API keys rate limited', details: lastError, keysAvailable: API_KEYS.length }),
+      JSON.stringify({ error: 'All API keys rate limited', details: lastError }),
       { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   } catch (error) {

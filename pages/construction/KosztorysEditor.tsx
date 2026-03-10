@@ -3486,7 +3486,7 @@ export const KosztorysEditorPage: React.FC = () => {
       setKnrProcessingMsg(`Wysyłanie ${notFoundInPortal.length} pozycji do AI...`);
 
       try {
-        const BATCH_SIZE = 5;
+        const BATCH_SIZE = 30;
         const batches: { posId: string; name: string; unit: string }[][] = [];
         for (let i = 0; i < notFoundInPortal.length; i += BATCH_SIZE) {
           batches.push(notFoundInPortal.slice(i, i + BATCH_SIZE));
@@ -3515,10 +3515,10 @@ export const KosztorysEditorPage: React.FC = () => {
                 break;
               }
               console.warn(`AI batch ${batchIdx} attempt ${attempt + 1} failed, retrying...`);
-              if (attempt < 2) await new Promise(r => setTimeout(r, 8000));
+              if (attempt < 2) await new Promise(r => setTimeout(r, 12000));
             } catch (e) {
               console.error(`AI batch ${batchIdx} attempt ${attempt + 1} error:`, e);
-              if (attempt < 2) await new Promise(r => setTimeout(r, 5000));
+              if (attempt < 2) await new Promise(r => setTimeout(r, 8000));
             }
           }
           completedBatches++;
@@ -3531,10 +3531,10 @@ export const KosztorysEditorPage: React.FC = () => {
           await processBatch(batches[i], i);
           if (i < batches.length - 1) {
             const remaining = batches.length - i - 1;
-            const etaSec = remaining * 12; // ~12s per batch (8s wait + ~4s processing)
+            const etaSec = remaining * 16; // ~16s per batch (12s wait + ~4s processing)
             const etaMin = Math.ceil(etaSec / 60);
             setKnrProcessingMsg(`AI: ${completedBatches}/${batches.length} partii · ~${etaMin} min`);
-            await new Promise(r => setTimeout(r, 8000));
+            await new Promise(r => setTimeout(r, 12000));
           }
         }
 
