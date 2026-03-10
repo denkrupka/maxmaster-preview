@@ -13758,12 +13758,28 @@ export const KosztorysEditorPage: React.FC = () => {
             }
           };
 
+          const getRowName = (rowIdx: number): string => {
+            const row = xlsxPreview.allRows[rowIdx];
+            if (!row) return '';
+            // Try name column first
+            if (xlsxMapping.colName >= 0) {
+              const v = String(row[xlsxMapping.colName] ?? '').trim();
+              if (v) return v;
+            }
+            // Fallback: longest non-empty cell in row
+            let best = '';
+            for (let c = 0; c < Math.min(row.length, maxCols); c++) {
+              const v = String(row[c] ?? '').trim();
+              if (v.length > best.length && isNaN(Number(v))) best = v;
+            }
+            return best;
+          };
+
           const cycleRowType = (rowIdx: number) => {
             setXlsxAiStructure(prev => {
               const existing = prev.find(s => s.row === rowIdx);
               if (!existing) {
-                const cellName = xlsxPreview.allRows[rowIdx]?.[xlsxMapping.colName >= 0 ? xlsxMapping.colName : 0];
-                return [...prev, { row: rowIdx, type: 'dzial' as const, name: String(cellName ?? '').trim() }];
+                return [...prev, { row: rowIdx, type: 'dzial' as const, name: getRowName(rowIdx) }];
               }
               if (existing.type === 'dzial') return prev.map(s => s.row === rowIdx ? { ...s, type: 'poddzial' as const } : s);
               if (existing.type === 'poddzial') return prev.map(s => s.row === rowIdx ? { ...s, type: 'ignore' as const, reason: 'ręcznie' } : s);
@@ -13779,23 +13795,28 @@ export const KosztorysEditorPage: React.FC = () => {
             });
           };
 
-          // Check if a row should be hidden (inside a collapsed section/subsection)
-          const isRowHidden = (rowIdx: number): boolean => {
-            // Check if inside a collapsed section
-            for (const sec of sectionEntries) {
-              if (!xlsxCollapsedSections.has(sec.row)) continue;
-              const nextSecRow = sectionEntries.find(s => s.row > sec.row)?.row ?? Infinity;
-              if (rowIdx > sec.row && rowIdx < nextSecRow) return true;
+          // Precompute hidden row ranges for collapsed sections/subsections
+          const hiddenRanges: [number, number][] = [];
+          for (let si = 0; si < sectionEntries.length; si++) {
+            const sec = sectionEntries[si];
+            const nextSecRow = si + 1 < sectionEntries.length ? sectionEntries[si + 1].row : Infinity;
+            if (xlsxCollapsedSections.has(sec.row)) {
+              // Entire section collapsed — hide everything between sec.row and nextSecRow
+              hiddenRanges.push([sec.row + 1, nextSecRow]);
+            } else {
+              // Section open — check collapsed subsections within it
+              const subs = subsectionEntries.filter(s => s.row > sec.row && s.row < nextSecRow).sort((a, b) => a.row - b.row);
+              for (let subi = 0; subi < subs.length; subi++) {
+                if (xlsxCollapsedSections.has(subs[subi].row)) {
+                  const nextSubRow = subi + 1 < subs.length ? subs[subi + 1].row : nextSecRow;
+                  hiddenRanges.push([subs[subi].row + 1, nextSubRow]);
+                }
+              }
             }
-            // Check if inside a collapsed subsection
-            for (const sub of subsectionEntries) {
-              if (!xlsxCollapsedSections.has(sub.row)) continue;
-              const parentSec = sectionEntries.filter(s => s.row < sub.row).pop();
-              const nextSecRow = parentSec ? (sectionEntries.find(s => s.row > parentSec.row)?.row ?? Infinity) : Infinity;
-              const allSubs = xlsxAiStructure.filter(s => s.type === 'poddzial' && s.row > (parentSec?.row ?? -1) && s.row < nextSecRow).sort((a, b) => a.row - b.row);
-              const subIdx = allSubs.findIndex(s => s.row === sub.row);
-              const nextSubRow = subIdx + 1 < allSubs.length ? allSubs[subIdx + 1].row : nextSecRow;
-              if (rowIdx > sub.row && rowIdx < nextSubRow) return true;
+          }
+          const isRowHidden = (rowIdx: number): boolean => {
+            for (const [from, to] of hiddenRanges) {
+              if (rowIdx >= from && rowIdx < to) return true;
             }
             return false;
           };
@@ -13889,7 +13910,7 @@ export const KosztorysEditorPage: React.FC = () => {
                                 }}
                               >
                                 <span className="text-[10px] px-1 py-0.5 bg-blue-100 text-blue-700 rounded font-bold flex-shrink-0">D</span>
-                                <span className="text-[11px] text-gray-800 font-medium truncate flex-1" title={sec.name}>{sec.name || `Dział (w.${sec.row + 1})`}</span>
+                                <span className="text-[11px] text-gray-800 font-medium truncate flex-1" title={sec.name || getRowName(sec.row)}>{sec.name || getRowName(sec.row) || `Dział (w.${sec.row + 1})`}</span>
                                 <span className="text-[9px] text-gray-400 flex-shrink-0">{sec.totalPosCount}</span>
                               </button>
                             </div>
@@ -13910,7 +13931,7 @@ export const KosztorysEditorPage: React.FC = () => {
                                     }}
                                   >
                                     <span className="text-[9px] px-1 py-0.5 bg-sky-100 text-sky-700 rounded font-bold flex-shrink-0">P</span>
-                                    <span className="text-[10px] text-gray-700 truncate flex-1" title={sub.name}>{sub.name || `Poddział (w.${sub.row + 1})`}</span>
+                                    <span className="text-[10px] text-gray-700 truncate flex-1" title={sub.name || getRowName(sub.row)}>{sub.name || getRowName(sub.row) || `Poddział (w.${sub.row + 1})`}</span>
                                     <span className="text-[9px] text-gray-400 flex-shrink-0">{sub.posCount}</span>
                                   </button>
                                 </div>
