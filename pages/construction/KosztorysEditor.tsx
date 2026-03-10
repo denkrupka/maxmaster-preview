@@ -1091,6 +1091,7 @@ export const KosztorysEditorPage: React.FC = () => {
   const [knrProcessingProgress, setKnrProcessingProgress] = useState(0);
   const [knrScope, setKnrScope] = useState<'all' | 'empty'>('empty');
   const [knrReviewSelectedId, setKnrReviewSelectedId] = useState<string | null>(null);
+  const [knrVisibleCount, setKnrVisibleCount] = useState(200);
 
   // Comments panel state
   const [showCommentsPanel, setShowCommentsPanel] = useState(false);
@@ -14261,16 +14262,15 @@ export const KosztorysEditorPage: React.FC = () => {
               // knrReviewItems IS the pending list — items are removed on accept/reject
               const pendingItems = knrReviewItems;
               const selectedId = knrReviewSelectedId && pendingItems.some(i => i.posId === knrReviewSelectedId) ? knrReviewSelectedId : pendingItems[0]?.posId || null;
-              const MAX_VISIBLE = 200;
-              const visibleItems = pendingItems.slice(0, MAX_VISIBLE);
-              const hasMore = pendingItems.length > MAX_VISIBLE;
+              const visibleItems = pendingItems.slice(0, knrVisibleCount);
+              const hasMore = pendingItems.length > knrVisibleCount;
               return (
               <div className="w-[950px]">
                 <div className="px-6 py-4 border-b flex items-center justify-between">
                   <div>
                     <h2 className="text-base font-bold text-gray-900">Weryfikacja KNR</h2>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      Pozostało: {pendingItems.length} pozycji{hasMore ? ` (wyświetlono ${MAX_VISIBLE})` : ''}
+                      Pozostało: {pendingItems.length} pozycji{hasMore ? ` (załadowano ${visibleItems.length})` : ''}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
@@ -14301,7 +14301,12 @@ export const KosztorysEditorPage: React.FC = () => {
                     </button>
                   </div>
                 </div>
-                <div className="max-h-[60vh] overflow-y-auto">
+                <div className="max-h-[60vh] overflow-y-auto" onScroll={e => {
+                  const el = e.currentTarget;
+                  if (hasMore && el.scrollTop + el.clientHeight >= el.scrollHeight - 100) {
+                    setKnrVisibleCount(prev => prev + 200);
+                  }
+                }}>
                   <table className="w-full text-sm">
                     <thead className="bg-gray-50 sticky top-0 z-10">
                       <tr>
