@@ -1053,6 +1053,8 @@ export const KosztorysEditorPage: React.FC = () => {
   const [xlsxAiStructure, setXlsxAiStructure] = useState<XlsxAiStructureEntry[]>([]);
   const [xlsxAiLoading, setXlsxAiLoading] = useState(false);
   const [xlsxAiError, setXlsxAiError] = useState<string | null>(null);
+  const [xlsxCollapsedSections, setXlsxCollapsedSections] = useState<Set<number>>(new Set());
+  const [xlsxTreeOpen, setXlsxTreeOpen] = useState(true);
 
   // KNR import flow state
   type KnrImportStep = 'choice' | 'ai-mode' | 'ai-scope' | 'processing' | 'review' | 'stats';
@@ -13691,28 +13693,43 @@ export const KosztorysEditorPage: React.FC = () => {
           const hdrIdx = xlsxMapping.headerRowIdx;
           const maxCols = Math.min(xlsxPreview.totalCols, 10);
           const dynHeaderRow = xlsxPreview.allRows[hdrIdx]?.map((c: any) => String(c ?? '').trim()).slice(0, maxCols) || [];
-          // Build row type lookup from AI structure
           const structureMap = new Map<number, XlsxAiStructureEntry>();
           for (const s of xlsxAiStructure) structureMap.set(s.row, s);
-          // Count sections
-          const sectionEntries = xlsxAiStructure.filter(s => s.type === 'dzial');
+          const sectionEntries = xlsxAiStructure.filter(s => s.type === 'dzial').sort((a, b) => a.row - b.row);
           const subsectionEntries = xlsxAiStructure.filter(s => s.type === 'poddzial');
           const ignoreEntries = xlsxAiStructure.filter(s => s.type === 'ignore');
           // All data rows after header
           const allDataRows = xlsxPreview.allRows.slice(hdrIdx + 1).map((row, i) => ({
             rowIdx: hdrIdx + 1 + i,
             cells: (row || []).slice(0, maxCols).map((c: any) => String(c ?? '').trim()),
-          }));
+          })).filter(r => r.cells.some(c => c.length > 0));
+
+          // Build tree: sections → subsections → position count
+          const tree = sectionEntries.map((sec, si) => {
+            const nextSecRow = si + 1 < sectionEntries.length ? sectionEntries[si + 1].row : Infinity;
+            const subs = xlsxAiStructure.filter(s => s.type === 'poddzial' && s.row > sec.row && s.row < nextSecRow).sort((a, b) => a.row - b.row);
+            // Count positions in each subsection
+            const subsWithCounts = subs.map((sub, subi) => {
+              const nextSubRow = subi + 1 < subs.length ? subs[subi + 1].row : nextSecRow;
+              const posCount = allDataRows.filter(r => r.rowIdx > sub.row && r.rowIdx < nextSubRow && !structureMap.has(r.rowIdx)).length;
+              return { ...sub, posCount };
+            });
+            // Positions directly in section (before first subsection or if no subsections)
+            const firstSubRow = subs.length > 0 ? subs[0].row : nextSecRow;
+            const directPosCount = allDataRows.filter(r => r.rowIdx > sec.row && r.rowIdx < firstSubRow && !structureMap.has(r.rowIdx)).length;
+            const totalPosCount = directPosCount + subsWithCounts.reduce((sum, s) => sum + s.posCount, 0);
+            return { ...sec, subs: subsWithCounts, directPosCount, totalPosCount };
+          });
 
           const closeModal = () => {
             setXlsxPreview(null); setXlsxMapping(null); setXlsxAiAnalysis(null);
             setXlsxAiStructure([]); setXlsxAiError(null); setXlsxAiLoading(false);
+            setXlsxCollapsedSections(new Set()); setXlsxTreeOpen(true);
           };
 
           const doImport = () => {
             if (!xlsxPreview || !xlsxMapping || xlsxMapping.colName < 0) return;
             try {
-              // Use AI structure if available, otherwise fallback to heuristic
               const importedData = xlsxAiStructure.length > 0
                 ? parseXlsxWithAiStructure(
                     xlsxPreview.allRows,
@@ -13738,71 +13755,87 @@ export const KosztorysEditorPage: React.FC = () => {
             }
           };
 
-          // Toggle row type
           const cycleRowType = (rowIdx: number) => {
             setXlsxAiStructure(prev => {
               const existing = prev.find(s => s.row === rowIdx);
               if (!existing) {
-                // Position → dział
                 const cellName = xlsxPreview.allRows[rowIdx]?.[xlsxMapping.colName >= 0 ? xlsxMapping.colName : 0];
                 return [...prev, { row: rowIdx, type: 'dzial' as const, name: String(cellName ?? '').trim() }];
               }
-              if (existing.type === 'dzial') {
-                return prev.map(s => s.row === rowIdx ? { ...s, type: 'poddzial' as const } : s);
-              }
-              if (existing.type === 'poddzial') {
-                return prev.map(s => s.row === rowIdx ? { ...s, type: 'ignore' as const, reason: 'ręcznie' } : s);
-              }
-              // ignore → remove (back to position)
+              if (existing.type === 'dzial') return prev.map(s => s.row === rowIdx ? { ...s, type: 'poddzial' as const } : s);
+              if (existing.type === 'poddzial') return prev.map(s => s.row === rowIdx ? { ...s, type: 'ignore' as const, reason: 'ręcznie' } : s);
               return prev.filter(s => s.row !== rowIdx);
             });
           };
 
+          const toggleCollapse = (rowIdx: number) => {
+            setXlsxCollapsedSections(prev => {
+              const next = new Set(prev);
+              if (next.has(rowIdx)) next.delete(rowIdx); else next.add(rowIdx);
+              return next;
+            });
+          };
+
+          // Check if a row should be hidden (inside a collapsed section/subsection)
+          const isRowHidden = (rowIdx: number): boolean => {
+            // Check if inside a collapsed section
+            for (const sec of sectionEntries) {
+              if (!xlsxCollapsedSections.has(sec.row)) continue;
+              const nextSecRow = sectionEntries.find(s => s.row > sec.row)?.row ?? Infinity;
+              if (rowIdx > sec.row && rowIdx < nextSecRow) return true;
+            }
+            // Check if inside a collapsed subsection
+            for (const sub of subsectionEntries) {
+              if (!xlsxCollapsedSections.has(sub.row)) continue;
+              const parentSec = sectionEntries.filter(s => s.row < sub.row).pop();
+              const nextSecRow = parentSec ? (sectionEntries.find(s => s.row > parentSec.row)?.row ?? Infinity) : Infinity;
+              const allSubs = xlsxAiStructure.filter(s => s.type === 'poddzial' && s.row > (parentSec?.row ?? -1) && s.row < nextSecRow).sort((a, b) => a.row - b.row);
+              const subIdx = allSubs.findIndex(s => s.row === sub.row);
+              const nextSubRow = subIdx + 1 < allSubs.length ? allSubs[subIdx + 1].row : nextSecRow;
+              if (rowIdx > sub.row && rowIdx < nextSubRow) return true;
+            }
+            return false;
+          };
+
           return (
         <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center" onClick={closeModal}>
-          <div className="bg-white rounded-xl shadow-2xl w-[1050px] max-w-[97vw] max-h-[92vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+          <div className="bg-white rounded-xl shadow-2xl w-[1150px] max-w-[97vw] max-h-[92vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
             {/* Header */}
-            <div className="px-6 py-3 border-b flex items-center justify-between flex-shrink-0">
+            <div className="px-5 py-3 border-b flex items-center justify-between flex-shrink-0">
               <div>
                 <h2 className="text-base font-bold text-gray-900 flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-purple-500" />
-                  Analiza AI — {xlsxPreview.activeSheet}
+                  Analiza importu — {xlsxPreview.activeSheet}
                 </h2>
                 <p className="text-xs text-gray-500 mt-0.5">
                   {xlsxPreview.totalRows} wierszy • {sectionEntries.length} działów • {subsectionEntries.length} poddziałów • {ignoreEntries.length} ignorowanych
+                  {xlsxAiLoading && <span className="ml-2 text-purple-600"><Loader2 className="w-3 h-3 animate-spin inline" /> AI analizuje...</span>}
                 </p>
               </div>
               <button onClick={closeModal} className="p-1 hover:bg-gray-100 rounded-lg"><X className="w-5 h-5 text-gray-400" /></button>
             </div>
 
-            {/* AI loading indicator */}
-            {xlsxAiLoading && (
-              <div className="px-6 py-3 bg-purple-50 border-b flex items-center gap-3">
-                <Loader2 className="w-4 h-4 text-purple-600 animate-spin" />
-                <span className="text-sm text-purple-700">AI analizuje strukturę pliku...</span>
-              </div>
-            )}
             {xlsxAiError && (
-              <div className="px-6 py-2 bg-amber-50 border-b flex items-center gap-2">
+              <div className="px-5 py-2 bg-amber-50 border-b flex items-center gap-2 flex-shrink-0">
                 <AlertCircle className="w-4 h-4 text-amber-500" />
                 <span className="text-xs text-amber-700">{xlsxAiError}</span>
               </div>
             )}
 
-            {/* Column mapping row */}
-            <div className="px-4 py-3 border-b bg-gray-50 flex-shrink-0">
-              <div className="grid grid-cols-7 gap-2">
+            {/* Column mapping */}
+            <div className="px-4 py-2.5 border-b bg-gray-50 flex-shrink-0">
+              <div className="grid grid-cols-6 gap-2">
                 {([
-                  { key: 'colLp', label: 'Lp / Nr', color: '' },
-                  { key: 'colBase', label: 'Podstawa (KNR)', color: '' },
-                  { key: 'colName', label: 'Opis / Nazwa ★', color: 'border-blue-400 bg-blue-50' },
-                  { key: 'colUnit', label: 'J.m.', color: '' },
-                  { key: 'colQty', label: 'Ilość', color: '' },
+                  { key: 'colLp', label: 'Lp / Nr' },
+                  { key: 'colBase', label: 'Podstawa (KNR)' },
+                  { key: 'colName', label: 'Opis / Nazwa ★' },
+                  { key: 'colUnit', label: 'J.m.' },
+                  { key: 'colQty', label: 'Ilość' },
                 ] as const).map(col => (
                   <div key={col.key}>
                     <label className={`block text-[10px] font-medium mb-0.5 ${col.key === 'colName' ? 'text-blue-600 font-bold' : 'text-gray-500'}`}>{col.label}</label>
                     <select value={(xlsxMapping as any)[col.key]} onChange={e => setXlsxMapping(prev => prev ? { ...prev, [col.key]: +e.target.value } : prev)}
-                      className={`w-full text-xs border rounded-lg px-2 py-1 ${col.color || 'border-gray-300'}`}>
+                      className={`w-full text-xs border rounded-lg px-2 py-1 ${col.key === 'colName' ? 'border-blue-400 bg-blue-50' : 'border-gray-300'}`}>
                       <option value={-1}>— brak —</option>
                       {dynHeaderRow.map((h, i) => <option key={i} value={i}>{h || `Kol. ${i + 1}`}</option>)}
                     </select>
@@ -13814,108 +13847,128 @@ export const KosztorysEditorPage: React.FC = () => {
                     onChange={e => setXlsxMapping(prev => prev ? { ...prev, headerRowIdx: Math.max(0, +e.target.value - 1) } : prev)}
                     className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1" />
                 </div>
-                <div className="flex items-end">
-                  <div className="text-[9px] text-gray-400 leading-tight">
-                    Kliknij typ wiersza<br/>aby go zmienić
-                  </div>
-                </div>
               </div>
             </div>
 
-            {/* Section structure summary */}
-            {xlsxAiStructure.length > 0 && (
-              <div className="px-4 py-2 border-b bg-white flex-shrink-0">
-                <div className="flex items-center gap-3 flex-wrap">
-                  <span className="text-[10px] font-medium text-gray-500">Struktura:</span>
-                  {sectionEntries.map((s, i) => {
-                    const subs = xlsxAiStructure.filter(sub => sub.type === 'poddzial' && sub.row > s.row && (i + 1 < sectionEntries.length ? sub.row < sectionEntries[i + 1].row : true));
-                    return (
-                      <div key={s.row} className="flex items-center gap-1">
-                        <span className="text-[10px] px-1.5 py-0.5 bg-blue-100 text-blue-800 rounded font-medium truncate max-w-[150px]" title={s.name}>
-                          {s.name || `Dział (w.${s.row + 1})`}
-                        </span>
-                        {subs.length > 0 && <span className="text-[9px] text-gray-400">({subs.length} poddz.)</span>}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Preview table with row types */}
-            <div className="flex-1 overflow-auto min-h-0">
-              <table className="w-full text-xs">
-                <thead className="bg-gray-100 sticky top-0 z-10">
-                  <tr>
-                    <th className="px-1.5 py-1.5 text-left text-gray-400 font-normal w-8 sticky left-0 bg-gray-100">#</th>
-                    <th className="px-1.5 py-1.5 text-left text-gray-500 font-medium w-[70px]">Typ</th>
-                    {dynHeaderRow.map((h, i) => {
-                      let highlight = '';
-                      let label = '';
-                      if (i === xlsxMapping.colName) { highlight = 'bg-blue-100 text-blue-800 font-bold'; label = ' ★'; }
-                      else if (i === xlsxMapping.colBase) { highlight = 'bg-green-100 text-green-800 font-bold'; label = ' [KNR]'; }
-                      else if (i === xlsxMapping.colUnit) { highlight = 'bg-amber-100 text-amber-800'; }
-                      else if (i === xlsxMapping.colQty) { highlight = 'bg-purple-100 text-purple-800'; }
-                      else if (i === xlsxMapping.colLp) { highlight = 'bg-gray-200 text-gray-700'; }
-                      return <th key={i} className={`px-1.5 py-1.5 text-left whitespace-nowrap ${highlight}`}>{h || `Kol.${i + 1}`}{label}</th>;
+            {/* Main content: tree sidebar + table */}
+            <div className="flex-1 flex min-h-0">
+              {/* Left: Tree navigation */}
+              {xlsxTreeOpen && sectionEntries.length > 0 && (
+                <div className="w-[220px] border-r bg-gray-50/50 overflow-y-auto flex-shrink-0">
+                  <div className="p-2">
+                    <div className="text-[10px] font-medium text-gray-400 uppercase tracking-wide mb-1.5 px-1">Struktura</div>
+                    {tree.map(sec => {
+                      const isCollapsed = xlsxCollapsedSections.has(sec.row);
+                      return (
+                        <div key={sec.row} className="mb-0.5">
+                          <button
+                            className="w-full flex items-center gap-1 px-1.5 py-1 rounded hover:bg-blue-50 text-left group"
+                            onClick={() => toggleCollapse(sec.row)}
+                          >
+                            {sec.subs.length > 0 ? (
+                              isCollapsed ? <ChevronRight className="w-3 h-3 text-gray-400" /> : <ChevronDown className="w-3 h-3 text-gray-400" />
+                            ) : <div className="w-3" />}
+                            <span className="text-[10px] px-1 py-0.5 bg-blue-100 text-blue-700 rounded font-bold flex-shrink-0">D</span>
+                            <span className="text-[11px] text-gray-800 font-medium truncate flex-1" title={sec.name}>{sec.name || `Dział (w.${sec.row + 1})`}</span>
+                            <span className="text-[9px] text-gray-400 flex-shrink-0">{sec.totalPosCount}</span>
+                          </button>
+                          {!isCollapsed && sec.subs.map(sub => (
+                            <button
+                              key={sub.row}
+                              className="w-full flex items-center gap-1 pl-5 pr-1.5 py-0.5 rounded hover:bg-sky-50 text-left"
+                              onClick={() => toggleCollapse(sub.row)}
+                            >
+                              {xlsxCollapsedSections.has(sub.row) ? <ChevronRight className="w-2.5 h-2.5 text-gray-400" /> : <ChevronDown className="w-2.5 h-2.5 text-gray-400" />}
+                              <span className="text-[9px] px-1 py-0.5 bg-sky-100 text-sky-700 rounded font-bold flex-shrink-0">P</span>
+                              <span className="text-[10px] text-gray-700 truncate flex-1" title={sub.name}>{sub.name || `Poddział (w.${sub.row + 1})`}</span>
+                              <span className="text-[9px] text-gray-400 flex-shrink-0">{sub.posCount}</span>
+                            </button>
+                          ))}
+                        </div>
+                      );
                     })}
-                  </tr>
-                </thead>
-                <tbody>
-                  {allDataRows.map(({ rowIdx, cells }) => {
-                    const entry = structureMap.get(rowIdx);
-                    const rowType = entry?.type || 'position';
-                    let rowBg = 'hover:bg-gray-50';
-                    let typeBadge = <span className="text-[9px] text-gray-400">Poz.</span>;
-                    if (rowType === 'dzial') {
-                      rowBg = 'bg-blue-50 hover:bg-blue-100 font-medium';
-                      typeBadge = <span className="text-[9px] px-1 py-0.5 bg-blue-200 text-blue-800 rounded font-bold">Dział</span>;
-                    } else if (rowType === 'poddzial') {
-                      rowBg = 'bg-sky-50 hover:bg-sky-100';
-                      typeBadge = <span className="text-[9px] px-1 py-0.5 bg-sky-200 text-sky-800 rounded font-bold">Poddz.</span>;
-                    } else if (rowType === 'ignore') {
-                      rowBg = 'bg-gray-100 hover:bg-gray-200 opacity-50';
-                      typeBadge = <span className="text-[9px] px-1 py-0.5 bg-red-100 text-red-600 rounded line-through">Ign.</span>;
-                    }
-                    // Skip empty rows
-                    const hasContent = cells.some(c => c.length > 0);
-                    if (!hasContent) return null;
+                    {/* Orphan positions (before first section) */}
+                    {allDataRows.length > 0 && (sectionEntries.length === 0 || allDataRows[0].rowIdx < sectionEntries[0].row) && (
+                      <div className="text-[10px] text-gray-400 px-1.5 py-1 italic">
+                        Pozycje bez działu: {allDataRows.filter(r => r.rowIdx < (sectionEntries[0]?.row ?? Infinity) && !structureMap.has(r.rowIdx)).length}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
-                    return (
-                      <tr key={rowIdx} className={`border-t border-gray-100 cursor-pointer transition-colors ${rowBg}`}>
-                        <td className="px-1.5 py-1 text-gray-400 sticky left-0 bg-inherit">{rowIdx + 1}</td>
-                        <td className="px-1.5 py-1" onClick={() => cycleRowType(rowIdx)}>{typeBadge}</td>
-                        {cells.map((val, cIdx) => {
-                          let highlight = '';
-                          if (cIdx === xlsxMapping.colName) highlight = rowType === 'position' ? 'bg-blue-50/50 font-medium' : '';
-                          else if (cIdx === xlsxMapping.colBase) highlight = 'bg-green-50/50';
-                          else if (cIdx === xlsxMapping.colUnit) highlight = 'bg-amber-50/50';
-                          else if (cIdx === xlsxMapping.colQty) highlight = 'bg-purple-50/50';
-                          return <td key={cIdx} className={`px-1.5 py-1 max-w-[180px] truncate ${highlight}`} title={val}>{val}</td>;
-                        })}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              {/* Right: Table */}
+              <div className="flex-1 overflow-auto min-h-0">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-100 sticky top-0 z-10">
+                    <tr>
+                      <th className="px-1.5 py-1.5 text-left text-gray-400 font-normal w-8">#</th>
+                      <th className="px-1.5 py-1.5 text-left text-gray-500 font-medium w-[60px]">Typ</th>
+                      {dynHeaderRow.map((h, i) => {
+                        let hl = '';
+                        if (i === xlsxMapping.colName) hl = 'bg-blue-100 text-blue-800 font-bold';
+                        else if (i === xlsxMapping.colBase) hl = 'bg-green-100 text-green-800 font-bold';
+                        else if (i === xlsxMapping.colUnit) hl = 'bg-amber-100 text-amber-800';
+                        else if (i === xlsxMapping.colQty) hl = 'bg-purple-100 text-purple-800';
+                        else if (i === xlsxMapping.colLp) hl = 'bg-gray-200 text-gray-700';
+                        return <th key={i} className={`px-1.5 py-1.5 text-left whitespace-nowrap ${hl}`}>{h || `Kol.${i + 1}`}</th>;
+                      })}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {allDataRows.map(({ rowIdx, cells }) => {
+                      if (isRowHidden(rowIdx)) return null;
+                      const entry = structureMap.get(rowIdx);
+                      const rowType = entry?.type || 'position';
+                      const isCollapsible = (rowType === 'dzial' || rowType === 'poddzial');
+                      const isCollapsed = xlsxCollapsedSections.has(rowIdx);
+
+                      let rowBg = 'hover:bg-gray-50';
+                      let typeBadge = <span className="text-[9px] text-gray-400">Poz.</span>;
+                      if (rowType === 'dzial') {
+                        rowBg = 'bg-blue-50 hover:bg-blue-100 font-medium';
+                        typeBadge = <span className="text-[9px] px-1 py-0.5 bg-blue-200 text-blue-800 rounded font-bold cursor-pointer">Dział</span>;
+                      } else if (rowType === 'poddzial') {
+                        rowBg = 'bg-sky-50 hover:bg-sky-100';
+                        typeBadge = <span className="text-[9px] px-1 py-0.5 bg-sky-200 text-sky-800 rounded font-bold cursor-pointer">Poddz.</span>;
+                      } else if (rowType === 'ignore') {
+                        rowBg = 'bg-gray-100 hover:bg-gray-200 opacity-50';
+                        typeBadge = <span className="text-[9px] px-1 py-0.5 bg-red-100 text-red-600 rounded line-through cursor-pointer">Ign.</span>;
+                      }
+
+                      return (
+                        <tr key={rowIdx} className={`border-t border-gray-100 transition-colors ${rowBg}`}>
+                          <td className="px-1.5 py-1 text-gray-400">
+                            {isCollapsible ? (
+                              <button onClick={() => toggleCollapse(rowIdx)} className="p-0 text-gray-400 hover:text-gray-600">
+                                {isCollapsed ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                              </button>
+                            ) : <span className="pl-0.5">{rowIdx + 1}</span>}
+                          </td>
+                          <td className="px-1.5 py-1" onClick={() => cycleRowType(rowIdx)}>{typeBadge}</td>
+                          {cells.map((val, cIdx) => {
+                            let hl = '';
+                            if (cIdx === xlsxMapping.colName && rowType === 'position') hl = 'bg-blue-50/50 font-medium';
+                            else if (cIdx === xlsxMapping.colBase) hl = 'bg-green-50/50';
+                            else if (cIdx === xlsxMapping.colUnit) hl = 'bg-amber-50/50';
+                            else if (cIdx === xlsxMapping.colQty) hl = 'bg-purple-50/50';
+                            return <td key={cIdx} className={`px-1.5 py-1 max-w-[180px] truncate ${hl}`} title={val}>{val}</td>;
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
 
             {/* Footer */}
-            <div className="flex items-center justify-between p-4 border-t flex-shrink-0">
-              <div className="flex items-center gap-3 text-[10px] text-gray-500">
-                <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded">Dział</span>
-                <span className="px-1.5 py-0.5 bg-sky-100 text-sky-700 rounded">Poddział</span>
-                <span className="px-1.5 py-0.5 bg-red-50 text-red-500 rounded line-through">Ignoruj</span>
-                <span className="text-gray-400">Poz.</span>
-                <span className="text-gray-400 ml-2">← kliknij typ by zmienić</span>
-              </div>
-              <div className="flex gap-3">
-                <button onClick={closeModal} className="px-4 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg">Anuluj</button>
-                <button onClick={doImport} disabled={xlsxMapping.colName < 0 || xlsxAiLoading}
-                  className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50 flex items-center gap-2">
-                  {xlsxAiLoading ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Czekaj na AI...</> : 'Importuj'}
-                </button>
-              </div>
+            <div className="flex items-center justify-end gap-3 px-5 py-3 border-t flex-shrink-0">
+              <button onClick={closeModal} className="px-4 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg">Anuluj</button>
+              <button onClick={doImport} disabled={xlsxMapping.colName < 0 || xlsxAiLoading}
+                className="px-5 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50 flex items-center gap-2">
+                {xlsxAiLoading ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Czekaj na AI...</> : 'Importuj'}
+              </button>
             </div>
           </div>
         </div>

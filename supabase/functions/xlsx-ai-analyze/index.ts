@@ -72,10 +72,12 @@ Zwróć TYLKO czysty JSON (bez markdown, bez komentarzy) w formacie:
 ZASADY:
 - "columns" — indeksy kolumn (0-based). Jeśli kolumna nie istnieje, ustaw -1
 - "headerRow" — wiersz z nagłówkami kolumn (np. "Lp.", "Opis", "J.m.", "Ilość")
+- KOLUMNA "base" (KNR): Ustaw TYLKO jeśli kolumna zawiera PRAWDZIWE numery KNR/KNNR w formacie typu "KNR 2-01 0101-01", "KNNR 5 0407-01". Kody typu "ST-", "KB-A-TS-", "SST", "OST" to NIE SĄ KNR — dla takich kolumn ustaw base na -1
 - "structure" — lista WSZYSTKICH specjalnych wierszy (nie-pozycji):
   - "dzial" — nagłówek działu (główna kategoria prac)
   - "poddzial" — nagłówek poddziału (podkategoria w dziale)
   - "ignore" — wiersze do pominięcia: podsumowania ("Razem", "Suma", "Ogółem"), puste wiersze formatujące, dodatkowe nagłówki, wiersze z wartościami bez nazw pozycji
+- HIERARCHIA: Każdy "poddzial" MUSI znajdować się po jakimś "dzial". Nie może być poddziału bez wcześniejszego działu. Jeśli widzisz strukturę hierarchiczną ale bez wyraźnych działów nadrzędnych — traktuj je jako "dzial", a podkategorie jako "poddzial"
 - Zwykłe pozycje kosztorysowe NIE powinny pojawiać się w "structure"
 - Wiersze sekcji (dział/poddział) zwykle: nie mają jednostki miary, nie mają ilości, mają opisową nazwę kategorii
 - Wiersze podsumowań często zawierają: "Razem", "Suma", "Ogółem", "RAZEM", "Wartość"
