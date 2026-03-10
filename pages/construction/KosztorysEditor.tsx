@@ -3487,21 +3487,22 @@ export const KosztorysEditorPage: React.FC = () => {
 
       try {
         const BATCH_SIZE = 10;
-        const PARALLEL = 1;
         const batches: { posId: string; name: string; unit: string }[][] = [];
         for (let i = 0; i < notFoundInPortal.length; i += BATCH_SIZE) {
           batches.push(notFoundInPortal.slice(i, i + BATCH_SIZE));
         }
 
         let completedBatches = 0;
+        let detectedKeys = 1; // will be updated from first response
         const processBatch = async (chunk: typeof notFoundInPortal, batchIdx: number) => {
-          // Retry up to 2 times on failure
-          for (let attempt = 0; attempt < 2; attempt++) {
+          // Retry up to 2 times on failure (rate limit retry with 12s delay)
+          for (let attempt = 0; attempt < 3; attempt++) {
             try {
               const { data: aiData, error: aiError } = await supabase.functions.invoke('knr-ai-lookup', {
                 body: { positions: chunk.map(p => ({ id: p.posId, name: p.name, unit: p.unit })) },
               });
               if (!aiError && aiData?.success && aiData.data?.results) {
+                if (aiData.keysAvailable) detectedKeys = aiData.keysAvailable;
                 for (const result of aiData.data.results) {
                   const idx = result.index;
                   if (idx >= 0 && idx < chunk.length && result.knr_code && result.knr_code.trim()) {
@@ -3516,27 +3517,33 @@ export const KosztorysEditorPage: React.FC = () => {
                 }
                 break; // success — no retry needed
               }
-              if (attempt === 0) {
-                console.warn(`AI batch ${batchIdx} returned error, retrying...`);
-                await new Promise(r => setTimeout(r, 2000)); // wait before retry
-              }
+              // Rate limit or error — wait and retry
+              const isRateLimit = aiData?.error?.includes?.('rate limit') || aiData?.error?.includes?.('rate_limit');
+              const waitTime = isRateLimit ? 12000 : 3000;
+              console.warn(`AI batch ${batchIdx} attempt ${attempt + 1} failed${isRateLimit ? ' (rate limit)' : ''}, retrying in ${waitTime / 1000}s...`);
+              if (attempt < 2) await new Promise(r => setTimeout(r, waitTime));
             } catch (e) {
               console.error(`AI batch ${batchIdx} attempt ${attempt + 1} error:`, e);
-              if (attempt === 0) await new Promise(r => setTimeout(r, 2000));
+              if (attempt < 2) await new Promise(r => setTimeout(r, 3000));
             }
           }
           completedBatches++;
           setKnrProcessingProgress(55 + Math.round((completedBatches / batches.length) * 40));
-          setKnrProcessingMsg(`AI: ${completedBatches}/${batches.length} partii...`);
+          setKnrProcessingMsg(`AI: ${completedBatches}/${batches.length} partii (${detectedKeys} kluczy API)...`);
         };
 
-        // Run batches sequentially with delay to respect rate limits (8k output tokens/min)
-        for (let i = 0; i < batches.length; i++) {
-          await processBatch(batches[i], i);
-          // Wait 10s between batches to stay under rate limit
-          if (i < batches.length - 1) {
-            setKnrProcessingMsg(`AI: ${i + 1}/${batches.length} partii... (czekam na limit API)`);
-            await new Promise(r => setTimeout(r, 10000));
+        // With multiple API keys, run in parallel pools; with 1 key, run sequentially with delay
+        // First batch alone to detect key count
+        await processBatch(batches[0], 0);
+        const PARALLEL = Math.min(detectedKeys, 3); // max 3 parallel even with many keys
+        const DELAY = detectedKeys > 1 ? 2000 : 10000; // less delay with more keys
+
+        for (let i = 1; i < batches.length; i += PARALLEL) {
+          const pool = batches.slice(i, i + PARALLEL).map((batch, j) => processBatch(batch, i + j));
+          await Promise.all(pool);
+          if (i + PARALLEL < batches.length) {
+            setKnrProcessingMsg(`AI: ${completedBatches}/${batches.length} partii... (${detectedKeys} kluczy)`);
+            await new Promise(r => setTimeout(r, DELAY));
           }
         }
 
