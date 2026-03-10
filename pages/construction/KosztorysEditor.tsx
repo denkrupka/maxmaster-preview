@@ -3521,7 +3521,7 @@ export const KosztorysEditorPage: React.FC = () => {
       setKnrProcessingMsg(`AI: ${notFoundAnywhere.length} pozycji do analizy...`);
 
       try {
-        const BATCH_SIZE = 20;
+        const BATCH_SIZE = 50;
         const batches: { posId: string; name: string; unit: string }[][] = [];
         for (let i = 0; i < notFoundAnywhere.length; i += BATCH_SIZE) {
           batches.push(notFoundAnywhere.slice(i, i + BATCH_SIZE));
