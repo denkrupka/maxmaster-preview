@@ -140,7 +140,7 @@ ZASADY:
         },
         body: JSON.stringify({
           model: 'claude-sonnet-4-20250514',
-          max_tokens: 4096,
+          max_tokens: 16000,
           messages: [{ role: 'user', content: prompt }],
         }),
       });
@@ -168,7 +168,36 @@ ZASADY:
       const jsonMatch = jsonText.match(/```(?:json)?\s*([\s\S]*?)```/);
       if (jsonMatch) jsonText = jsonMatch[1].trim();
 
-      const parsed = JSON.parse(jsonText);
+      let parsed: any;
+      try {
+        parsed = JSON.parse(jsonText);
+      } catch {
+        // Truncated JSON recovery: find last complete array element
+        const rMatch = jsonText.match(/"r"\s*:\s*\[/);
+        if (rMatch) {
+          let fixed = jsonText;
+          // Try closing brackets progressively
+          for (const suffix of [']]]}', ']]}', ']}', '}']) {
+            const lastComplete = fixed.lastIndexOf('],[');
+            if (lastComplete > 0) {
+              try {
+                parsed = JSON.parse(fixed.substring(0, lastComplete) + suffix);
+                break;
+              } catch { /* try next */ }
+            }
+            // Also try cutting at last complete nested array
+            const lastBracket = fixed.lastIndexOf(']],');
+            if (lastBracket > 0) {
+              try {
+                parsed = JSON.parse(fixed.substring(0, lastBracket + 2) + ']}');
+                break;
+              } catch { /* try next */ }
+            }
+          }
+        }
+        if (!parsed) parsed = { r: [] };
+        console.warn('Recovered truncated JSON, items:', parsed.r?.length || 0);
+      }
 
       return new Response(
         JSON.stringify({ success: true, data: parsed, mode }),
