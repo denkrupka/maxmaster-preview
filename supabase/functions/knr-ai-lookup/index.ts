@@ -79,7 +79,7 @@ Jeśli nie jesteś pewny danej pozycji (confidence < 0.3), ustaw knr_code na pus
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 8192,
+        max_tokens: 2048,
         messages: [
           {
             role: 'user',

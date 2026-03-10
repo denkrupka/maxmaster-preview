@@ -3483,11 +3483,11 @@ export const KosztorysEditorPage: React.FC = () => {
 
     // Phase 2: AI lookup for remaining — parallel batches
     if (notFoundInPortal.length > 0) {
-      setKnrProcessingMsg(`Wysyłanie ${notFoundInPortal.length} pozycji do AI (równolegle)...`);
+      setKnrProcessingMsg(`Wysyłanie ${notFoundInPortal.length} pozycji do AI...`);
 
       try {
-        const BATCH_SIZE = 15;
-        const PARALLEL = 2;
+        const BATCH_SIZE = 10;
+        const PARALLEL = 1;
         const batches: { posId: string; name: string; unit: string }[][] = [];
         for (let i = 0; i < notFoundInPortal.length; i += BATCH_SIZE) {
           batches.push(notFoundInPortal.slice(i, i + BATCH_SIZE));
@@ -3530,10 +3530,14 @@ export const KosztorysEditorPage: React.FC = () => {
           setKnrProcessingMsg(`AI: ${completedBatches}/${batches.length} partii...`);
         };
 
-        // Run batches in parallel pools of PARALLEL
-        for (let i = 0; i < batches.length; i += PARALLEL) {
-          const pool = batches.slice(i, i + PARALLEL).map((batch, j) => processBatch(batch, i + j));
-          await Promise.all(pool);
+        // Run batches sequentially with delay to respect rate limits (8k output tokens/min)
+        for (let i = 0; i < batches.length; i++) {
+          await processBatch(batches[i], i);
+          // Wait 10s between batches to stay under rate limit
+          if (i < batches.length - 1) {
+            setKnrProcessingMsg(`AI: ${i + 1}/${batches.length} partii... (czekam na limit API)`);
+            await new Promise(r => setTimeout(r, 10000));
+          }
         }
 
         // Remaining not found by AI either
