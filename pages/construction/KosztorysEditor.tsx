@@ -1084,6 +1084,7 @@ export const KosztorysEditorPage: React.FC = () => {
   const [knrImportStep, setKnrImportStep] = useState<KnrImportStep | null>(null);
   const [knrPendingData, setKnrPendingData] = useState<KosztorysCostEstimateData | null>(null);
   const [knrReviewItems, setKnrReviewItems] = useState<KnrReviewItem[]>([]);
+  const knrAcceptedRef = React.useRef<KnrReviewItem[]>([]);
   const [knrReviewIndex, setKnrReviewIndex] = useState(0);
   const [knrImportStats, setKnrImportStats] = useState<KnrImportStats | null>(null);
   const [knrProcessingMsg, setKnrProcessingMsg] = useState('');
@@ -3616,6 +3617,7 @@ export const KosztorysEditorPage: React.FC = () => {
 
     if (manual) {
       // Manual mode: show review table
+      knrAcceptedRef.current = [];
       setKnrImportStep('review');
     } else {
       // Automatic mode: apply all found KNR directly
@@ -14249,9 +14251,9 @@ export const KosztorysEditorPage: React.FC = () => {
 
             {/* Step 5: Review table (manual mode) */}
             {knrImportStep === 'review' && (() => {
-              const pendingItems = knrReviewItems.filter(i => !i.accepted && !i.removed);
+              // knrReviewItems IS the pending list — items are removed on accept/reject
+              const pendingItems = knrReviewItems;
               const selectedId = knrReviewSelectedId && pendingItems.some(i => i.posId === knrReviewSelectedId) ? knrReviewSelectedId : pendingItems[0]?.posId || null;
-              // Only render first 200 visible rows for performance
               const MAX_VISIBLE = 200;
               const visibleItems = pendingItems.slice(0, MAX_VISIBLE);
               const hasMore = pendingItems.length > MAX_VISIBLE;
@@ -14267,27 +14269,26 @@ export const KosztorysEditorPage: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <button onClick={() => {
                       if (!selectedId) return;
-                      startTransition(() => {
-                        setKnrReviewItems(prev => prev.map(i => i.posId === selectedId ? { ...i, accepted: true } : i));
-                        setKnrReviewSelectedId(null);
-                      });
+                      const item = pendingItems.find(i => i.posId === selectedId);
+                      if (item) knrAcceptedRef.current.push({ ...item, accepted: true });
+                      setKnrReviewItems(prev => prev.filter(i => i.posId !== selectedId));
+                      setKnrReviewSelectedId(null);
                     }} className="px-3 py-1.5 text-xs bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-1.5">
                       <Check className="w-3.5 h-3.5" /> Przyjmij pozycję
                     </button>
                     <button onClick={() => {
                       if (!selectedId) return;
-                      startTransition(() => {
-                        setKnrReviewItems(prev => prev.map(i => i.posId === selectedId ? { ...i, accepted: true, knrCode: '', knrDescription: '' } : i));
-                        setKnrReviewSelectedId(null);
-                      });
+                      const item = pendingItems.find(i => i.posId === selectedId);
+                      if (item) knrAcceptedRef.current.push({ ...item, accepted: true, knrCode: '', knrDescription: '' });
+                      setKnrReviewItems(prev => prev.filter(i => i.posId !== selectedId));
+                      setKnrReviewSelectedId(null);
                     }} className="px-3 py-1.5 text-xs border border-red-300 text-red-600 rounded-lg hover:bg-red-50 flex items-center gap-1.5">
                       <X className="w-3.5 h-3.5" /> Odrzuć KNR
                     </button>
                     <button onClick={() => {
-                      startTransition(() => {
-                        setKnrReviewItems(prev => prev.map(i => (!i.accepted && !i.removed) ? { ...i, accepted: true } : i));
-                        setKnrReviewSelectedId(null);
-                      });
+                      knrAcceptedRef.current.push(...pendingItems.map(i => ({ ...i, accepted: true })));
+                      setKnrReviewItems([]);
+                      setKnrReviewSelectedId(null);
                     }} className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700">
                       Przyjmij wszystkie
                     </button>
@@ -14343,13 +14344,14 @@ export const KosztorysEditorPage: React.FC = () => {
                         // All reviewed — auto-advance to stats
                         setTimeout(() => {
                           if (knrPendingData && knrImportStats) {
-                            const finalItems = knrReviewItems;
+                            const finalItems = knrAcceptedRef.current;
                             const finalStats = {
                               ...knrImportStats,
-                              accepted: finalItems.filter(i => i.accepted && !i.removed).length,
-                              rejected: finalItems.filter(i => i.removed).length,
+                              accepted: finalItems.filter(i => i.knrCode).length,
+                              rejected: finalItems.filter(i => !i.knrCode).length,
                             };
                             setKnrImportStats(finalStats);
+                            knrAcceptedRef.current = [];
                             applyKnrResults(finalItems, knrPendingData, finalStats, 'empty');
                           }
                         }, 300);
