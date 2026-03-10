@@ -14251,33 +14251,43 @@ export const KosztorysEditorPage: React.FC = () => {
             {knrImportStep === 'review' && (() => {
               const pendingItems = knrReviewItems.filter(i => !i.accepted && !i.removed);
               const selectedId = knrReviewSelectedId && pendingItems.some(i => i.posId === knrReviewSelectedId) ? knrReviewSelectedId : pendingItems[0]?.posId || null;
+              // Only render first 200 visible rows for performance
+              const MAX_VISIBLE = 200;
+              const visibleItems = pendingItems.slice(0, MAX_VISIBLE);
+              const hasMore = pendingItems.length > MAX_VISIBLE;
               return (
               <div className="w-[950px]">
                 <div className="px-6 py-4 border-b flex items-center justify-between">
                   <div>
                     <h2 className="text-base font-bold text-gray-900">Weryfikacja KNR</h2>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      Pozostało: {pendingItems.length} pozycji
+                      Pozostało: {pendingItems.length} pozycji{hasMore ? ` (wyświetlono ${MAX_VISIBLE})` : ''}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
                     <button onClick={() => {
                       if (!selectedId) return;
-                      setKnrReviewItems(prev => prev.map(i => i.posId === selectedId ? { ...i, accepted: true } : i));
-                      setKnrReviewSelectedId(null);
+                      startTransition(() => {
+                        setKnrReviewItems(prev => prev.map(i => i.posId === selectedId ? { ...i, accepted: true } : i));
+                        setKnrReviewSelectedId(null);
+                      });
                     }} className="px-3 py-1.5 text-xs bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-1.5">
                       <Check className="w-3.5 h-3.5" /> Przyjmij pozycję
                     </button>
                     <button onClick={() => {
                       if (!selectedId) return;
-                      setKnrReviewItems(prev => prev.map(i => i.posId === selectedId ? { ...i, accepted: true, knrCode: '', knrDescription: '' } : i));
-                      setKnrReviewSelectedId(null);
+                      startTransition(() => {
+                        setKnrReviewItems(prev => prev.map(i => i.posId === selectedId ? { ...i, accepted: true, knrCode: '', knrDescription: '' } : i));
+                        setKnrReviewSelectedId(null);
+                      });
                     }} className="px-3 py-1.5 text-xs border border-red-300 text-red-600 rounded-lg hover:bg-red-50 flex items-center gap-1.5">
                       <X className="w-3.5 h-3.5" /> Odrzuć KNR
                     </button>
                     <button onClick={() => {
-                      setKnrReviewItems(prev => prev.map(i => (!i.accepted && !i.removed) ? { ...i, accepted: true } : i));
-                      setKnrReviewSelectedId(null);
+                      startTransition(() => {
+                        setKnrReviewItems(prev => prev.map(i => (!i.accepted && !i.removed) ? { ...i, accepted: true } : i));
+                        setKnrReviewSelectedId(null);
+                      });
                     }} className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700">
                       Przyjmij wszystkie
                     </button>
@@ -14296,7 +14306,7 @@ export const KosztorysEditorPage: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {pendingItems.map((item, idx) => (
+                      {visibleItems.map((item, idx) => (
                         <tr key={item.posId}
                           className={`border-b border-gray-100 cursor-pointer transition-colors ${
                             item.posId === selectedId ? 'bg-blue-50 ring-1 ring-inset ring-blue-200' : 'hover:bg-gray-50'
