@@ -2692,8 +2692,8 @@ export const KosztorysEditorPage: React.FC = () => {
 
       const now = new Date();
       const q = `Q${Math.ceil((now.getMonth() + 1) / 3)} ${now.getFullYear()}`;
-      const BATCH = 20;
-      const CONCURRENT = 5;
+      const BATCH = 15;
+      const CONCURRENT = 2;
       const batches: KosztorysPosition[][] = [];
       for (let i = 0; i < toProcess.length; i += BATCH) batches.push(toProcess.slice(i, i + BATCH));
 
@@ -2763,10 +2763,15 @@ export const KosztorysEditorPage: React.FC = () => {
         setAiFillMsg(`AI: ${completedBatches}/${batches.length} partii (${mode === 'resources' ? 'nakłady' : 'ceny'})...`);
       };
 
-      // Process batches in parallel (CONCURRENT at a time)
+      // Process batches in parallel (CONCURRENT at a time) with pause between rounds
       for (let i = 0; i < batches.length; i += CONCURRENT) {
         const chunk = batches.slice(i, i + CONCURRENT).map((_, j) => processBatch(i + j));
         await Promise.all(chunk);
+        // Pause between rounds to avoid rate limit
+        if (i + CONCURRENT < batches.length) {
+          setAiFillMsg(`Pauza (rate limit)... ${completedBatches}/${batches.length}`);
+          await new Promise(r => setTimeout(r, 8000));
+        }
       }
 
       setAiFillProgress(100);
