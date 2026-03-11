@@ -41,7 +41,11 @@ export default function AiAutoTakeoffButton({
         )
         .join('\n');
 
-      const { data, error } = await supabase.functions.invoke('pdf-analyze-legend', {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
+      let invokeResult;
+      try {
+        invokeResult = await supabase.functions.invoke('pdf-analyze-legend', {
         body: {
           legendImageBase64: pageImageBase64,
           mimeType: 'image/jpeg',

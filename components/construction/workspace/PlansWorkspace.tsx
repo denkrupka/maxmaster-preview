@@ -757,20 +757,18 @@ export const PlansWorkspace: React.FC = () => {
       try {
         const page = await pdfDoc.getPage(pdfPage);
         const baseVp = page.getViewport({ scale: 1 });
-        const basePx = baseVp.width * baseVp.height;
-        const maxPixels = 16_000_000;
-        let renderScale = 3;
-        if (basePx * 9 < 4_000_000) renderScale = 4;
-        if (basePx * renderScale * renderScale > maxPixels) {
-          renderScale = Math.max(2, Math.floor(Math.sqrt(maxPixels / basePx)));
-        }
+        // Limit output to max 1800px on longest side — Gemini max ~4MB
+        const MAX_SIDE = 1800;
+        const longest = Math.max(baseVp.width, baseVp.height);
+        const renderScale = Math.min(3, MAX_SIDE / longest);
         const viewport = page.getViewport({ scale: renderScale });
         const canvas = document.createElement('canvas');
         canvas.width = viewport.width;
         canvas.height = viewport.height;
         const ctx = canvas.getContext('2d')!;
         await page.render({ canvasContext: ctx, viewport }).promise;
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+        // quality 0.75 keeps size under 2MB for typical A1 drawings
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
         const base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, '');
         setPdfPageBase64(base64);
       } catch {
