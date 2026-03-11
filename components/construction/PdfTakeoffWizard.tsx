@@ -1,11 +1,11 @@
 import React, { useState, useCallback } from 'react';
-import { Sparkles, Loader2, CheckCircle, AlertTriangle, Play, X } from 'lucide-react';
+import { Sparkles, Loader2, CheckCircle, AlertTriangle, Play, X, Scale, Eye } from 'lucide-react';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import { supabase } from '../../lib/supabase';
 import type { PdfAnalysisExtra } from '../../lib/pdfAnalyzer';
 import type { TakeoffRule } from '../../lib/dxfTakeoff';
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface PdfTakeoffWizardProps {
   pdfDoc: PDFDocumentProxy;
@@ -17,7 +17,7 @@ interface PdfTakeoffWizardProps {
   onClose: () => void;
 }
 
-type WizardStep = 'idle' | 'rendering' | 'analyzing' | 'comparing' | 'creating' | 'done';
+type WizardStep = 'scale' | 'rendering' | 'analyzing' | 'comparing' | 'creating' | 'done';
 
 interface LegendEntry {
   label: string;
@@ -27,68 +27,73 @@ interface LegendEntry {
   category?: string;
 }
 
-interface RasterBlock {
-  name?: string;
-  count?: number;
-  description?: string;
-  category?: string;
-  color?: string;
-}
-
-interface RasterLineGroup {
-  label?: string;
-  style?: string;
-  color?: string;
-  category?: string;
-  totalLength?: number;
-}
-
 interface ComparedRow {
   label: string;
-  geminiEntry?: LegendEntry;
-  claudeEntry?: { name?: string; category?: string; color?: string; entryType?: string };
+  category?: string;
+  entryType?: string;
+  color?: string;
+  gemini: boolean;
+  claude: boolean;
+  geminiColor?: string;
+  claudeColor?: string;
+  /** 0–1 */
+  confidence: number;
+  /** needs manual review */
+  needsReview: boolean;
+  reviewReason?: string;
   status: 'ok' | 'mismatch' | 'single';
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 async function renderPageToBase64(page: PDFPageProxy): Promise<string> {
   const baseVp = page.getViewport({ scale: 1 });
-  const basePx = baseVp.width * baseVp.height;
-  const maxPixels = 12_000_000;
-  let renderScale = 3;
-  if (basePx * 9 < 4_000_000) renderScale = 4;
-  if (basePx * renderScale * renderScale > maxPixels) {
-    renderScale = Math.max(2, Math.floor(Math.sqrt(maxPixels / basePx)));
-  }
-  const viewport = page.getViewport({ scale: renderScale });
+  const MAX_SIDE = 1800;
+  const scale = Math.min(2, MAX_SIDE / Math.max(baseVp.width, baseVp.height));
+  const vp = page.getViewport({ scale });
   const canvas = document.createElement('canvas');
-  canvas.width = viewport.width;
-  canvas.height = viewport.height;
-  const ctx = canvas.getContext('2d')!;
-  await page.render({ canvasContext: ctx, viewport }).promise;
-  const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
-  return dataUrl.replace(/^data:image\/jpeg;base64,/, '');
+  canvas.width = vp.width;
+  canvas.height = vp.height;
+  await page.render({ canvasContext: canvas.getContext('2d')!, viewport: vp }).promise;
+  return canvas.toDataURL('image/jpeg', 0.82).replace(/^data:image\/jpeg;base64,/, '');
 }
 
-function normalize(s: string): string {
+function normalize(s: string) {
   return s.toLowerCase().trim().replace(/\s+/g, ' ');
 }
 
-function similarity(a: string, b: string): number {
+function labelSimilarity(a: string, b: string): number {
   const na = normalize(a);
   const nb = normalize(b);
   if (na === nb) return 1;
   if (na.includes(nb) || nb.includes(na)) return 0.8;
-  return 0;
+  const wordsA = na.split(' ');
+  const wordsB = nb.split(' ');
+  const shared = wordsA.filter(w => wordsB.includes(w)).length;
+  return shared / Math.max(wordsA.length, wordsB.length);
+}
+
+function computeConfidence(row: Pick<ComparedRow, 'gemini' | 'claude' | 'status'>): number {
+  if (row.gemini && row.claude && row.status === 'ok') return 0.92;
+  if (row.gemini && row.claude && row.status === 'mismatch') return 0.55;
+  if (row.gemini && !row.claude) return 0.65;
+  if (!row.gemini && row.claude) return 0.60;
+  return 0.50;
+}
+
+function buildStyleGroupsSummary(extra: PdfAnalysisExtra): string {
+  return (extra.styleGroups || [])
+    .slice(0, 20)
+    .map(g => `color:${g.strokeColor} width:${g.lineWidth} dash:${(g.dashPattern || []).join(',') || 'solid'} paths:${g.pathCount} length:${g.totalLengthM?.toFixed(1) ?? '?'}m`)
+    .join('\n');
 }
 
 function compareResults(
   geminiEntries: LegendEntry[],
-  claudeBlocks: RasterBlock[],
-  claudeLines: RasterLineGroup[],
+  claudeBlocks: Array<{ name?: string; category?: string; color?: string }>,
+  claudeLines: Array<{ label?: string; category?: string; color?: string }>,
 ): ComparedRow[] {
-  const claudeItems: Array<{ name: string; category?: string; color?: string; entryType?: string }> = [
+  const claudeItems = [
     ...claudeBlocks.map(b => ({ name: b.name || '', category: b.category, color: b.color, entryType: 'symbol' })),
     ...claudeLines.map(l => ({ name: l.label || '', category: l.category, color: l.color, entryType: 'line' })),
   ];
@@ -101,26 +106,65 @@ function compareResults(
     let bestScore = 0;
     claudeItems.forEach((ci, i) => {
       if (matched.has(i)) return;
-      const score = similarity(ge.label, ci.name);
+      const score = labelSimilarity(ge.label, ci.name);
       if (score > bestScore) { bestScore = score; bestIdx = i; }
     });
 
     if (bestIdx >= 0 && bestScore >= 0.5) {
       matched.add(bestIdx);
       const ci = claudeItems[bestIdx];
-      const colorDiff = ge.color && ci.color
-        ? ge.color.toLowerCase() !== ci.color.toLowerCase()
-        : false;
-      const status: ComparedRow['status'] = colorDiff ? 'mismatch' : 'ok';
-      rows.push({ label: ge.label, geminiEntry: ge, claudeEntry: ci, status });
+      const colorMismatch = !!(ge.color && ci.color && normalize(ge.color) !== normalize(ci.color));
+      const status: ComparedRow['status'] = colorMismatch ? 'mismatch' : 'ok';
+      const partial: Pick<ComparedRow, 'gemini' | 'claude' | 'status'> = { gemini: true, claude: true, status };
+      const confidence = computeConfidence(partial);
+      const needsReview = status === 'mismatch' || confidence < 0.70;
+      rows.push({
+        label: ge.label,
+        category: ge.category || ci.category,
+        entryType: ge.entryType || ci.entryType,
+        color: ge.color || ci.color,
+        gemini: true, claude: true,
+        geminiColor: ge.color,
+        claudeColor: ci.color,
+        confidence,
+        needsReview,
+        reviewReason: colorMismatch ? `Kolor: Gemini=${ge.color}, Claude=${ci.color}` : undefined,
+        status,
+      });
     } else {
-      rows.push({ label: ge.label, geminiEntry: ge, status: 'single' });
+      const partial: Pick<ComparedRow, 'gemini' | 'claude' | 'status'> = { gemini: true, claude: false, status: 'single' };
+      const confidence = computeConfidence(partial);
+      rows.push({
+        label: ge.label,
+        category: ge.category,
+        entryType: ge.entryType,
+        color: ge.color,
+        gemini: true, claude: false,
+        geminiColor: ge.color,
+        confidence,
+        needsReview: confidence < 0.70,
+        reviewReason: 'Tylko Gemini — Claude nie wykryło',
+        status: 'single',
+      });
     }
   }
 
   claudeItems.forEach((ci, i) => {
     if (!matched.has(i) && ci.name) {
-      rows.push({ label: ci.name, claudeEntry: ci, status: 'single' });
+      const partial: Pick<ComparedRow, 'gemini' | 'claude' | 'status'> = { gemini: false, claude: true, status: 'single' };
+      const confidence = computeConfidence(partial);
+      rows.push({
+        label: ci.name,
+        category: ci.category,
+        entryType: ci.entryType,
+        color: ci.color,
+        gemini: false, claude: true,
+        claudeColor: ci.color,
+        confidence,
+        needsReview: confidence < 0.70,
+        reviewReason: 'Tylko Claude — Gemini nie wykryło',
+        status: 'single',
+      });
     }
   });
 
@@ -129,19 +173,13 @@ function compareResults(
 
 function buildRules(rows: ComparedRow[]): TakeoffRule[] {
   return rows.map((row, index) => {
-    const entry = row.geminiEntry || {
-      label: row.label,
-      category: row.claudeEntry?.category,
-      entryType: row.claudeEntry?.entryType,
-      color: row.claudeEntry?.color,
-    };
-    const isLine = (entry.entryType || '').toLowerCase() === 'line';
+    const isLine = (row.entryType || '').toLowerCase() === 'line';
     return {
       id: `takeoff-${Date.now()}-${index}`,
-      name: entry.label,
-      category: entry.category || 'Inne',
+      name: row.label,
+      category: row.category || 'Inne',
       matchType: isLine ? 'style_color' : 'block_contains',
-      matchPattern: entry.color || entry.label,
+      matchPattern: row.color || row.label,
       quantitySource: isLine ? 'group_length_m' : 'count',
       unit: isLine ? 'm' : 'szt.',
       multiplier: 1,
@@ -150,37 +188,34 @@ function buildRules(rows: ComparedRow[]): TakeoffRule[] {
   });
 }
 
-// ─── Status badge ─────────────────────────────────────────────────────────────
+// ─── UI helpers ───────────────────────────────────────────────────────────────
 
-function StatusBadge({ status }: { status: ComparedRow['status'] }) {
-  if (status === 'ok')
-    return <span className="inline-flex items-center gap-1 text-green-400 text-xs"><CheckCircle size={12} /> OK</span>;
-  if (status === 'mismatch')
-    return <span className="inline-flex items-center gap-1 text-red-400 text-xs"><AlertTriangle size={12} /> Różnica</span>;
-  return <span className="inline-flex items-center gap-1 text-yellow-400 text-xs"><AlertTriangle size={12} /> Jeden źródło</span>;
+function ConfidenceBadge({ value }: { value: number }) {
+  const pct = Math.round(value * 100);
+  const cls = pct >= 85 ? 'bg-green-900/40 text-green-400' : pct >= 65 ? 'bg-yellow-900/40 text-yellow-400' : 'bg-red-900/40 text-red-400';
+  return <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-mono ${cls}`}>{pct}%</span>;
 }
 
-// ─── Main component ───────────────────────────────────────────────────────────
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function PdfTakeoffWizard({
-  pdfDoc,
-  pageNumber,
-  planId,
-  companyId,
-  analysisExtra,
-  onTakeoffCreated,
-  onClose,
+  pdfDoc, pageNumber, planId, companyId, analysisExtra, onTakeoffCreated, onClose,
 }: PdfTakeoffWizardProps) {
-  const [step, setStep] = useState<WizardStep>('idle');
+  const [step, setStep] = useState<WizardStep>('scale');
   const [statusMsg, setStatusMsg] = useState('');
   const [comparedRows, setComparedRows] = useState<ComparedRow[]>([]);
   const [pendingRules, setPendingRules] = useState<TakeoffRule[]>([]);
   const [error, setError] = useState('');
 
-  const styleGroupsSummary = (analysisExtra.styleGroups || [])
-    .slice(0, 20)
-    .map(g => `${(g as any).color || '?'} stroke:${(g as any).strokeWidth ?? '?'}`)
-    .join(', ');
+  // ── PROTECTION 1: Scale confirmation ──────────────────────────────────────
+  const detectedScale = analysisExtra.scaleInfo?.scaleText || null;
+  const [scaleConfirmed, setScaleConfirmed] = useState(false);
+  const [customScale, setCustomScale] = useState(detectedScale || '1:100');
+  const [scaleSource, setScaleSource] = useState<'detected' | 'custom'>(detectedScale ? 'detected' : 'custom');
+
+  const isLoading = step === 'rendering' || step === 'analyzing' || step === 'creating';
+  const reviewCount = comparedRows.filter(r => r.needsReview).length;
+  const okCount = comparedRows.filter(r => !r.needsReview).length;
 
   const run = useCallback(async () => {
     setError('');
@@ -193,12 +228,14 @@ export default function PdfTakeoffWizard({
       pageBase64 = await renderPageToBase64(page);
     } catch (e) {
       setError(`Błąd renderowania: ${e instanceof Error ? e.message : String(e)}`);
-      setStep('idle');
+      setStep('scale');
       return;
     }
 
     setStep('analyzing');
-    setStatusMsg('Analizuję legendę (Gemini) i rastr (Claude) równolegle…');
+    setStatusMsg('Gemini + Claude analizują równolegle…');
+
+    const styleGroupsSummary = buildStyleGroupsSummary(analysisExtra);
 
     const [legendRes, rasterRes] = await Promise.allSettled([
       supabase.functions.invoke('pdf-analyze-legend', {
@@ -210,169 +247,236 @@ export default function PdfTakeoffWizard({
     ]);
 
     const geminiEntries: LegendEntry[] =
-      legendRes.status === 'fulfilled' && legendRes.value.data?.data?.entries
-        ? legendRes.value.data.data.entries
+      legendRes.status === 'fulfilled'
+        ? (legendRes.value.data?.data?.entries || legendRes.value.data?.entries || [])
         : [];
 
     const rasterData =
-      rasterRes.status === 'fulfilled' && rasterRes.value.data
-        ? rasterRes.value.data
-        : {};
+      rasterRes.status === 'fulfilled' && rasterRes.value.data ? rasterRes.value.data : {};
 
-    const claudeBlocks: RasterBlock[] = (rasterData as any).blocks || [];
-    const claudeLines: RasterLineGroup[] = (rasterData as any).lineGroups || [];
+    const claudeBlocks = (rasterData as any).blocks || [];
+    const claudeLines = (rasterData as any).lineGroups || [];
 
-    if (geminiEntries.length === 0 && claudeBlocks.length === 0 && claudeLines.length === 0) {
-      setError('Żadna z analiz AI nie zwróciła wyników. Spróbuj ponownie.');
-      setStep('idle');
+    if (!geminiEntries.length && !claudeBlocks.length && !claudeLines.length) {
+      setError('Żadna analiza AI nie zwróciła wyników. Spróbuj ponownie lub sprawdź jakość rysunku.');
+      setStep('scale');
       return;
     }
 
-    setStep('comparing');
-    setStatusMsg('Porównuję wyniki…');
     const rows = compareResults(geminiEntries, claudeBlocks, claudeLines);
     setComparedRows(rows);
     setPendingRules(buildRules(rows));
+    setStep('comparing');
     setStatusMsg('');
-  }, [pdfDoc, pageNumber, styleGroupsSummary]);
+  }, [pdfDoc, pageNumber, analysisExtra]);
 
   const createTakeoff = useCallback(async () => {
     if (!pendingRules.length) return;
     setStep('creating');
-    setStatusMsg('Zapisuję reguły przedmiarowe…');
+    setStatusMsg('Zapisuję reguły…');
     try {
       const dbRows = pendingRules.map(r => ({
-        ...r,
         plan_id: planId,
         company_id: companyId,
-        created_at: new Date().toISOString(),
+        name: r.name,
+        category: r.category,
+        match_type: r.matchType,
+        match_pattern: r.matchPattern,
+        quantity_source: r.quantitySource,
+        unit: r.unit,
+        multiplier: r.multiplier,
+        is_default: false,
+        is_ai_generated: true,
+        enabled: true,
       }));
       const { error: dbErr } = await supabase.from('drawing_takeoff_rules').insert(dbRows);
       if (dbErr) throw new Error(dbErr.message);
       setStep('done');
-      setStatusMsg(`Zapisano ${pendingRules.length} reguł przedmiarowych.`);
+      setStatusMsg(`Zapisano ${pendingRules.length} reguł. Pozycje do weryfikacji: ${reviewCount}`);
       onTakeoffCreated(pendingRules);
     } catch (e) {
       setError(`Błąd zapisu: ${e instanceof Error ? e.message : String(e)}`);
       setStep('comparing');
     }
-  }, [pendingRules, planId, companyId, onTakeoffCreated]);
-
-  const isLoading = step === 'rendering' || step === 'analyzing' || step === 'creating';
+  }, [pendingRules, planId, companyId, onTakeoffCreated, reviewCount]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
       <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col">
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-700">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-700">
           <div className="flex items-center gap-2">
-            <Sparkles size={18} className="text-purple-400" />
-            <h2 className="text-white font-semibold text-sm">Wizard AI Przedmiarowania</h2>
+            <Sparkles size={16} className="text-violet-400" />
+            <span className="text-white font-semibold text-sm">Wizard AI Przedmiarowania</span>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-white transition-colors">
-            <X size={18} />
-          </button>
+          <button onClick={onClose} className="text-gray-500 hover:text-white"><X size={16} /></button>
         </div>
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
 
+          {/* ── PROTECTION 1: Scale confirmation ── */}
+          {(step === 'scale' || step === 'comparing' || step === 'done') && (
+            <div className={`rounded-lg border px-4 py-3 ${scaleConfirmed ? 'border-green-700 bg-green-900/20' : 'border-yellow-600 bg-yellow-900/20'}`}>
+              <div className="flex items-center gap-2 mb-2">
+                <Scale size={14} className={scaleConfirmed ? 'text-green-400' : 'text-yellow-400'} />
+                <span className={`text-xs font-semibold ${scaleConfirmed ? 'text-green-300' : 'text-yellow-300'}`}>
+                  Ochrona 1: Potwierdzenie skali rysunku
+                </span>
+                {scaleConfirmed && <CheckCircle size={12} className="text-green-400" />}
+              </div>
+              {detectedScale && (
+                <p className="text-xs text-gray-400 mb-2">
+                  Wykryta skala: <strong className="text-white">{detectedScale}</strong>
+                  <span className="text-gray-500"> (z tekstu rysunku)</span>
+                </p>
+              )}
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+                  <input type="radio" checked={scaleSource === 'detected'} onChange={() => setScaleSource('detected')}
+                    disabled={!detectedScale} className="accent-green-500" />
+                  Wykryta: {detectedScale || '—'}
+                </label>
+                <label className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+                  <input type="radio" checked={scaleSource === 'custom'} onChange={() => setScaleSource('custom')} className="accent-yellow-500" />
+                  Inna:
+                  <input
+                    type="text"
+                    value={customScale}
+                    onChange={e => setCustomScale(e.target.value)}
+                    disabled={scaleSource !== 'custom'}
+                    placeholder="np. 1:50"
+                    className="ml-1 w-20 bg-gray-800 border border-gray-600 rounded px-2 py-0.5 text-xs text-white focus:outline-none focus:border-yellow-500 disabled:opacity-40"
+                  />
+                </label>
+                {!scaleConfirmed && (
+                  <button
+                    onClick={() => setScaleConfirmed(true)}
+                    className="ml-auto px-3 py-1 bg-yellow-600 hover:bg-yellow-500 text-white text-xs rounded font-medium"
+                  >
+                    Potwierdzam skalę
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Status message */}
           {statusMsg && (
-            <div className="flex items-center gap-2 text-gray-300 text-sm">
-              {isLoading && <Loader2 size={14} className="animate-spin text-purple-400" />}
-              {step === 'done' && <CheckCircle size={14} className="text-green-400" />}
+            <div className="flex items-center gap-2 text-gray-300 text-xs">
+              {isLoading && <Loader2 size={12} className="animate-spin text-violet-400" />}
+              {step === 'done' && <CheckCircle size={12} className="text-green-400" />}
               <span>{statusMsg}</span>
             </div>
           )}
 
           {error && (
-            <div className="flex items-center gap-2 bg-red-900/30 border border-red-700 rounded-lg px-3 py-2 text-red-300 text-sm">
-              <AlertTriangle size={14} className="shrink-0" />
+            <div className="flex items-center gap-2 bg-red-900/30 border border-red-700 rounded-lg px-3 py-2 text-red-300 text-xs">
+              <AlertTriangle size={12} className="shrink-0" />
               <span>{error}</span>
             </div>
           )}
 
+          {/* ── Comparison table ── */}
           {comparedRows.length > 0 && (
             <div>
-              <p className="text-gray-400 text-xs mb-2">Znaleziono {comparedRows.length} elementów</p>
+              {/* ── PROTECTION 2+3: Summary bar ── */}
+              <div className="flex items-center gap-3 mb-2 text-xs">
+                <span className="text-gray-400">Razem: <strong className="text-white">{comparedRows.length}</strong></span>
+                <span className="text-green-400">✓ OK: {okCount}</span>
+                {reviewCount > 0 && (
+                  <span className="flex items-center gap-1 text-yellow-400">
+                    <Eye size={11} /> Do weryfikacji: {reviewCount}
+                  </span>
+                )}
+              </div>
               <div className="overflow-x-auto rounded-lg border border-gray-700">
                 <table className="w-full text-xs text-left">
-                  <thead className="bg-gray-800 text-gray-400">
+                  <thead className="bg-gray-800 text-gray-500 uppercase text-[10px]">
                     <tr>
                       <th className="px-3 py-2">Element</th>
-                      <th className="px-3 py-2">Gemini (legenda)</th>
-                      <th className="px-3 py-2">Claude (rastr)</th>
-                      <th className="px-3 py-2">Status</th>
+                      <th className="px-3 py-2">Gemini</th>
+                      <th className="px-3 py-2">Claude</th>
+                      <th className="px-3 py-2 text-center">Pewność</th>
+                      <th className="px-3 py-2">Weryfikacja</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-800">
                     {comparedRows.map((row, i) => (
-                      <tr key={i} className="hover:bg-gray-800/50">
-                        <td className="px-3 py-2 text-white font-medium">{row.label}</td>
-                        <td className="px-3 py-2 text-gray-300">
-                          {row.geminiEntry
-                            ? <>{row.geminiEntry.entryType || '?'}{row.geminiEntry.color ? <span className="text-gray-500"> ({row.geminiEntry.color})</span> : null}</>
+                      <tr key={i} className={`hover:bg-gray-800/50 ${row.needsReview ? 'bg-yellow-950/20' : ''}`}>
+                        <td className="px-3 py-2 text-white font-medium max-w-[180px] truncate" title={row.label}>
+                          {row.label}
+                        </td>
+                        <td className="px-3 py-2">
+                          {row.gemini
+                            ? <span className="text-green-400">✓{row.geminiColor ? <span className="text-gray-500 ml-1">{row.geminiColor}</span> : null}</span>
                             : <span className="text-gray-600">—</span>}
                         </td>
-                        <td className="px-3 py-2 text-gray-300">
-                          {row.claudeEntry
-                            ? <>{row.claudeEntry.entryType || '?'}{row.claudeEntry.color ? <span className="text-gray-500"> ({row.claudeEntry.color})</span> : null}</>
+                        <td className="px-3 py-2">
+                          {row.claude
+                            ? <span className="text-blue-400">✓{row.claudeColor ? <span className="text-gray-500 ml-1">{row.claudeColor}</span> : null}</span>
                             : <span className="text-gray-600">—</span>}
                         </td>
-                        <td className="px-3 py-2"><StatusBadge status={row.status} /></td>
+                        <td className="px-3 py-2 text-center">
+                          <ConfidenceBadge value={row.confidence} />
+                        </td>
+                        <td className="px-3 py-2">
+                          {row.needsReview
+                            ? <span className="flex items-center gap-1 text-yellow-400"><AlertTriangle size={11} /><span className="text-[10px]">{row.reviewReason}</span></span>
+                            : <span className="text-green-500 text-[10px]">✓ Akceptuj</span>}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+              {reviewCount > 0 && (
+                <p className="mt-2 text-xs text-yellow-500 flex items-center gap-1">
+                  <AlertTriangle size={11} />
+                  {reviewCount} pozycji wymaga ręcznej weryfikacji — zostaną uwzględnione w przedmiarze, ale zaznaczone do sprawdzenia.
+                </p>
+              )}
             </div>
           )}
 
           {step === 'done' && (
             <div className="flex items-center gap-2 bg-green-900/30 border border-green-700 rounded-lg px-3 py-3 text-green-300 text-sm">
               <CheckCircle size={16} />
-              <span>Przedmiar gotowy! Reguły zostały zapisane i aktywowane.</span>
+              <span>Przedmiar gotowy! Reguły zapisane i aktywowane w przestrzeni roboczej.</span>
             </div>
           )}
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between px-5 py-4 border-t border-gray-700">
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-white text-sm transition-colors"
-          >
+        <div className="flex items-center justify-between px-5 py-3 border-t border-gray-700">
+          <button onClick={onClose} className="text-gray-500 hover:text-white text-xs">
             {step === 'done' ? 'Zamknij' : 'Anuluj'}
           </button>
-
           <div className="flex items-center gap-3">
-            {(step === 'idle' || (step !== 'done' && error)) && (
+            {(step === 'scale') && (
               <button
                 onClick={run}
-                disabled={isLoading}
-                className="flex items-center gap-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+                disabled={!scaleConfirmed || isLoading}
+                className="flex items-center gap-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-medium px-4 py-2 rounded-lg"
               >
-                <Play size={14} />
-                Uruchom analizę AI
+                <Play size={13} />
+                {scaleConfirmed ? 'Uruchom analizę AI' : 'Najpierw potwierdź skalę'}
               </button>
             )}
-
             {step === 'comparing' && pendingRules.length > 0 && (
               <button
                 onClick={createTakeoff}
-                disabled={isLoading}
-                className="flex items-center gap-2 bg-green-600 hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+                className="flex items-center gap-2 bg-green-600 hover:bg-green-500 text-white text-xs font-medium px-4 py-2 rounded-lg"
               >
-                <Sparkles size={14} />
+                <Sparkles size={13} />
                 Utwórz przedmiar ({pendingRules.length})
               </button>
             )}
-
             {isLoading && (
-              <div className="flex items-center gap-2 text-gray-400 text-sm">
-                <Loader2 size={14} className="animate-spin" />
-                <span>{step === 'rendering' ? 'Renderowanie…' : step === 'analyzing' ? 'Analiza AI…' : 'Zapisywanie…'}</span>
+              <div className="flex items-center gap-2 text-gray-400 text-xs">
+                <Loader2 size={12} className="animate-spin" />
+                {step === 'rendering' ? 'Renderowanie…' : step === 'analyzing' ? 'AI analizuje…' : 'Zapisywanie…'}
               </div>
             )}
           </div>
