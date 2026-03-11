@@ -319,6 +319,7 @@ export default function PdfAnalysisModal({
   const totalMatched = legendMatches.reduce((s, e) => s + (e.matchCount || 0), 0);
 
   return (
+    <>
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40">
       <div className="bg-white rounded-xl shadow-2xl w-[560px] max-h-[85vh] flex flex-col">
         {/* Header */}
@@ -498,19 +499,20 @@ export default function PdfAnalysisModal({
       </div>
     </div>
 
-      {showTakeoffWizard && extra && (
-        <PdfTakeoffWizard
-          pdfDoc={pdfDoc}
-          pageNumber={pageNumber}
-          planId={drawingId}
-          companyId={companyId}
-          analysisExtra={extra}
-          onTakeoffCreated={(rules) => {
-            setShowTakeoffWizard(false);
-            onClose();
-          }}
-          onClose={() => setShowTakeoffWizard(false)}
-        />
-      )}
+    {showTakeoffWizard && extra && (
+      <PdfTakeoffWizard
+        pdfDoc={pdfDoc}
+        pageNumber={pageNumber}
+        planId={drawingId}
+        companyId={companyId}
+        analysisExtra={extra}
+        onTakeoffCreated={(_rules) => {
+          setShowTakeoffWizard(false);
+          onClose();
+        }}
+        onClose={() => setShowTakeoffWizard(false)}
+      />
+    )}
+    </>
   );
 }
