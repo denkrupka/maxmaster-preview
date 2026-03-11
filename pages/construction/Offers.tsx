@@ -206,6 +206,7 @@ export const OffersPage: React.FC = () => {
     internal_notes: ''
   });
   const [sections, setSections] = useState<LocalOfferSection[]>([]);
+  const [sectionsReady, setSectionsReady] = useState(999); // progressive render: how many sections are ready (999 = show all)
   const [savingOffer, setSavingOffer] = useState(false);
 
   // Calculation mode & dates
@@ -1292,6 +1293,18 @@ export const OffersPage: React.FC = () => {
         }
 
         setSections(sectionsList);
+        // Progressive render: reveal sections one by one to avoid blocking UI
+        setSectionsReady(0);
+        const totalSections = sectionsList.length;
+        let revealed = 0;
+        const revealNext = () => {
+          revealed++;
+          setSectionsReady(revealed);
+          if (revealed < totalSections) {
+            requestAnimationFrame(revealNext);
+          }
+        };
+        if (totalSections > 0) requestAnimationFrame(revealNext);
 
         // Populate client data for edit mode (only fill name/nip if not already set from print_settings)
         if (offer.client) {
@@ -2895,6 +2908,11 @@ export const OffersPage: React.FC = () => {
             }))
           }));
           setSections(normalizedSections);
+          // Progressive render for imported sections
+          setSectionsReady(0);
+          let rev = 0;
+          const revNext = () => { rev++; setSectionsReady(rev); if (rev < normalizedSections.length) requestAnimationFrame(revNext); };
+          if (normalizedSections.length > 0) requestAnimationFrame(revNext);
         }
       } catch (importErr) {
         // No items to import, continuing with client data only
@@ -4435,13 +4453,7 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                     const q = itemSearchQuery.toLowerCase();
                     return item.name?.toLowerCase().includes(q) || item.description?.toLowerCase().includes(q);
                   })
-                  .slice(0, 200)
                   .map(item => renderItem(section.id, item))}
-                {section.items.length > 200 && (
-                  <div className="px-4 py-2 text-xs text-slate-400 text-center">
-                    Pokazano 200 z {section.items.length} pozycji
-                  </div>
-                )}
               </div>
             )}
 
@@ -5714,7 +5726,19 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                   </div>
                 )}
 
+                {/* Progressive loading bar */}
+                {sectionsReady < sections.length && sections.length > 0 && (
+                  <div className="mb-3 px-2">
+                    <div className="flex items-center gap-2 text-xs text-slate-500 mb-1">
+                      <span>Ładowanie sekcji: {sectionsReady}/{sections.length}</span>
+                    </div>
+                    <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                      <div className="bg-blue-500 h-1.5 rounded-full transition-all duration-200" style={{ width: `${(sectionsReady / sections.length) * 100}%` }} />
+                    </div>
+                  </div>
+                )}
                 {sections
+                  .slice(0, sectionsReady)
                   .filter(section => !itemFilterSection || section.id === itemFilterSection)
                   .filter(section => {
                     if (!itemSearchQuery) return true;
