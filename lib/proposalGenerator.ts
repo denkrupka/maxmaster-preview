@@ -633,40 +633,19 @@ export async function convertEstimateToOfferData(estimateId: string): Promise<{
       return posIds;
     };
 
-    // Build sections — flatten subsection positions into parent for offer view,
-    // but also keep children for hierarchical display
+    // Build flat sections — collect ALL positions from section + all subsections into one flat list
     const buildSection = (sectionId: string, sIndex: number): any => {
       const sec = dataJson.sections[sectionId];
       if (!sec) return null;
       const sectionOverheads = sec.overheads || [];
 
-      // Direct items from this section
-      const items = (sec.positionIds || []).map((posId: string, iIndex: number) => {
+      // Collect ALL positions from this section and all nested subsections
+      const allPosIds = collectAllPositions(sectionId);
+      const items = allPosIds.map((posId: string, iIndex: number) => {
         const pos = dataJson.positions[posId];
         if (!pos) return null;
         return buildItemFromPosition(pos, sIndex, iIndex, sectionOverheads);
       }).filter(Boolean);
-
-      const children = (sec.subsectionIds || []).map((subId: string, subIdx: number) =>
-        buildSection(subId, sIndex * 100 + subIdx + 1)
-      ).filter(Boolean);
-
-      // If this section has no direct items but has children with items,
-      // pull children's items up so the section isn't empty in flat view
-      if (items.length === 0 && children.length > 0) {
-        let flatIdx = 0;
-        for (const child of children) {
-          for (const item of (child.items || [])) {
-            items.push({ ...item, sort_order: flatIdx++ });
-          }
-          // Also pull up grandchildren items
-          for (const grandchild of (child.children || [])) {
-            for (const item of (grandchild.items || [])) {
-              items.push({ ...item, sort_order: flatIdx++ });
-            }
-          }
-        }
-      }
 
       return {
         id: `kosztorys-section-${sIndex}`,
@@ -676,9 +655,9 @@ export async function convertEstimateToOfferData(estimateId: string): Promise<{
         sort_order: sIndex,
         created_at: '',
         updated_at: '',
-        isExpanded: true,
+        isExpanded: items.length <= 50,
         items,
-        children,
+        children: [],
       };
     };
 

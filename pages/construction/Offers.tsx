@@ -4435,7 +4435,13 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                     const q = itemSearchQuery.toLowerCase();
                     return item.name?.toLowerCase().includes(q) || item.description?.toLowerCase().includes(q);
                   })
+                  .slice(0, 200)
                   .map(item => renderItem(section.id, item))}
+                {section.items.length > 200 && (
+                  <div className="px-4 py-2 text-xs text-slate-400 text-center">
+                    Pokazano 200 z {section.items.length} pozycji
+                  </div>
+                )}
               </div>
             )}
 
