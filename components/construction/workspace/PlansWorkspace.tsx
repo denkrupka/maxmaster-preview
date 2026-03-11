@@ -1417,6 +1417,12 @@ export const PlansWorkspace: React.FC = () => {
     notify(`Analiza PDF zakonczona: ${analysis.totalBlocks} blokow, ${analysis.totalEntities} elementow`);
   }, [notify]);
 
+  const handleTakeoffPositionsReady = useCallback((positions: any[]) => {
+    // Show summary notification - positions are already saved to drawing_takeoff_results
+    const withCount = positions.filter((p: any) => p.count > 0);
+    notify(`Przedmiar AI: ${withCount.length} pozycji z ilościami, ${positions.length - withCount.length} do weryfikacji. Dane zapisane w Supabase.`);
+  }, [notify]);
+
   const handleDxfAnalysisComplete = useCallback((analysis: DxfAnalysis) => {
     setShowDxfAnalysis(false);
     notify(`Analiza DXF zakonczona: ${analysis.totalBlocks} blokow, ${analysis.totalEntities} elementow`);
@@ -3678,6 +3684,7 @@ export const PlansWorkspace: React.FC = () => {
           drawingId={activeFile.id}
           scaleRatio={activeFile.scale_ratio}
           onAnalysisComplete={handlePdfAnalysisComplete}
+          onTakeoffPositionsReady={handleTakeoffPositionsReady}
           onClose={() => setShowPdfAnalysis(false)}
         />
       )}

@@ -3,9 +3,21 @@ import { Sparkles, Loader2, CheckCircle, AlertTriangle, Play, X, Scale } from 'l
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import { supabase } from '../../lib/supabase';
 import type { PdfAnalysisExtra } from '../../lib/pdfAnalyzer';
-import type { TakeoffRule } from '../../lib/dxfTakeoff';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface TakeoffPosition {
+  name: string;
+  legendRef?: string;
+  category: string;
+  count: number;
+  unit: string;
+  description?: string;
+  source: 'claude' | 'gemini' | 'both';
+  confidence: number;
+  needsReview: boolean;
+  reviewReason?: string;
+}
 
 interface PdfTakeoffWizardProps {
   pdfDoc: PDFDocumentProxy;
@@ -13,34 +25,11 @@ interface PdfTakeoffWizardProps {
   planId: string;
   companyId: string;
   analysisExtra: PdfAnalysisExtra;
-  onTakeoffCreated: (rules: TakeoffRule[]) => void;
+  onTakeoffCreated: (positions: TakeoffPosition[]) => void;
   onClose: () => void;
 }
 
-type WizardStep = 'scale' | 'rendering' | 'analyzing' | 'comparing' | 'creating' | 'done';
-
-interface LegendEntry {
-  label: string;
-  description?: string;
-  entryType?: string;
-  color?: string;
-  category?: string;
-}
-
-interface ComparedRow {
-  label: string;
-  category?: string;
-  entryType?: string;
-  color?: string;
-  gemini: boolean;
-  claude: boolean;
-  geminiColor?: string;
-  claudeColor?: string;
-  confidence: number;
-  needsReview: boolean;
-  reviewReason?: string;
-  status: 'ok' | 'mismatch' | 'single';
-}
+type WizardStep = 'scale' | 'rendering' | 'analyzing' | 'result' | 'saving' | 'done';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -56,93 +45,6 @@ async function renderPageToBase64(page: PDFPageProxy): Promise<string> {
   return canvas.toDataURL('image/jpeg', 0.82).replace(/^data:image\/jpeg;base64,/, '');
 }
 
-function normalize(s: string) { return s.toLowerCase().trim().replace(/\s+/g, ' '); }
-
-function labelSimilarity(a: string, b: string): number {
-  const na = normalize(a); const nb = normalize(b);
-  if (na === nb) return 1;
-  if (na.includes(nb) || nb.includes(na)) return 0.8;
-  const wa = na.split(' '); const wb = nb.split(' ');
-  return wa.filter(w => wb.includes(w)).length / Math.max(wa.length, wb.length);
-}
-
-function computeConfidence(gemini: boolean, claude: boolean, status: string): number {
-  if (gemini && claude && status === 'ok') return 0.92;
-  if (gemini && claude && status === 'mismatch') return 0.55;
-  if (gemini && !claude) return 0.65;
-  if (!gemini && claude) return 0.60;
-  return 0.50;
-}
-
-function buildStyleGroupsSummary(extra: PdfAnalysisExtra): string {
-  return (extra.styleGroups || []).slice(0, 20).map(g =>
-    `color:${g.strokeColor} width:${g.lineWidth} dash:${(g.dashPattern || []).join(',') || 'solid'} paths:${g.pathCount} length:${g.totalLengthM?.toFixed(1) ?? '?'}m`
-  ).join('\n');
-}
-
-function compareResults(
-  geminiEntries: LegendEntry[],
-  claudeBlocks: Array<{ name?: string; category?: string; color?: string }>,
-  claudeLines: Array<{ label?: string; category?: string; color?: string }>,
-): ComparedRow[] {
-  const claudeItems = [
-    ...claudeBlocks.map(b => ({ name: b.name || '', category: b.category, color: b.color, entryType: 'symbol' })),
-    ...claudeLines.map(l => ({ name: l.label || '', category: l.category, color: l.color, entryType: 'line' })),
-  ];
-  const matched = new Set<number>();
-  const rows: ComparedRow[] = [];
-
-  for (const ge of geminiEntries) {
-    let bestIdx = -1; let bestScore = 0;
-    claudeItems.forEach((ci, i) => {
-      if (matched.has(i)) return;
-      const s = labelSimilarity(ge.label, ci.name);
-      if (s > bestScore) { bestScore = s; bestIdx = i; }
-    });
-    if (bestIdx >= 0 && bestScore >= 0.5) {
-      matched.add(bestIdx);
-      const ci = claudeItems[bestIdx];
-      const colorMismatch = !!(ge.color && ci.color && normalize(ge.color) !== normalize(ci.color));
-      const status: ComparedRow['status'] = colorMismatch ? 'mismatch' : 'ok';
-      const conf = computeConfidence(true, true, status);
-      rows.push({ label: ge.label, category: ge.category || ci.category, entryType: ge.entryType || ci.entryType,
-        color: ge.color || ci.color, gemini: true, claude: true, geminiColor: ge.color, claudeColor: ci.color,
-        confidence: conf, needsReview: conf < 0.70, reviewReason: colorMismatch ? `Kolor: Gemini=${ge.color}, Claude=${ci.color}` : undefined, status });
-    } else {
-      const conf = computeConfidence(true, false, 'single');
-      rows.push({ label: ge.label, category: ge.category, entryType: ge.entryType, color: ge.color,
-        gemini: true, claude: false, geminiColor: ge.color, confidence: conf,
-        needsReview: true, reviewReason: 'Tylko Gemini — Claude nie wykryło', status: 'single' });
-    }
-  }
-  claudeItems.forEach((ci, i) => {
-    if (!matched.has(i) && ci.name) {
-      const conf = computeConfidence(false, true, 'single');
-      rows.push({ label: ci.name, category: ci.category, entryType: ci.entryType, color: ci.color,
-        gemini: false, claude: true, claudeColor: ci.color, confidence: conf,
-        needsReview: true, reviewReason: 'Tylko Claude — Gemini nie wykryło', status: 'single' });
-    }
-  });
-  return rows;
-}
-
-function buildRules(rows: ComparedRow[]): TakeoffRule[] {
-  return rows.map((row, index) => {
-    const isLine = (row.entryType || '').toLowerCase() === 'line';
-    return {
-      id: `takeoff-${Date.now()}-${index}`,
-      name: row.label,
-      category: row.category || 'Inne',
-      matchType: isLine ? 'style_color' : 'block_contains',
-      matchPattern: row.color || row.label,
-      quantitySource: isLine ? 'group_length_m' : 'count',
-      unit: isLine ? 'm' : 'szt.',
-      multiplier: 1,
-      isDefault: false,
-    } as TakeoffRule;
-  });
-}
-
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function PdfTakeoffWizard({
@@ -150,23 +52,24 @@ export default function PdfTakeoffWizard({
 }: PdfTakeoffWizardProps) {
   const [step, setStep] = useState<WizardStep>('scale');
   const [statusMsg, setStatusMsg] = useState('');
-  const [comparedRows, setComparedRows] = useState<ComparedRow[]>([]);
-  const [pendingRules, setPendingRules] = useState<TakeoffRule[]>([]);
+  const [positions, setPositions] = useState<TakeoffPosition[]>([]);
   const [error, setError] = useState('');
+  const [claudeRaw, setClaudeRaw] = useState<any>(null);
+  const [geminiRaw, setGeminiRaw] = useState<any>(null);
 
   const detectedScale = analysisExtra.scaleInfo?.scaleText || null;
   const [scaleConfirmed, setScaleConfirmed] = useState(false);
   const [customScale, setCustomScale] = useState(detectedScale || '1:100');
   const [scaleSource, setScaleSource] = useState<'detected' | 'custom'>(detectedScale ? 'detected' : 'custom');
 
-  const isLoading = step === 'rendering' || step === 'analyzing' || step === 'creating';
-  const reviewCount = comparedRows.filter(r => r.needsReview).length;
-  const okCount = comparedRows.filter(r => !r.needsReview).length;
+  const isLoading = step === 'rendering' || step === 'analyzing' || step === 'saving';
+  const reviewCount = positions.filter(p => p.needsReview).length;
 
   const run = useCallback(async () => {
     setError('');
     setStep('rendering');
     setStatusMsg('Renderowanie strony…');
+
     let pageBase64: string;
     try {
       const page = await pdfDoc.getPage(pageNumber);
@@ -176,64 +79,182 @@ export default function PdfTakeoffWizard({
       setStep('scale');
       return;
     }
+
     setStep('analyzing');
-    setStatusMsg('Gemini + Claude analizują równolegle…');
-    const styleGroupsSummary = buildStyleGroupsSummary(analysisExtra);
-    const [legendRes, rasterRes] = await Promise.allSettled([
-      supabase.functions.invoke('pdf-analyze-legend', {
-        body: { legendImageBase64: pageBase64, mimeType: 'image/jpeg', styleGroupsSummary },
-      }),
+    setStatusMsg('Claude analizuje rysunek i liczy elementy…');
+
+    // Run Claude raster analysis (primary - gives count per symbol)
+    const [claudeRes, geminiRes] = await Promise.allSettled([
       supabase.functions.invoke('pdf-analyze-raster', {
         body: { imageBase64: pageBase64, mimeType: 'image/jpeg', pageNumber },
       }),
+      supabase.functions.invoke('pdf-analyze-legend', {
+        body: {
+          legendImageBase64: pageBase64,
+          mimeType: 'image/jpeg',
+          styleGroupsSummary: (analysisExtra.styleGroups || []).slice(0, 20)
+            .map(g => `color:${g.strokeColor} width:${g.lineWidth} paths:${g.pathCount}`)
+            .join('\n'),
+        },
+      }),
     ]);
-    const geminiEntries: LegendEntry[] =
-      legendRes.status === 'fulfilled'
-        ? (legendRes.value.data?.data?.entries || legendRes.value.data?.entries || [])
-        : [];
-    const rasterData = rasterRes.status === 'fulfilled' && rasterRes.value.data ? rasterRes.value.data : {};
-    const claudeBlocks = (rasterData as any).blocks || [];
-    const claudeLines = (rasterData as any).lineGroups || [];
-    if (!geminiEntries.length && !claudeBlocks.length && !claudeLines.length) {
-      setError('Żadna analiza AI nie zwróciła wyników. Spróbuj ponownie lub sprawdź jakość rysunku.');
+
+    const claudeData = claudeRes.status === 'fulfilled' ? (claudeRes.value.data?.data || claudeRes.value.data || {}) : {};
+    const geminiData = geminiRes.status === 'fulfilled' ? (geminiRes.value.data?.data || geminiRes.value.data || {}) : {};
+
+    setClaudeRaw(claudeData);
+    setGeminiRaw(geminiData);
+
+    // Claude primary: symbols (with count) + routes
+    const claudeSymbols: any[] = claudeData.symbols || [];
+    const claudeRoutes: any[] = claudeData.routes || [];
+    // Gemini: legend entries (no count, but more detailed labels)
+    const geminiEntries: any[] = geminiData.entries || [];
+
+    if (!claudeSymbols.length && !geminiEntries.length) {
+      setError('AI nie wykryło żadnych elementów. Sprawdź czy rysunek zawiera legendę i elementy instalacji.');
       setStep('scale');
       return;
     }
-    const rows = compareResults(geminiEntries, claudeBlocks, claudeLines);
-    setComparedRows(rows);
-    setPendingRules(buildRules(rows));
-    setStep('comparing');
+
+    // Build positions from Claude (has count), enrich with Gemini descriptions
+    const geminiMap = new Map<string, any>();
+    for (const ge of geminiEntries) {
+      geminiMap.set((ge.label || '').toLowerCase().trim(), ge);
+    }
+
+    const result: TakeoffPosition[] = [];
+    const usedGemini = new Set<string>();
+
+    // Claude symbols → positions
+    for (const sym of claudeSymbols) {
+      const name = sym.type || sym.name || '';
+      if (!name) continue;
+
+      // Try to find matching Gemini entry for enrichment
+      const geminiMatch = geminiMap.get(name.toLowerCase().trim())
+        || [...geminiMap.entries()].find(([k]) => k.includes(name.toLowerCase().slice(0, 10)))?.[1];
+
+      const count = typeof sym.count === 'number' ? sym.count : 1;
+      const confidence = count > 0 ? 0.88 : 0.60;
+
+      result.push({
+        name: name,
+        legendRef: sym.legendRef || '',
+        category: sym.category || geminiMatch?.category || 'Inne',
+        count,
+        unit: 'szt.',
+        description: sym.description || geminiMatch?.description || '',
+        source: geminiMatch ? 'both' : 'claude',
+        confidence,
+        needsReview: count === 0 || !sym.legendRef,
+        reviewReason: count === 0 ? 'Brak na rysunku (count=0)' : undefined,
+      });
+
+      if (geminiMatch) usedGemini.add((sym.type || '').toLowerCase().trim());
+    }
+
+    // Claude routes → positions with length
+    for (const route of claudeRoutes) {
+      const name = route.type || route.name || '';
+      if (!name) continue;
+      result.push({
+        name,
+        category: 'Kable i przewody',
+        count: route.estimatedLengthM || 0,
+        unit: 'm',
+        description: route.description || '',
+        source: 'claude',
+        confidence: 0.65,
+        needsReview: true,
+        reviewReason: 'Trasa kablowa — zweryfikuj długość',
+      });
+    }
+
+    // Gemini-only entries not matched by Claude
+    for (const ge of geminiEntries) {
+      const key = (ge.label || '').toLowerCase().trim();
+      if (!key || usedGemini.has(key)) continue;
+
+      // Skip non-element entries (parameters, descriptions, values)
+      const skipPatterns = ['wartość', 'natężenie', 'oświetlenie', 'poziom', 'klasa', 'współczynnik', 'moc', 'wymagania'];
+      const isParam = skipPatterns.some(p => key.includes(p));
+      if (isParam) continue;
+
+      result.push({
+        name: ge.label || '',
+        category: ge.category || 'Inne',
+        count: 0,
+        unit: ge.entryType === 'line' ? 'm' : 'szt.',
+        description: ge.description || '',
+        source: 'gemini',
+        confidence: 0.55,
+        needsReview: true,
+        reviewReason: 'Tylko legenda — Claude nie zliczył',
+      });
+    }
+
+    if (!result.length) {
+      setError('Brak rozpoznanych elementów. Sprawdź jakość rysunku.');
+      setStep('scale');
+      return;
+    }
+
+    setPositions(result);
+    setStep('result');
     setStatusMsg('');
   }, [pdfDoc, pageNumber, analysisExtra]);
 
-  const createTakeoff = useCallback(async () => {
-    if (!pendingRules.length) return;
-    setStep('creating');
-    setStatusMsg('Zapisuję reguły…');
+  const saveAndCreate = useCallback(async () => {
+    setStep('saving');
+    setStatusMsg('Zapisuję…');
     try {
-      await supabase.from('drawing_takeoff_rules').insert(pendingRules.map(r => ({
-        plan_id: planId, company_id: companyId, name: r.name, category: r.category,
-        match_type: r.matchType, match_pattern: r.matchPattern, quantity_source: r.quantitySource,
-        unit: r.unit, multiplier: r.multiplier, is_default: false, is_ai_generated: true, enabled: true,
-      })));
+      // Save raw analysis to drawing_analyses
+      await supabase.from('drawing_analyses').upsert({
+        plan_id: planId,
+        page_number: pageNumber,
+        analysis_data: claudeRaw,
+        legend_data: geminiRaw,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'plan_id,page_number' });
+
+      // Save positions as takeoff results
+      if (positions.length > 0) {
+        await supabase.from('drawing_takeoff_results').insert(
+          positions.map((p, i) => ({
+            plan_id: planId,
+            company_id: companyId,
+            name: p.name,
+            category: p.category,
+            quantity: p.count,
+            unit: p.unit,
+            description: p.description,
+            confidence: p.confidence,
+            needs_review: p.needsReview,
+            review_reason: p.reviewReason,
+            source: p.source,
+            sort_order: i,
+          }))
+        );
+      }
+
       setStep('done');
-      setStatusMsg(`Zapisano ${pendingRules.length} reguł. Do weryfikacji: ${reviewCount}`);
-      onTakeoffCreated(pendingRules);
+      onTakeoffCreated(positions);
     } catch (e) {
       setError(`Błąd zapisu: ${e instanceof Error ? e.message : String(e)}`);
-      setStep('comparing');
+      setStep('result');
     }
-  }, [pendingRules, planId, companyId, onTakeoffCreated, reviewCount]);
+  }, [positions, planId, companyId, claudeRaw, geminiRaw, onTakeoffCreated, pageNumber]);
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-xl shadow-2xl w-[680px] max-h-[85vh] flex flex-col">
+      <div className="bg-white rounded-xl shadow-2xl w-[700px] max-h-[85vh] flex flex-col">
 
-        {/* Header — matches PdfAnalysisModal */}
+        {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <div className="flex items-center gap-2">
             <Sparkles size={16} className="text-violet-600" />
-            <h3 className="font-semibold text-sm">Wizard AI Przedmiarowania</h3>
+            <h3 className="font-semibold text-sm">AI Przedmiarowanie</h3>
             {step === 'done' && (
               <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-green-100 text-green-700">
                 Gotowe
@@ -246,49 +267,52 @@ export default function PdfTakeoffWizard({
         {/* Body */}
         <div className="p-4 flex-1 overflow-y-auto space-y-3">
 
-          {/* PROTECTION 1: Scale confirmation */}
-          <div className={`rounded-lg border p-3 ${scaleConfirmed ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
-            <div className="flex items-center gap-2 mb-2">
-              <Scale size={13} className={scaleConfirmed ? 'text-green-600' : 'text-amber-600'} />
-              <span className={`text-xs font-semibold ${scaleConfirmed ? 'text-green-700' : 'text-amber-700'}`}>
-                Ochrona 1: Potwierdź skalę rysunku
-              </span>
-              {scaleConfirmed && <CheckCircle size={12} className="text-green-600" />}
-            </div>
-            {detectedScale && (
-              <p className="text-xs text-gray-500 mb-2">
-                Wykryta skala: <strong className="text-gray-800">{detectedScale}</strong>
-                <span className="text-gray-400"> (z tekstu rysunku)</span>
-              </p>
-            )}
-            <div className="flex items-center gap-4 flex-wrap">
-              <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
-                <input type="radio" checked={scaleSource === 'detected'} onChange={() => setScaleSource('detected')}
-                  disabled={!detectedScale} className="accent-green-600" />
-                Wykryta: {detectedScale || '—'}
-              </label>
-              <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
-                <input type="radio" checked={scaleSource === 'custom'} onChange={() => setScaleSource('custom')} className="accent-amber-600" />
-                Inna:
-                <input type="text" value={customScale} onChange={e => setCustomScale(e.target.value)}
-                  disabled={scaleSource !== 'custom'} placeholder="1:50"
-                  className="ml-1 w-20 border border-gray-200 rounded px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-40" />
-              </label>
-              {!scaleConfirmed && (
+          {/* PROTECTION 1: Scale — only show if not yet confirmed */}
+          {!scaleConfirmed && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <Scale size={13} className="text-amber-600" />
+                <span className="text-xs font-semibold text-amber-700">Potwierdź skalę rysunku</span>
+              </div>
+              {detectedScale && (
+                <p className="text-xs text-gray-500 mb-2">
+                  Wykryta: <strong className="text-gray-800">{detectedScale}</strong>
+                </p>
+              )}
+              <div className="flex items-center gap-4 flex-wrap">
+                <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+                  <input type="radio" checked={scaleSource === 'detected'} onChange={() => setScaleSource('detected')}
+                    disabled={!detectedScale} className="accent-green-600" />
+                  Wykryta: {detectedScale || '—'}
+                </label>
+                <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+                  <input type="radio" checked={scaleSource === 'custom'} onChange={() => setScaleSource('custom')} className="accent-amber-600" />
+                  Inna:
+                  <input type="text" value={customScale} onChange={e => setCustomScale(e.target.value)}
+                    disabled={scaleSource !== 'custom'} placeholder="1:50"
+                    className="ml-1 w-20 border border-gray-200 rounded px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-40" />
+                </label>
                 <button onClick={() => setScaleConfirmed(true)}
                   className="ml-auto px-3 py-1 text-xs bg-amber-500 hover:bg-amber-600 text-white rounded font-medium">
-                  Potwierdzam skalę
+                  Potwierdzam
                 </button>
-              )}
+              </div>
             </div>
-          </div>
+          )}
 
-          {/* Status */}
-          {statusMsg && (
-            <div className="flex items-center gap-2 text-xs text-gray-500">
-              {isLoading && <Loader2 size={12} className="text-blue-600 animate-spin" />}
-              {step === 'done' && <CheckCircle size={12} className="text-green-600" />}
-              <span>{statusMsg}</span>
+          {/* Scale confirmed banner */}
+          {scaleConfirmed && step === 'scale' && (
+            <div className="flex items-center gap-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded px-3 py-2">
+              <CheckCircle size={12} />
+              <span>Skala: <strong>{scaleSource === 'detected' ? detectedScale : customScale}</strong> — potwierdzona</span>
+            </div>
+          )}
+
+          {/* Loading state */}
+          {isLoading && (
+            <div className="flex items-center gap-2 py-6 justify-center">
+              <Loader2 size={16} className="text-blue-600 animate-spin" />
+              <span className="text-sm text-gray-600">{statusMsg}</span>
             </div>
           )}
 
@@ -298,13 +322,13 @@ export default function PdfTakeoffWizard({
             </div>
           )}
 
-          {/* PROTECTION 2+3: Comparison table */}
-          {comparedRows.length > 0 && (
+          {/* Results table */}
+          {(step === 'result' || step === 'done') && positions.length > 0 && (
             <div>
-              {/* Summary bar */}
+              {/* Summary */}
               <div className="text-xs text-gray-500 bg-gray-50 rounded p-2 mb-2 flex items-center gap-3">
-                <span>Razem: <strong className="text-gray-800">{comparedRows.length}</strong></span>
-                <span className="text-green-700">✓ OK: {okCount}</span>
+                <span>Pozycji: <strong className="text-gray-800">{positions.length}</strong></span>
+                <span className="text-green-700">✓ OK: {positions.filter(p => !p.needsReview).length}</span>
                 {reviewCount > 0 && (
                   <span className="flex items-center gap-1 text-amber-700">
                     <AlertTriangle size={11} /> Do weryfikacji: {reviewCount}
@@ -316,40 +340,39 @@ export default function PdfTakeoffWizard({
                 <table className="w-full text-xs text-left">
                   <thead className="bg-gray-50 text-gray-500 border-b">
                     <tr>
-                      <th className="px-3 py-2 font-medium">Element</th>
-                      <th className="px-3 py-2 font-medium text-violet-700">Gemini</th>
-                      <th className="px-3 py-2 font-medium text-blue-700">Claude</th>
+                      <th className="px-3 py-2 font-medium">Pozycja</th>
+                      <th className="px-3 py-2 font-medium">Kategoria</th>
+                      <th className="px-3 py-2 font-medium text-right">Ilość</th>
+                      <th className="px-3 py-2 font-medium">Jm</th>
                       <th className="px-3 py-2 font-medium text-center">Pewność</th>
                       <th className="px-3 py-2 font-medium">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
-                    {comparedRows.map((row, i) => (
-                      <tr key={i} className={`hover:bg-gray-50 ${row.needsReview ? 'bg-amber-50/50' : ''}`}>
-                        <td className="px-3 py-2 text-gray-800 font-medium max-w-[180px] truncate" title={row.label}>
-                          {row.label}
+                    {positions.map((pos, i) => (
+                      <tr key={i} className={`hover:bg-gray-50 ${pos.needsReview ? 'bg-amber-50/40' : ''}`}>
+                        <td className="px-3 py-2 text-gray-800 font-medium max-w-[200px]">
+                          <div className="truncate" title={pos.name}>{pos.name}</div>
+                          {pos.legendRef && <div className="text-[10px] text-gray-400">{pos.legendRef}</div>}
                         </td>
-                        <td className="px-3 py-2">
-                          {row.gemini
-                            ? <span className="text-violet-700 font-bold bg-violet-50 px-1.5 py-0.5 rounded">✓{row.geminiColor ? <span className="text-gray-400 font-normal ml-1">{row.geminiColor}</span> : null}</span>
-                            : <span className="text-gray-300">—</span>}
+                        <td className="px-3 py-2 text-gray-500 max-w-[120px]">
+                          <div className="truncate" title={pos.category}>{pos.category}</div>
                         </td>
-                        <td className="px-3 py-2">
-                          {row.claude
-                            ? <span className="text-blue-700 font-bold bg-blue-50 px-1.5 py-0.5 rounded">✓{row.claudeColor ? <span className="text-gray-400 font-normal ml-1">{row.claudeColor}</span> : null}</span>
-                            : <span className="text-gray-300">—</span>}
+                        <td className="px-3 py-2 text-right font-mono text-gray-800">
+                          {pos.count > 0 ? pos.count : <span className="text-gray-300">—</span>}
                         </td>
+                        <td className="px-3 py-2 text-gray-500">{pos.unit}</td>
                         <td className="px-3 py-2 text-center">
                           {(() => {
-                            const pct = Math.round(row.confidence * 100);
-                            const cls = pct >= 85 ? 'text-green-700 bg-green-50' : pct >= 65 ? 'text-amber-700 bg-amber-50' : 'text-red-700 bg-red-50';
+                            const pct = Math.round(pos.confidence * 100);
+                            const cls = pct >= 80 ? 'text-green-700 bg-green-50' : pct >= 60 ? 'text-amber-700 bg-amber-50' : 'text-red-700 bg-red-50';
                             return <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-mono ${cls}`}>{pct}%</span>;
                           })()}
                         </td>
                         <td className="px-3 py-2">
-                          {row.needsReview
-                            ? <span className="flex items-center gap-1 text-amber-700"><AlertTriangle size={11} /><span className="text-[10px]">{row.reviewReason}</span></span>
-                            : <span className="text-green-700 text-[10px]">✓ OK</span>}
+                          {pos.needsReview
+                            ? <span className="flex items-center gap-1 text-amber-700 text-[10px]"><AlertTriangle size={10} />{pos.reviewReason}</span>
+                            : <span className="text-green-700 text-[10px]">✓</span>}
                         </td>
                       </tr>
                     ))}
@@ -360,7 +383,7 @@ export default function PdfTakeoffWizard({
               {reviewCount > 0 && (
                 <p className="mt-1.5 text-xs text-amber-700 flex items-center gap-1">
                   <AlertTriangle size={11} />
-                  {reviewCount} pozycji wymaga ręcznej weryfikacji — zostaną uwzględnione, ale zaznaczone.
+                  {reviewCount} pozycji do ręcznej weryfikacji — zostaną uwzględnione w przedmiarze.
                 </p>
               )}
             </div>
@@ -369,34 +392,30 @@ export default function PdfTakeoffWizard({
           {step === 'done' && (
             <div className="text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2 flex items-center gap-2">
               <CheckCircle size={14} />
-              <span>Przedmiar gotowy! Reguły zapisane i aktywowane w przestrzeni roboczej.</span>
+              <span>Zapisano {positions.length} pozycji. Możesz teraz tworzyć ofertę lub kosztorys z tych danych.</span>
             </div>
           )}
         </div>
 
-        {/* Footer — matches existing modal style */}
+        {/* Footer */}
         <div className="flex items-center justify-between px-4 py-3 border-t bg-gray-50">
           <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-100">
             {step === 'done' ? 'Zamknij' : 'Anuluj'}
           </button>
           <div className="flex items-center gap-2">
             {step === 'scale' && (
-              <button onClick={run} disabled={!scaleConfirmed || isLoading}
+              <button onClick={run} disabled={!scaleConfirmed}
                 className="flex items-center gap-1.5 px-4 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed">
-                <Play size={14} /> {scaleConfirmed ? 'Uruchom analizę AI' : 'Najpierw potwierdź skalę'}
+                <Play size={13} />
+                {scaleConfirmed ? 'Analizuj rysunek' : 'Najpierw potwierdź skalę'}
               </button>
             )}
-            {step === 'comparing' && pendingRules.length > 0 && (
-              <button onClick={createTakeoff}
+            {step === 'result' && positions.length > 0 && (
+              <button onClick={saveAndCreate}
                 className="flex items-center gap-1.5 px-4 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700">
-                <Sparkles size={14} /> Utwórz przedmiar ({pendingRules.length})
+                <Sparkles size={13} />
+                Utwórz przedmiar ({positions.filter(p => p.count > 0).length} pozycji)
               </button>
-            )}
-            {isLoading && (
-              <div className="flex items-center gap-2 text-xs text-gray-500">
-                <Loader2 size={12} className="animate-spin text-blue-600" />
-                {step === 'rendering' ? 'Renderowanie…' : step === 'analyzing' ? 'AI analizuje…' : 'Zapisywanie…'}
-              </div>
             )}
           </div>
         </div>

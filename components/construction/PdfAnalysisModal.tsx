@@ -64,11 +64,12 @@ interface PdfAnalysisModalProps {
   drawingId: string;
   scaleRatio?: number;
   onAnalysisComplete: (analysis: DxfAnalysis, extra?: PdfAnalysisExtra) => void;
+  onTakeoffPositionsReady?: (positions: import('./PdfTakeoffWizard').TakeoffPosition[]) => void;
   onClose: () => void;
 }
 
 export default function PdfAnalysisModal({
-  pdfDoc, pageNumber, companyId, drawingId, scaleRatio, onAnalysisComplete, onClose,
+  pdfDoc, pageNumber, companyId, drawingId, scaleRatio, onAnalysisComplete, onTakeoffPositionsReady, onClose,
 }: PdfAnalysisModalProps) {
   const [step, setStep] = useState<PdfAnalysisStep>('idle');
   const [classification, setClassification] = useState<PdfClassification | null>(null);
@@ -595,8 +596,11 @@ export default function PdfAnalysisModal({
         planId={drawingId}
         companyId={companyId}
         analysisExtra={extra}
-        onTakeoffCreated={(_rules) => {
+        onTakeoffCreated={(positions) => {
           setShowTakeoffWizard(false);
+          if (onTakeoffPositionsReady) {
+            onTakeoffPositionsReady(positions);
+          }
           onClose();
         }}
         onClose={() => setShowTakeoffWizard(false)}
