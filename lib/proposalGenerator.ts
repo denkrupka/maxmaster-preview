@@ -507,6 +507,9 @@ export async function convertEstimateToOfferData(estimateId: string): Promise<{
   let sections: any[] = [];
 
   if (dataJson && dataJson.sections && dataJson.positions && dataJson.root) {
+    console.log('[offer-import] dataJson.root.sectionIds:', dataJson.root.sectionIds);
+    console.log('[offer-import] Total sections in dataJson:', Object.keys(dataJson.sections).length);
+    console.log('[offer-import] Total positions in dataJson:', Object.keys(dataJson.positions).length);
     // Collect all overheads (root + section level)
     const rootOverheads = dataJson.root.overheads || [];
 
@@ -623,12 +626,14 @@ export async function convertEstimateToOfferData(estimateId: string): Promise<{
     };
 
     // Recursively collect ALL position IDs from section and its subsections
-    const collectAllPositions = (sectionId: string): string[] => {
+    const collectAllPositions = (sectionId: string, depth = 0): string[] => {
       const sec = dataJson.sections[sectionId];
-      if (!sec) return [];
+      if (!sec) { console.warn(`[offer-import] Section ${sectionId} not found in dataJson.sections`); return []; }
       let posIds = [...(sec.positionIds || [])];
-      for (const subId of (sec.subsectionIds || [])) {
-        posIds = posIds.concat(collectAllPositions(subId));
+      const subIds = sec.subsectionIds || sec.subSectionIds || sec.childIds || [];
+      console.log(`[offer-import] ${'  '.repeat(depth)}Section "${sec.name}" (${sectionId}): ${posIds.length} direct positions, ${subIds.length} subsections, keys: ${Object.keys(sec).join(',')}`);
+      for (const subId of subIds) {
+        posIds = posIds.concat(collectAllPositions(subId, depth + 1));
       }
       return posIds;
     };
@@ -641,6 +646,7 @@ export async function convertEstimateToOfferData(estimateId: string): Promise<{
 
       // Collect ALL positions from this section and all nested subsections
       const allPosIds = collectAllPositions(sectionId);
+      console.log(`[offer-import] Section "${sec.name}": total ${allPosIds.length} positions collected`);
       const items = allPosIds.map((posId: string, iIndex: number) => {
         const pos = dataJson.positions[posId];
         if (!pos) return null;
