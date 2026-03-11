@@ -1775,6 +1775,7 @@ export const OffersPage: React.FC = () => {
               vat_rate: item.vat_rate ?? 23,
               sort_order: item.sort_order ?? idx,
               is_optional: item.is_optional || false,
+              // total_price is generated — omit
             })))
             .select();
 

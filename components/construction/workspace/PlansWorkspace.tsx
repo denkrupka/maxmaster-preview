@@ -1481,7 +1481,6 @@ export const PlansWorkspace: React.FC = () => {
           quantity: p.count || 0,
           unit: p.unit || 'szt.',
           unit_price: 0,
-          total_price: 0,
           sort_order: pIdx,
           is_optional: false,
         }));
