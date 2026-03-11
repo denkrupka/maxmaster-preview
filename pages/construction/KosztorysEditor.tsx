@@ -2878,6 +2878,18 @@ export const KosztorysEditorPage: React.FC = () => {
 
   // Helper: populate offer sections & items from estimate data
   const populateOfferFromEstimate = async (offerId: string) => {
+    // Recursively collect ALL position IDs from a section and its subsections
+    const collectAllPosIds = (sectionId: string): string[] => {
+      const sec = estimateData.sections[sectionId];
+      if (!sec) return [];
+      let ids = [...sec.positionIds];
+      for (const subId of (sec.subsectionIds || [])) {
+        ids = ids.concat(collectAllPosIds(subId));
+      }
+      return ids;
+    };
+
+    // Batch insert items per section for speed
     for (const [sIdx, sectionId] of estimateData.root.sectionIds.entries()) {
       const section = estimateData.sections[sectionId];
       if (!section) continue;
@@ -2893,25 +2905,28 @@ export const KosztorysEditorPage: React.FC = () => {
         .single();
 
       if (newSection) {
-        for (const [pIdx, posId] of section.positionIds.entries()) {
+        const allPosIds = collectAllPosIds(sectionId);
+        const itemsToInsert = allPosIds.map((posId, pIdx) => {
           const position = estimateData.positions[posId];
-          if (!position) continue;
+          if (!position) return null;
           const posResult = calculationResult?.positions[posId];
           const quantity = posResult?.quantity || 0;
           const unitCost = posResult?.unitCost || 0;
+          return {
+            offer_id: offerId,
+            section_id: newSection.id,
+            name: position.name,
+            description: position.base,
+            quantity,
+            unit_price: unitCost,
+            sort_order: pIdx,
+            is_optional: false
+          };
+        }).filter(Boolean);
 
-          await supabase
-            .from('offer_items')
-            .insert({
-              offer_id: offerId,
-              section_id: newSection.id,
-              name: position.name,
-              description: position.base,
-              quantity: quantity,
-              unit_price: unitCost,
-              sort_order: pIdx,
-              is_optional: false
-            });
+        // Batch insert (chunks of 100 for Supabase limits)
+        for (let i = 0; i < itemsToInsert.length; i += 100) {
+          await supabase.from('offer_items').insert(itemsToInsert.slice(i, i + 100));
         }
       }
     }
