@@ -1725,13 +1725,11 @@ export const KosztorysEditorPage: React.FC = () => {
           setEstimate(convertedEstimate);
           setEstimateData(cleanedData);
 
-          // Expand all sections and positions by default
-          const allSectionIds = Object.keys(cleanedData.sections);
-          const allPositionIds = Object.keys(cleanedData.positions);
+          // Expand only top-level sections (not positions) for fast initial render
           setEditorState(prev => ({
             ...prev,
-            expandedSections: new Set(allSectionIds),
-            expandedPositions: new Set(allPositionIds),
+            expandedSections: new Set(cleanedData.root.sectionIds),
+            expandedPositions: new Set(),
           }));
 
           // Auto-fill title page from request data (only empty fields)
@@ -1859,10 +1857,10 @@ export const KosztorysEditorPage: React.FC = () => {
         setEstimate(convertedEstimate);
         setEstimateData(convertedEstimate.data);
 
-        // Expand all positions by default
+        // Keep positions collapsed for fast initial render
         setEditorState(prev => ({
           ...prev,
-          expandedPositions: new Set(positionIds),
+          expandedPositions: new Set(),
         }));
 
         // Auto-fill title page from request data
@@ -4935,38 +4933,44 @@ export const KosztorysEditorPage: React.FC = () => {
 
   // Toggle expand
   const toggleExpandSection = (sectionId: string) => {
-    setEditorState(prev => {
-      const newExpanded = new Set(prev.expandedSections);
-      if (newExpanded.has(sectionId)) {
-        newExpanded.delete(sectionId);
-      } else {
-        newExpanded.add(sectionId);
-      }
-      return { ...prev, expandedSections: newExpanded };
+    startTransition(() => {
+      setEditorState(prev => {
+        const newExpanded = new Set(prev.expandedSections);
+        if (newExpanded.has(sectionId)) {
+          newExpanded.delete(sectionId);
+        } else {
+          newExpanded.add(sectionId);
+        }
+        return { ...prev, expandedSections: newExpanded };
+      });
     });
   };
 
   const toggleExpandPosition = (positionId: string) => {
-    setEditorState(prev => {
-      const newExpanded = new Set(prev.expandedPositions);
-      if (newExpanded.has(positionId)) {
-        newExpanded.delete(positionId);
-      } else {
-        newExpanded.add(positionId);
-      }
-      return { ...prev, expandedPositions: newExpanded };
+    startTransition(() => {
+      setEditorState(prev => {
+        const newExpanded = new Set(prev.expandedPositions);
+        if (newExpanded.has(positionId)) {
+          newExpanded.delete(positionId);
+        } else {
+          newExpanded.add(positionId);
+        }
+        return { ...prev, expandedPositions: newExpanded };
+      });
     });
   };
 
   const toggleExpandSubsection = (subsectionId: string) => {
-    setEditorState(prev => {
-      const newExpanded = new Set(prev.expandedSubsections);
-      if (newExpanded.has(subsectionId)) {
-        newExpanded.delete(subsectionId);
-      } else {
-        newExpanded.add(subsectionId);
-      }
+    startTransition(() => {
+      setEditorState(prev => {
+        const newExpanded = new Set(prev.expandedSubsections);
+        if (newExpanded.has(subsectionId)) {
+          newExpanded.delete(subsectionId);
+        } else {
+          newExpanded.add(subsectionId);
+        }
       return { ...prev, expandedSubsections: newExpanded };
+      });
     });
   };
 
