@@ -6023,7 +6023,7 @@ export const KosztorysEditorPage: React.FC = () => {
     const styles = `
       <style>
         @page {
-          margin: 15mm 20mm;
+          margin: 10mm 12mm;
           size: A4;
         }
         @media print {
@@ -6040,19 +6040,69 @@ export const KosztorysEditorPage: React.FC = () => {
           margin: 0;
           padding: 0;
         }
+        * { box-sizing: border-box; }
         .print-section {
           page-break-after: always;
           padding: 0 !important;
           max-width: 100%;
-          box-sizing: border-box;
+          width: 100%;
         }
         .print-section:last-child { page-break-after: auto; }
-        table { width: 100%; border-collapse: collapse; margin-bottom: 1em; table-layout: auto; }
-        th, td { border: 1px solid #333; padding: 6px 8px; text-align: left; }
+        /* Remove any max-width containers from preview */
+        .max-w-4xl, .max-w-3xl, .max-w-2xl { max-width: 100% !important; }
+        .mx-auto { margin-left: 0 !important; margin-right: 0 !important; }
+        .bg-gray-100, .bg-white, .shadow-lg { background: white !important; box-shadow: none !important; }
+        .p-8, .p-12 { padding: 0 !important; }
+
+        table { width: 100%; border-collapse: collapse; margin-bottom: 0.5em; table-layout: auto; }
+        th, td { border: 1px solid #333; padding: 4px 6px; text-align: left; font-size: 11px; }
         th { background: #f5f5f5; font-weight: 600; }
+        h1, h2, h3 { margin: 0 0 0.5em 0; }
+
+        /* Tailwind utility classes used in preview */
         .text-right { text-align: right; }
         .text-center { text-align: center; }
-        h1, h2, h3 { margin: 0 0 0.5em 0; }
+        .text-left { text-align: left; }
+        .text-xs { font-size: 10px; }
+        .text-sm { font-size: 11px; }
+        .text-lg { font-size: 16px; }
+        .font-bold { font-weight: 700; }
+        .font-medium { font-weight: 600; }
+        .font-mono { font-family: monospace; }
+        .align-top { vertical-align: top; }
+        .mb-2 { margin-bottom: 8px; }
+        .mb-6 { margin-bottom: 24px; }
+        .mt-4 { margin-top: 16px; }
+        .mt-8 { margin-top: 32px; }
+        .ml-1 { margin-left: 4px; }
+        .px-1 { padding-left: 4px; padding-right: 4px; }
+        .px-2 { padding-left: 8px; padding-right: 8px; }
+        .py-1 { padding-top: 4px; padding-bottom: 4px; }
+        .py-0\\.5 { padding-top: 2px; padding-bottom: 2px; }
+        .w-full { width: 100%; }
+        .border { border: 1px solid #d1d5db; }
+        .border-gray-400 { border-color: #9ca3af; }
+        .border-collapse { border-collapse: collapse; }
+        .rounded { border-radius: 4px; }
+        .rounded-full { border-radius: 9999px; }
+        .bg-blue-600 { background-color: #2563eb; }
+        .bg-purple-100 { background-color: #f3e8ff; }
+        .text-white { color: white; }
+        .text-gray-400 { color: #9ca3af; }
+        .text-gray-500 { color: #6b7280; }
+        .text-gray-600 { color: #4b5563; }
+        .text-purple-700 { color: #7c3aed; }
+        .flex { display: flex; }
+        .flex-col { flex-direction: column; }
+        .items-center { align-items: center; }
+        .justify-center { justify-content: center; }
+        .justify-between { justify-content: space-between; }
+        .w-5 { width: 20px; }
+        .h-5 { height: 20px; }
+        .hidden { display: none; }
+        .no-print { display: none !important; }
+        [class*="ring-"] { box-shadow: none !important; }
+        [class*="border-dashed"] { border-style: none !important; }
 
         /* Title page styles */
         .title-page-content {
