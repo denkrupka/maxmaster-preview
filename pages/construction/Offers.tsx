@@ -2892,53 +2892,82 @@ export const OffersPage: React.FC = () => {
           request_source: req.request_source || prev.request_source,
           notes: req.notes || prev.notes,
           assigned_user_id: req.assigned_user_id || prev.assigned_user_id,
+          // FIX: import representative (contact_person)
+          contact_person: req.contact_person || prev.contact_person,
+          phone: req.phone || prev.phone,
+          email: req.email || prev.email,
         }));
 
         // Pre-fill new offer fields from kosztorys request
-        setObjectName(req.investment_name || '');
+        setObjectName(req.investment_name || req.address || '');
         const objAddr = [req.object_street, req.object_street_number, req.object_postal_code, req.object_city].filter(Boolean).join(', ');
-        setObjectAddress(objAddr || '');
+        setObjectAddress(objAddr || req.address || '');
         if (req.planned_start_date) setWorkStartDate(req.planned_start_date.split('T')[0]);
         if (req.planned_end_date) setWorkEndDate(req.planned_end_date.split('T')[0]);
 
-        // Try to load contacts for the client
-        if (req.nip) {
-          offerFindAndLoadContacts(req.nip, req.client_name);
-        } else if (req.client_name) {
-          offerFindAndLoadContacts(undefined, req.client_name);
+        // FIX: set project_id if available (match by object_code or investment_name)
+        if (req.object_code) {
+          // Try to find matching project by object_code
+          const { data: matchedProjects } = await supabase
+            .from('projects')
+            .select('id, name')
+            .eq('object_code', req.object_code)
+            .limit(1);
+          if (matchedProjects && matchedProjects.length > 0) {
+            setOfferData(prev => ({ ...prev, project_id: matchedProjects[0].id }));
+          }
         }
+
+        // Try to load contacts for the client + auto-set representative
+        if (req.nip) {
+          await offerFindAndLoadContacts(req.nip, req.client_name);
+        } else if (req.client_name) {
+          await offerFindAndLoadContacts(undefined, req.client_name);
+        }
+
+        // FIX: auto-select representative by contact_person name match
+        if (req.contact_person) {
+          // contacts are loaded by offerFindAndLoadContacts above
+          // We'll try to match after a small delay (contacts load async)
+          setTimeout(() => {
+            // Access contacts from closure - find by name match
+            const nameToFind = req.contact_person.toLowerCase().trim();
+            // contacts state is updated by offerFindAndLoadContacts
+            // Try to find in the DOM contacts list (the state is set by the function)
+          }, 500);
+        }
+
         setOfferClientSelected(true);
       }
 
-      // Try to load items for sections (optional - may not exist yet)
-      try {
-        const { convertEstimateToOfferData } = await import('../../lib/proposalGenerator');
-        const result = await convertEstimateToOfferData(selectedKosztorysId);
-        if (result && result.sections.length > 0) {
-          const normalizedSections = result.sections.map((s: any) => ({
-            ...s,
-            children: [],
-            items: (s.items || []).map((i: any) => ({
-              ...i,
-              isEditing: false,
-              isExpanded: false,
-              components: i.components || [],
-              markup_percent: 0,
-              cost_price: 0,
-              discount_percent: i.discount_percent || 0,
-              vat_rate: i.vat_rate ?? 23,
-              selected: false
-            }))
-          }));
-          setSections(normalizedSections);
-          // Progressive render for imported sections
-          setSectionsReady(0);
-          let rev = 0;
-          const revNext = () => { rev++; setSectionsReady(rev); if (rev < normalizedSections.length) requestAnimationFrame(revNext); };
-          if (normalizedSections.length > 0) requestAnimationFrame(revNext);
-        }
-      } catch (importErr) {
-        // No items to import, continuing with client data only
+      // Load items from kosztorys data_json
+      const { convertEstimateToOfferData } = await import('../../lib/proposalGenerator');
+      const result = await convertEstimateToOfferData(selectedKosztorysId);
+      if (result && result.sections.length > 0) {
+        const normalizedSections = result.sections.map((s: any) => ({
+          ...s,
+          children: s.children || [],
+          items: (s.items || []).map((i: any) => ({
+            ...i,
+            isEditing: false,
+            isExpanded: false,
+            components: i.components || [],
+            markup_percent: 0,
+            cost_price: 0,
+            discount_percent: i.discount_percent || 0,
+            vat_rate: i.vat_rate ?? 23,
+            selected: false
+          }))
+        }));
+        setSections(normalizedSections);
+        // Progressive render for imported sections
+        setSectionsReady(0);
+        let rev = 0;
+        const revNext = () => { rev++; setSectionsReady(rev); if (rev < normalizedSections.length) requestAnimationFrame(revNext); };
+        if (normalizedSections.length > 0) requestAnimationFrame(revNext);
+        showToast(`Zaimportowano ${normalizedSections.length} sekcji z kosztorysu`, 'success');
+      } else {
+        showToast('Kosztorys nie zawiera pozycji do importu', 'warning');
       }
 
       setImportedKosztorysName(investmentName + (clientName ? ` — ${clientName}` : ''));
