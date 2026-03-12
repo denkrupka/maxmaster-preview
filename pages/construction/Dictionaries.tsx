@@ -3985,6 +3985,7 @@ export const DictionariesPage: React.FC = () => {
                         <th className="px-3 py-2.5 text-left text-[10px] font-medium text-slate-500 uppercase">Jedn.</th>
                         <th className="px-3 py-2.5 text-right text-[10px] font-medium text-slate-500 uppercase">Cena</th>
                         <th className="px-3 py-2.5 text-center text-[10px] font-medium text-slate-500 uppercase">Czas</th>
+                        <th className="px-3 py-2.5 text-center text-[10px] font-medium text-slate-500 uppercase">Rob.</th>
                         <th className="px-3 py-2.5 text-center text-[10px] font-medium text-slate-500 uppercase">Mat.</th>
                         <th className="px-3 py-2.5 text-center text-[10px] font-medium text-slate-500 uppercase">Spr.</th>
                         <th className="px-3 py-2.5 text-right text-[10px] font-medium text-slate-500 uppercase">Akcje</th>
@@ -4003,6 +4004,7 @@ export const DictionariesPage: React.FC = () => {
                           <td className="px-3 py-2 text-xs text-slate-500">{l.unit || '—'}</td>
                           <td className="px-3 py-2 text-xs text-slate-600 text-right">{l.price ? `${l.price.toFixed(2)} zł` : '—'}</td>
                           <td className="px-3 py-2 text-xs text-slate-500 text-center">{String(l.time_hours || 0).padStart(2, '0')}:{String(l.time_minutes || 0).padStart(2, '0')}</td>
+                          <td className="px-3 py-2 text-center"><Hammer className={`w-3.5 h-3.5 inline-block ${laboursWithRobocizna.has(l.id) ? 'text-purple-500' : 'text-slate-200'}`} /></td>
                           <td className="px-3 py-2 text-center"><Package className={`w-3.5 h-3.5 inline-block ${laboursWithMats.has(l.id) ? 'text-blue-500' : 'text-slate-200'}`} /></td>
                           <td className="px-3 py-2 text-center"><Monitor className={`w-3.5 h-3.5 inline-block ${laboursWithEquip.has(l.id) ? 'text-blue-500' : 'text-slate-200'}`} /></td>
                           <td className="px-3 py-2 text-right" onClick={e => e.stopPropagation()}>
@@ -4162,7 +4164,34 @@ export const DictionariesPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Cost type toggle */}
+            {/* Cost summary — 4 columns */}
+            {(() => {
+              const labourCost = ownLabourRobocizna.reduce((sum, r) => sum + (r.robocizna_price || 0) * (r.robocizna_quantity || 1), 0);
+              const totalCost = labourCost + materialCostSum + equipmentCostSum;
+              return (
+                <div className="p-3 bg-slate-50 rounded-lg">
+                  <div className="grid grid-cols-4 gap-3">
+                    <div>
+                      <div className="text-[10px] text-slate-500 uppercase font-medium">Koszt robocizny</div>
+                      <div className="text-sm font-semibold text-slate-800">{labourCost.toFixed(2)} zł</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-slate-500 uppercase font-medium">Koszt Materiału</div>
+                      <div className="text-sm font-semibold text-slate-800">{materialCostSum.toFixed(2)} zł</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-slate-500 uppercase font-medium">Koszt Sprzętu</div>
+                      <div className="text-sm font-semibold text-slate-800">{equipmentCostSum.toFixed(2)} zł</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-slate-500 uppercase font-medium">Koszt pozycji</div>
+                      <div className="text-sm font-semibold text-blue-700">{totalCost.toFixed(2)} zł</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Linked Robocizna (labour items from Robocizna catalog) */}
             <div>
               <div className="flex items-center justify-between mb-2">
@@ -4184,6 +4213,7 @@ export const DictionariesPage: React.FC = () => {
                     <thead className="bg-slate-50">
                       <tr>
                         <th className="px-3 py-2 text-left text-[10px] font-medium text-slate-500">Nazwa</th>
+                        <th className="px-3 py-2 text-left text-[10px] font-medium text-slate-500 w-16">Jedn.</th>
                         <th className="px-3 py-2 text-right text-[10px] font-medium text-slate-500 w-20">Koszt</th>
                         <th className="px-3 py-2 text-right text-[10px] font-medium text-slate-500 w-16">Ilość</th>
                         <th className="px-3 py-2 text-right text-[10px] font-medium text-slate-500 w-24">Wartość</th>
@@ -4194,6 +4224,7 @@ export const DictionariesPage: React.FC = () => {
                       {ownLabourRobocizna.map((r: any, idx: number) => (
                         <tr key={r.id || idx}>
                           <td className="px-3 py-1.5 text-slate-800">{r.robocizna_name}</td>
+                          <td className="px-3 py-1.5 text-slate-500">{r.robocizna_unit || 'r-g'}</td>
                           <td className="px-3 py-1.5 text-right text-slate-600">{(r.robocizna_price || 0).toFixed(2)}</td>
                           <td className="px-3 py-1.5 text-right">
                             <input type="number" min="0.01" step="0.01" value={r.robocizna_quantity} onChange={e => {
@@ -4294,6 +4325,7 @@ export const DictionariesPage: React.FC = () => {
                                       id: `new-${Date.now()}`,
                                       labour_id: '',
                                       robocizna_name: r.name,
+                                      robocizna_unit: r.unit || 'r-g',
                                       robocizna_price: cost,
                                       robocizna_quantity: 1,
                                       source_robocizna_id: r.id,
@@ -4395,34 +4427,6 @@ export const DictionariesPage: React.FC = () => {
               )}
             </div>
             </div>{/* end hidden legacy Koszt robocizny */}
-
-            {/* Cost summary — 4 columns */}
-            {(() => {
-              const labourCost = ownLabourRobocizna.reduce((sum, r) => sum + (r.robocizna_price || 0) * (r.robocizna_quantity || 1), 0);
-              const totalCost = labourCost + materialCostSum + equipmentCostSum;
-              return (
-                <div className="p-3 bg-slate-50 rounded-lg">
-                  <div className="grid grid-cols-4 gap-3">
-                    <div>
-                      <div className="text-[10px] text-slate-500 uppercase font-medium">Koszt robocizny</div>
-                      <div className="text-sm font-semibold text-slate-800">{labourCost.toFixed(2)} zł</div>
-                    </div>
-                    <div>
-                      <div className="text-[10px] text-slate-500 uppercase font-medium">Koszt Materiału</div>
-                      <div className="text-sm font-semibold text-slate-800">{materialCostSum.toFixed(2)} zł</div>
-                    </div>
-                    <div>
-                      <div className="text-[10px] text-slate-500 uppercase font-medium">Koszt Sprzętu</div>
-                      <div className="text-sm font-semibold text-slate-800">{equipmentCostSum.toFixed(2)} zł</div>
-                    </div>
-                    <div>
-                      <div className="text-[10px] text-slate-500 uppercase font-medium">Koszt pozycji</div>
-                      <div className="text-sm font-semibold text-blue-700">{totalCost.toFixed(2)} zł</div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
 
             {/* Linked Materials */}
             <div>
@@ -6861,6 +6865,7 @@ export const DictionariesPage: React.FC = () => {
                           <tr>
                             <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Kod</th>
                             <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Nazwa</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 uppercase">Jedn.</th>
                             <th className="px-4 py-3 text-right text-xs font-medium text-slate-500 uppercase">Koszt robocizny</th>
                             <th className="px-4 py-3 w-20"></th>
                           </tr>
@@ -6881,6 +6886,7 @@ export const DictionariesPage: React.FC = () => {
                                   }}>
                                   <td className="px-4 py-2.5 text-slate-500 font-mono text-xs">{r.code}</td>
                                   <td className="px-4 py-2.5 text-sm font-medium text-slate-900">{r.name}</td>
+                                  <td className="px-4 py-2.5 text-sm text-slate-500">{r.unit || 'r-g'}</td>
                                   <td className="px-4 py-2.5 text-sm text-right font-semibold text-blue-600">{labourCost.toFixed(2)} zł</td>
                                   <td className="px-4 py-2.5">
                                     <button onClick={async (e) => { e.stopPropagation(); await supabase.from('kosztorys_robocizna').delete().eq('id', r.id); await loadRobociznaItems(); }}
@@ -6892,7 +6898,7 @@ export const DictionariesPage: React.FC = () => {
                               );
                             })}
                           {filteredRobocizna.length === 0 && (
-                            <tr><td colSpan={4} className="px-4 py-12 text-center text-slate-400">Brak robocizny w katalogu</td></tr>
+                            <tr><td colSpan={5} className="px-4 py-12 text-center text-slate-400">Brak robocizny w katalogu</td></tr>
                           )}
                         </tbody>
                       </table>

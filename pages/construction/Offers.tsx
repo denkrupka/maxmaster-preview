@@ -4129,6 +4129,96 @@ export const OffersPage: React.FC = () => {
         }
       }
 
+      // Save labor components to kosztorys_robocizna (robocizna catalog)
+      if (saveLabor) {
+        const laborComps = allItems.flatMap(item =>
+          (item.components || []).filter(c => c.type === 'labor' && c.name)
+        );
+        for (const comp of laborComps) {
+          const existing = await supabase.from('kosztorys_robocizna')
+            .select('id').eq('company_id', companyId).eq('name', comp.name).limit(1);
+          if (existing.data && existing.data.length > 0) {
+            if (withPrices(saveLabor)) {
+              await supabase.from('kosztorys_robocizna').update({
+                unit: comp.unit || 'r-g',
+                price_unit: comp.unit_price,
+              }).eq('id', existing.data[0].id);
+            }
+          } else {
+            const code = `RB-${String(Date.now()).slice(-5)}`;
+            await supabase.from('kosztorys_robocizna').insert({
+              company_id: companyId,
+              code,
+              name: comp.name,
+              unit: comp.unit || 'r-g',
+              cost_type: 'ryczalt',
+              cost_ryczalt: withPrices(saveLabor) ? comp.unit_price : 0,
+              ...(withPrices(saveLabor) ? { price_unit: comp.unit_price } : {})
+            });
+            savedCount++;
+          }
+        }
+      }
+
+      // Save complete positions to kosztorys_own_labours (with linked components)
+      if (catalogSaveTypes.position) {
+        const savePos = catalogSaveTypes.position;
+        for (const item of allItems) {
+          if (!item.name) continue;
+          const existing = await supabase.from('kosztorys_own_labours')
+            .select('id').eq('company_id', companyId).eq('name', item.name).limit(1);
+          if (existing.data && existing.data.length > 0) continue; // skip existing
+
+          const code = `ROB-${String(Date.now()).slice(-5)}`;
+          const { data: newLabour } = await supabase.from('kosztorys_own_labours').insert({
+            company_id: companyId,
+            code,
+            name: item.name,
+            unit: item.unit || 'szt.',
+            ...(withPrices(savePos) ? { price: item.unit_price } : {})
+          }).select().single();
+
+          if (newLabour) {
+            const comps = item.components || [];
+            const laborComps = comps.filter(c => c.type === 'labor' && c.name);
+            const matComps = comps.filter(c => c.type === 'material' && c.name);
+            const eqComps = comps.filter(c => c.type === 'equipment' && c.name);
+
+            if (laborComps.length > 0) {
+              await supabase.from('kosztorys_own_labour_robocizna').insert(
+                laborComps.map(c => ({
+                  labour_id: newLabour.id,
+                  robocizna_name: c.name,
+                  robocizna_price: withPrices(savePos) ? (c.unit_price || 0) : 0,
+                  robocizna_quantity: c.quantity || 1,
+                }))
+              );
+            }
+            if (matComps.length > 0) {
+              await supabase.from('kosztorys_own_labour_materials').insert(
+                matComps.map(c => ({
+                  labour_id: newLabour.id,
+                  material_name: c.name,
+                  material_price: withPrices(savePos) ? (c.unit_price || 0) : 0,
+                  material_quantity: c.quantity || 1,
+                }))
+              );
+            }
+            if (eqComps.length > 0) {
+              await supabase.from('kosztorys_own_labour_equipment').insert(
+                eqComps.map(c => ({
+                  labour_id: newLabour.id,
+                  equipment_name: c.name,
+                  equipment_price: withPrices(savePos) ? (c.unit_price || 0) : 0,
+                  equipment_quantity: c.quantity || 1,
+                }))
+              );
+            }
+            savedCount++;
+          }
+        }
+      }
+
       showToast(`Zapisano ${savedCount} nowych pozycji do katalogów`, 'success');
       setShowCatalogSaveModal(false);
     } catch (err) {
@@ -4154,7 +4244,40 @@ export const OffersPage: React.FC = () => {
           supabase.from(tableName).select('*').eq('company_id', currentUser.company_id).order('name'),
           supabase.from('kosztorys_custom_categories').select('*').eq('company_id', currentUser.company_id).order('sort_order')
         ]);
-        setKartotekaOwnData(ownRes.data || []);
+        let ownData = ownRes.data || [];
+
+        // For own labours, load linked materials, equipment, robocizna
+        if (showSearchLabourModal && ownData.length > 0) {
+          const labourIds = ownData.map((l: any) => l.id);
+          const [matsRes, equipRes, robRes] = await Promise.all([
+            supabase.from('kosztorys_own_labour_materials').select('*').in('labour_id', labourIds),
+            supabase.from('kosztorys_own_labour_equipment').select('*').in('labour_id', labourIds),
+            supabase.from('kosztorys_own_labour_robocizna').select('*').in('labour_id', labourIds),
+          ]);
+          const matsByLabour = new Map<string, any[]>();
+          (matsRes.data || []).forEach((m: any) => {
+            if (!matsByLabour.has(m.labour_id)) matsByLabour.set(m.labour_id, []);
+            matsByLabour.get(m.labour_id)!.push(m);
+          });
+          const equipByLabour = new Map<string, any[]>();
+          (equipRes.data || []).forEach((e: any) => {
+            if (!equipByLabour.has(e.labour_id)) equipByLabour.set(e.labour_id, []);
+            equipByLabour.get(e.labour_id)!.push(e);
+          });
+          const robByLabour = new Map<string, any[]>();
+          (robRes.data || []).forEach((r: any) => {
+            if (!robByLabour.has(r.labour_id)) robByLabour.set(r.labour_id, []);
+            robByLabour.get(r.labour_id)!.push(r);
+          });
+          ownData = ownData.map((l: any) => ({
+            ...l,
+            materials: matsByLabour.get(l.id) || [],
+            equipment: equipByLabour.get(l.id) || [],
+            robocizna: robByLabour.get(l.id) || [],
+          }));
+        }
+
+        setKartotekaOwnData(ownData);
         setKartotekaCategories(categoriesRes.data || []);
 
         // Load system labours catalog with pagination (large dataset) + system categories
@@ -9897,6 +10020,48 @@ tr{page-break-inside:avoid;page-break-after:auto;}
               unit: item.unit || 'szt.',
               unit_price: price
             });
+            // Also add linked components if available (own labours from Pozycje tab)
+            if (kartotekaTab === 'own' && showSearchLabourModal) {
+              if (item.robocizna && Array.isArray(item.robocizna)) {
+                item.robocizna.forEach((r: any) => {
+                  addComponent(searchComponentTarget.sectionId, searchComponentTarget.itemId, {
+                    type: 'labor',
+                    name: r.robocizna_name || r.name || '',
+                    code: '',
+                    unit: r.robocizna_unit || 'r-g',
+                    quantity: r.robocizna_quantity || 1,
+                    unit_price: r.robocizna_price || 0,
+                    total_price: (r.robocizna_quantity || 1) * (r.robocizna_price || 0)
+                  });
+                });
+              }
+              if (item.materials && Array.isArray(item.materials)) {
+                item.materials.forEach((m: any) => {
+                  addComponent(searchComponentTarget.sectionId, searchComponentTarget.itemId, {
+                    type: 'material',
+                    name: m.material_name || m.name || '',
+                    code: '',
+                    unit: m.unit || 'szt.',
+                    quantity: m.material_quantity || 1,
+                    unit_price: m.material_price || 0,
+                    total_price: (m.material_quantity || 1) * (m.material_price || 0)
+                  });
+                });
+              }
+              if (item.equipment && Array.isArray(item.equipment)) {
+                item.equipment.forEach((eq: any) => {
+                  addComponent(searchComponentTarget.sectionId, searchComponentTarget.itemId, {
+                    type: 'equipment',
+                    name: eq.equipment_name || eq.name || '',
+                    code: '',
+                    unit: eq.unit || 'szt.',
+                    quantity: eq.equipment_quantity || 1,
+                    unit_price: eq.equipment_price || 0,
+                    total_price: (eq.equipment_quantity || 1) * (eq.equipment_price || 0)
+                  });
+                });
+              }
+            }
           } else if (kartotekaMode === 'add_component' && searchComponentTarget) {
             const compType = showSearchLabourModal ? 'labor' : showSearchMaterialModal ? 'material' : 'equipment';
             if (searchComponentTarget.compId) {
@@ -9920,8 +10085,21 @@ tr{page-break-inside:avoid;page-break-after:auto;}
               total_price: price
             });
 
-            // If own labour has linked materials/equipment, add them too
+            // If own labour has linked robocizna/materials/equipment, add them too
             if (kartotekaTab === 'own' && showSearchLabourModal) {
+              if (item.robocizna && Array.isArray(item.robocizna)) {
+                item.robocizna.forEach((r: any) => {
+                  addComponent(searchComponentTarget.sectionId, searchComponentTarget.itemId, {
+                    type: 'labor',
+                    name: r.robocizna_name || r.name || '',
+                    code: '',
+                    unit: r.robocizna_unit || 'r-g',
+                    quantity: r.robocizna_quantity || 1,
+                    unit_price: r.robocizna_price || 0,
+                    total_price: (r.robocizna_quantity || 1) * (r.robocizna_price || 0)
+                  });
+                });
+              }
               if (item.materials && Array.isArray(item.materials)) {
                 item.materials.forEach((m: any) => {
                   addComponent(searchComponentTarget.sectionId, searchComponentTarget.itemId, {
@@ -9929,9 +10107,9 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                     name: m.name || m.material_name || '',
                     code: m.code || m.material_code || '',
                     unit: m.unit || 'szt.',
-                    quantity: m.quantity || 1,
-                    unit_price: m.price || m.default_price || 0,
-                    total_price: (m.quantity || 1) * (m.price || m.default_price || 0)
+                    quantity: m.quantity || m.material_quantity || 1,
+                    unit_price: m.price || m.material_price || m.default_price || 0,
+                    total_price: (m.quantity || m.material_quantity || 1) * (m.price || m.material_price || m.default_price || 0)
                   });
                 });
               }
@@ -9942,9 +10120,9 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                     name: eq.name || eq.equipment_name || '',
                     code: eq.code || eq.equipment_code || '',
                     unit: eq.unit || 'szt.',
-                    quantity: eq.quantity || 1,
-                    unit_price: eq.price || eq.default_price || 0,
-                    total_price: (eq.quantity || 1) * (eq.price || eq.default_price || 0)
+                    quantity: eq.quantity || eq.equipment_quantity || 1,
+                    unit_price: eq.price || eq.equipment_price || eq.default_price || 0,
+                    total_price: (eq.quantity || eq.equipment_quantity || 1) * (eq.price || eq.equipment_price || eq.default_price || 0)
                   });
                 });
               }
