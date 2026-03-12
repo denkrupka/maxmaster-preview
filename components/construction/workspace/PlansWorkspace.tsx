@@ -1554,8 +1554,77 @@ export const PlansWorkspace: React.FC = () => {
         handleSelectFile(fileId);
         setTimeout(() => handleAnalyze(), 500);
         break;
+      case 'rename': {
+        const newName = window.prompt('Nowa nazwa pliku:', plan.name);
+        if (newName && newName.trim() && newName.trim() !== plan.name) {
+          const { error } = await supabase.from('plans').update({ name: newName.trim(), updated_at: new Date().toISOString() }).eq('id', fileId);
+          if (error) { notify('Blad zmiany nazwy', 'error'); break; }
+          setAllPlans(prev => prev.map(p => p.id === fileId ? { ...p, name: newName.trim() } : p));
+          setFolders(prev => prev.map(folder => ({
+            ...folder,
+            plans: folder.plans.map(p => p.id === fileId ? { ...p, name: newName.trim() } : p),
+          })));
+          if (selectedPlan?.id === fileId) setSelectedPlan(prev => prev ? { ...prev, name: newName.trim() } : prev);
+          notify('Nazwa zmieniona');
+        }
+        break;
+      }
+      case 'duplicate': {
+        const dupName = `${plan.name} (kopia)`;
+        const { data: dup, error } = await supabase.from('plans').insert({
+          component_id: plan.component_id,
+          project_id: plan.project_id,
+          name: dupName,
+          file_url: plan.file_url,
+          original_filename: plan.original_filename || null,
+          mime_type: plan.mime_type || null,
+          file_size: plan.file_size || null,
+          version: 1,
+          is_current_version: true,
+          sort_order: (plan.sort_order ?? 0) + 1,
+          created_by_id: currentUser?.id || plan.created_by_id,
+          folder_id: (plan as any).folder_id ?? null,
+        }).select().single();
+        if (error) { notify('Blad duplikowania', 'error'); break; }
+        if (dup) {
+          setAllPlans(prev => [...prev, dup]);
+          loadPlansData();
+          notify(`Zduplikowano jako: ${dupName}`);
+        }
+        break;
+      }
+      case 'newVersion': {
+        // Select the file first, then trigger upload for a new version
+        handleSelectFile(fileId);
+        notify('Wybierz nowy plik, aby stworzyc nowa wersje');
+        fileInputRef.current?.click();
+        break;
+      }
+      case 'exportMetadata': {
+        const meta = {
+          id: plan.id,
+          name: plan.name,
+          originalFilename: plan.original_filename,
+          version: plan.version,
+          fileSize: plan.file_size,
+          mimeType: plan.mime_type,
+          createdAt: plan.created_at,
+          updatedAt: plan.updated_at,
+          scaleRatio: plan.scale_ratio ?? null,
+          apsUrn: plan.aps_urn ?? null,
+        };
+        const blob = new Blob([JSON.stringify(meta, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${plan.name.replace(/[^a-zA-Z0-9_-]/g, '_')}_metadata.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        notify('Metadane wyeksportowane');
+        break;
+      }
     }
-  }, [allPlans, selectedPlan, handleSelectFile, handleAnalyze, notify]);
+  }, [allPlans, selectedPlan, currentUser, handleSelectFile, handleAnalyze, notify]);
 
   const handleToggleFolder = useCallback((folderId: string) => {
     setFolders(prev => prev.map(f =>
