@@ -141,6 +141,13 @@ export const CompanySettingsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabKey>('company');
   const [isSaving, setIsSaving] = useState(false);
 
+  // ═══ Toast notifications ═══
+  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const showToast = (type: 'success' | 'error', message: string) => {
+    setToast({ type, message });
+    setTimeout(() => setToast(null), 4000);
+  };
+
   // ═══ Tab 1: Dane firmy ═══
   const [formData, setFormData] = useState({
     name: currentCompany?.name || '',
@@ -180,11 +187,11 @@ export const CompanySettingsPage: React.FC = () => {
   const handleLogoUpload = async (file: File) => {
     if (!currentCompany) return;
     if (!file.type.startsWith('image/')) {
-      alert('Wybierz plik obrazu (PNG, JPG, SVG)');
+      showToast('error', 'Wybierz plik obrazu (PNG, JPG, SVG)');
       return;
     }
     if (file.size > 2 * 1024 * 1024) {
-      alert('Maksymalny rozmiar pliku to 2 MB');
+      showToast('error', 'Maksymalny rozmiar pliku to 2 MB');
       return;
     }
     setLogoUploading(true);
@@ -209,7 +216,7 @@ export const CompanySettingsPage: React.FC = () => {
       setLogoUrl(publicUrl);
     } catch (err) {
       console.error('Error uploading logo:', err);
-      alert('Błąd podczas przesyłania logotypu');
+      showToast('error', 'Błąd podczas przesyłania logotypu');
     } finally {
       setLogoUploading(false);
     }
@@ -234,10 +241,10 @@ export const CompanySettingsPage: React.FC = () => {
         .update({ first_name: contactFirstName, last_name: contactLastName, phone: contactPhone })
         .eq('id', currentUser.id);
       if (error) throw error;
-      alert('Dane kontaktowe zapisane pomyślnie');
+      showToast('success', 'Dane kontaktowe zapisane pomyślnie');
     } catch (err) {
       console.error('Error saving contact data:', err);
-      alert('Błąd podczas zapisywania danych kontaktowych');
+      showToast('error', 'Błąd podczas zapisywania danych kontaktowych');
     } finally {
       setIsSaving(false);
     }
@@ -253,10 +260,10 @@ export const CompanySettingsPage: React.FC = () => {
     setIsSaving(true);
     try {
       await updateCompany(currentCompany.id, formData);
-      alert('Dane zapisane pomyślnie');
+      showToast('success', 'Dane zapisane pomyślnie');
     } catch (error) {
       console.error('Error saving company data:', error);
-      alert('Błąd podczas zapisywania danych');
+      showToast('error', 'Błąd podczas zapisywania danych');
     } finally {
       setIsSaving(false);
     }
@@ -274,6 +281,45 @@ export const CompanySettingsPage: React.FC = () => {
   const [startRoundTime, setStartRoundTime] = useState<RoundTime>(currentCompany?.start_round_time || { ...DEFAULT_ROUND_TIME });
   const [finishRoundTime, setFinishRoundTime] = useState<RoundTime>(currentCompany?.finish_round_time || { ...DEFAULT_ROUND_TIME });
   const [isSavingWorkTime, setIsSavingWorkTime] = useState(false);
+
+  // ═══ Tab 4: Budowlanka ═══
+  const [constructionSettings, setConstructionSettings] = useState({
+    default_overhead_percent: currentCompany?.settings?.default_overhead_percent ?? 65,
+    default_profit_percent: currentCompany?.settings?.default_profit_percent ?? 10,
+    default_material_purchase_percent: currentCompany?.settings?.default_material_purchase_percent ?? 5,
+    default_equipment_purchase_percent: currentCompany?.settings?.default_equipment_purchase_percent ?? 3,
+    estimate_number_pattern: currentCompany?.settings?.estimate_number_pattern ?? 'KE/{YYYY}/{NR}',
+    offer_number_pattern: currentCompany?.settings?.offer_number_pattern ?? 'OF/{YYYY}/{NR}',
+    order_number_pattern: currentCompany?.settings?.order_number_pattern ?? 'ZM/{YYYY}/{NR}',
+    act_number_pattern: currentCompany?.settings?.act_number_pattern ?? 'AKT/{YYYY}/{MM}/{NR}',
+    gantt_hours_per_day: currentCompany?.settings?.gantt_hours_per_day ?? 8,
+    gantt_work_days_per_week: currentCompany?.settings?.gantt_work_days_per_week ?? '5',
+    gantt_default_view: currentCompany?.settings?.gantt_default_view ?? 'week',
+  });
+  const [isSavingConstruction, setIsSavingConstruction] = useState(false);
+
+  const handleConstructionChange = (field: string, value: any) => {
+    setConstructionSettings(prev => ({ ...prev, [field]: value }));
+  };
+
+  const handleSaveConstruction = async () => {
+    if (!currentCompany) return;
+    setIsSavingConstruction(true);
+    try {
+      const updatedSettings = { ...(currentCompany.settings || {}), ...constructionSettings };
+      const { error } = await supabase
+        .from('companies')
+        .update({ settings: updatedSettings })
+        .eq('id', currentCompany.id);
+      if (error) throw error;
+      showToast('success', 'Ustawienia budowlane zapisane pomyślnie');
+    } catch (err) {
+      console.error('Error saving construction settings:', err);
+      showToast('error', 'Błąd podczas zapisywania ustawień budowlanych');
+    } finally {
+      setIsSavingConstruction(false);
+    }
+  };
 
   const handleDayChange = (day: keyof WorkingHours, field: keyof WorkingHoursDay, value: any) => {
     setWorkingHours(prev => ({
@@ -327,10 +373,10 @@ export const CompanySettingsPage: React.FC = () => {
         .eq('id', currentCompany.id);
 
       if (error) throw error;
-      alert('Ustawienia czasu pracy zapisane pomyślnie');
+      showToast('success', 'Ustawienia czasu pracy zapisane pomyślnie');
     } catch (error) {
       console.error('Error saving working time settings:', error);
-      alert('Błąd podczas zapisywania ustawień czasu pracy');
+      showToast('error', 'Błąd podczas zapisywania ustawień czasu pracy');
     } finally {
       setIsSavingWorkTime(false);
     }
@@ -389,7 +435,7 @@ export const CompanySettingsPage: React.FC = () => {
       await fetchHolidays();
     } catch (error) {
       console.error('Error adding holiday:', error);
-      alert('Błąd podczas dodawania dnia wolnego');
+      showToast('error', 'Błąd podczas dodawania dnia wolnego');
     }
   };
 
@@ -405,7 +451,7 @@ export const CompanySettingsPage: React.FC = () => {
       await fetchHolidays();
     } catch (error) {
       console.error('Error deleting holiday:', error);
-      alert('Błąd podczas usuwania dnia wolnego');
+      showToast('error', 'Błąd podczas usuwania dnia wolnego');
     }
   };
 
@@ -445,7 +491,7 @@ export const CompanySettingsPage: React.FC = () => {
       const toInsert = allHolidays.filter(h => !existingDates.has(h.date));
 
       if (toInsert.length === 0) {
-        alert(`Wszystkie polskie święta na rok ${holidayYear} już istnieją.`);
+        showToast('error', `Wszystkie polskie święta na rok ${holidayYear} już istnieją.`);
         return;
       }
 
@@ -454,11 +500,11 @@ export const CompanySettingsPage: React.FC = () => {
         .insert(toInsert);
 
       if (error) throw error;
-      alert(`Dodano ${toInsert.length} dni wolnych na rok ${holidayYear}.`);
+      showToast('success', `Dodano ${toInsert.length} dni wolnych na rok ${holidayYear}.`);
       await fetchHolidays();
     } catch (error) {
       console.error('Error loading Polish holidays:', error);
-      alert('Błąd podczas ładowania polskich dni wolnych');
+      showToast('error', 'Błąd podczas ładowania polskich dni wolnych');
     }
   };
 
@@ -1263,7 +1309,8 @@ export const CompanySettingsPage: React.FC = () => {
                 <input
                   type="number"
                   step="0.1"
-                  placeholder="np. 65"
+                  value={constructionSettings.default_overhead_percent}
+                  onChange={e => handleConstructionChange('default_overhead_percent', parseFloat(e.target.value) || 0)}
                   className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
                 <p className="text-xs text-slate-500 mt-1">Narzut na koszty ogólne budowy</p>
@@ -1274,7 +1321,8 @@ export const CompanySettingsPage: React.FC = () => {
                 <input
                   type="number"
                   step="0.1"
-                  placeholder="np. 10"
+                  value={constructionSettings.default_profit_percent}
+                  onChange={e => handleConstructionChange('default_profit_percent', parseFloat(e.target.value) || 0)}
                   className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
                 <p className="text-xs text-slate-500 mt-1">Marża zysku</p>
@@ -1285,7 +1333,8 @@ export const CompanySettingsPage: React.FC = () => {
                 <input
                   type="number"
                   step="0.1"
-                  placeholder="np. 5"
+                  value={constructionSettings.default_material_purchase_percent}
+                  onChange={e => handleConstructionChange('default_material_purchase_percent', parseFloat(e.target.value) || 0)}
                   className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
                 <p className="text-xs text-slate-500 mt-1">Kp materiałów</p>
@@ -1296,7 +1345,8 @@ export const CompanySettingsPage: React.FC = () => {
                 <input
                   type="number"
                   step="0.1"
-                  placeholder="np. 3"
+                  value={constructionSettings.default_equipment_purchase_percent}
+                  onChange={e => handleConstructionChange('default_equipment_purchase_percent', parseFloat(e.target.value) || 0)}
                   className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
                 <p className="text-xs text-slate-500 mt-1">Kp sprzętu</p>
@@ -1321,7 +1371,8 @@ export const CompanySettingsPage: React.FC = () => {
                 <label className="block text-sm font-medium text-slate-700 mb-1">Wzorzec numeru kosztorysu</label>
                 <input
                   type="text"
-                  placeholder="KE/{YYYY}/{NR}"
+                  value={constructionSettings.estimate_number_pattern}
+                  onChange={e => handleConstructionChange('estimate_number_pattern', e.target.value)}
                   className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
                 <p className="text-xs text-slate-500 mt-1">Dostępne zmienne: {'{YYYY}'}, {'{MM}'}, {'{NR}'}</p>
@@ -1331,7 +1382,8 @@ export const CompanySettingsPage: React.FC = () => {
                 <label className="block text-sm font-medium text-slate-700 mb-1">Wzorzec numeru oferty</label>
                 <input
                   type="text"
-                  placeholder="OF/{YYYY}/{NR}"
+                  value={constructionSettings.offer_number_pattern}
+                  onChange={e => handleConstructionChange('offer_number_pattern', e.target.value)}
                   className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
@@ -1340,7 +1392,8 @@ export const CompanySettingsPage: React.FC = () => {
                 <label className="block text-sm font-medium text-slate-700 mb-1">Wzorzec numeru zamówienia</label>
                 <input
                   type="text"
-                  placeholder="ZM/{YYYY}/{NR}"
+                  value={constructionSettings.order_number_pattern}
+                  onChange={e => handleConstructionChange('order_number_pattern', e.target.value)}
                   className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
@@ -1349,7 +1402,8 @@ export const CompanySettingsPage: React.FC = () => {
                 <label className="block text-sm font-medium text-slate-700 mb-1">Wzorzec numeru aktu</label>
                 <input
                   type="text"
-                  placeholder="AKT/{YYYY}/{MM}/{NR}"
+                  value={constructionSettings.act_number_pattern}
+                  onChange={e => handleConstructionChange('act_number_pattern', e.target.value)}
                   className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
@@ -1373,14 +1427,21 @@ export const CompanySettingsPage: React.FC = () => {
                 <label className="block text-sm font-medium text-slate-700 mb-1">Godziny pracy dziennie</label>
                 <input
                   type="number"
-                  placeholder="8"
+                  value={constructionSettings.gantt_hours_per_day}
+                  onChange={e => handleConstructionChange('gantt_hours_per_day', parseInt(e.target.value) || 8)}
+                  min={1}
+                  max={24}
                   className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Dni robocze w tygodniu</label>
-                <select className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white">
+                <select
+                  value={constructionSettings.gantt_work_days_per_week}
+                  onChange={e => handleConstructionChange('gantt_work_days_per_week', e.target.value)}
+                  className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                >
                   <option value="5">5 dni (Pon-Pt)</option>
                   <option value="6">6 dni (Pon-Sob)</option>
                   <option value="7">7 dni</option>
@@ -1389,7 +1450,11 @@ export const CompanySettingsPage: React.FC = () => {
 
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Domyślny widok Gantta</label>
-                <select className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white">
+                <select
+                  value={constructionSettings.gantt_default_view}
+                  onChange={e => handleConstructionChange('gantt_default_view', e.target.value)}
+                  className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                >
                   <option value="day">Dzienny</option>
                   <option value="week">Tygodniowy</option>
                   <option value="month">Miesięczny</option>
@@ -1401,13 +1466,32 @@ export const CompanySettingsPage: React.FC = () => {
           {/* Save Button */}
           <div className="flex justify-end">
             <button
-              className="flex items-center gap-2 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+              onClick={handleSaveConstruction}
+              disabled={isSavingConstruction}
+              className="flex items-center gap-2 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition"
             >
               <Save className="w-5 h-5" />
-              Zapisz ustawienia budowlane
+              {isSavingConstruction ? 'Zapisywanie...' : 'Zapisz ustawienia budowlane'}
             </button>
           </div>
         </>
+      )}
+      {/* Toast Notification */}
+      {toast && (
+        <div className={`fixed bottom-6 right-6 z-50 flex items-center gap-3 px-5 py-3.5 rounded-xl shadow-xl text-white text-sm font-medium animate-in slide-in-from-bottom-4 duration-300 ${
+          toast.type === 'success' ? 'bg-emerald-600' : 'bg-red-600'
+        }`}>
+          {toast.type === 'success' ? (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          ) : (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          )}
+          {toast.message}
+        </div>
       )}
     </div>
   );
