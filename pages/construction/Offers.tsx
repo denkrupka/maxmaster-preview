@@ -7,7 +7,7 @@ import {
   Save, X, GripVertical, Percent, AlertCircle, FileSpreadsheet,
   FolderPlus, Package, Star, UserPlus, Briefcase, MapPin,
   ToggleLeft, ToggleRight, ListChecks, ChevronUp, Wrench, Hammer,
-  FolderOpen, Printer, MessageSquare, Phone, Globe, Store, Settings, Upload
+  FolderOpen, Printer, MessageSquare, Phone, Globe, Store, Settings, Upload, Sparkles
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import * as XLSX from 'xlsx';
@@ -301,6 +301,18 @@ export const OffersPage: React.FC = () => {
     { value: 24, surcharge: 0 }, { value: 36, surcharge: 1 }, { value: 48, surcharge: 2 }, { value: 60, surcharge: 3 }
   ]);
   const [invoiceFreqRules, setInvoiceFreqRules] = useState<SurchargeRule[]>([]);
+
+  // AI Fill
+  const [showAiDropdown, setShowAiDropdown] = useState(false);
+  const [showAiFillComponentsModal, setShowAiFillComponentsModal] = useState(false);
+  const [showAiFillPricesModal, setShowAiFillPricesModal] = useState(false);
+  const [aiFillMode, setAiFillMode] = useState<'empty' | 'all'>('empty');
+  const [aiFillConfirmed, setAiFillConfirmed] = useState(false);
+  const [aiFillTypes, setAiFillTypes] = useState<{ labor: boolean; material: boolean; equipment: boolean }>({ labor: true, material: true, equipment: true });
+  const [aiFillPriceTarget, setAiFillPriceTarget] = useState<'labor' | 'material' | 'equipment' | 'position'>('position');
+  const [aiFillLoading, setAiFillLoading] = useState(false);
+  const [aiFillProgress, setAiFillProgress] = useState('');
+  const [aiFillError, setAiFillError] = useState<string | null>(null);
 
   // Bulk operations
   const [showBulkBar, setShowBulkBar] = useState(false);
@@ -3494,6 +3506,208 @@ export const OffersPage: React.FC = () => {
   };
 
   // ============================================
+  // AI FILL COMPONENTS / PRICES
+  // ============================================
+  const handleAiFillComponents = async () => {
+    setAiFillLoading(true);
+    setAiFillError(null);
+    setAiFillProgress('Przygotowywanie pozycji...');
+
+    try {
+      // Collect all items that need components
+      const positions: any[] = [];
+      const itemRefs: { sectionId: string; itemId: string }[] = [];
+
+      for (const sec of sections) {
+        for (const item of sec.items) {
+          const hasComponents = item.components && item.components.length > 0;
+          if (aiFillMode === 'empty' && hasComponents) continue;
+          positions.push({
+            id: item.id,
+            name: item.name || '',
+            base: '',
+            unit: item.unit || 'szt.',
+          });
+          itemRefs.push({ sectionId: sec.id, itemId: item.id });
+        }
+      }
+
+      if (positions.length === 0) {
+        setAiFillError('Brak pozycji do wypełnienia');
+        return;
+      }
+
+      const resourceTypes: string[] = [];
+      if (aiFillTypes.labor) resourceTypes.push('labor');
+      if (aiFillTypes.material) resourceTypes.push('material');
+      if (aiFillTypes.equipment) resourceTypes.push('equipment');
+
+      setAiFillProgress(`Analiza AI: ${positions.length} pozycji (${resourceTypes.join(', ')})...`);
+
+      const { data, error } = await supabase.functions.invoke('ai-fill-resources', {
+        body: {
+          positions,
+          mode: 'resources',
+          resourceTypes,
+          quarter: `Q1 ${new Date().getFullYear()}`
+        }
+      });
+
+      if (error) throw new Error(error.message);
+      if (!data?.success) throw new Error(data?.error || 'AI nie zwróciło danych');
+
+      setAiFillProgress('Wypełnianie składników...');
+      let filledCount = 0;
+
+      const results = data.data?.r || [];
+      for (const [posIdx, components] of results) {
+        if (posIdx >= itemRefs.length) continue;
+        const ref = itemRefs[posIdx];
+        const comps = Array.isArray(components?.[0]) ? components : [components];
+
+        for (const compArr of comps) {
+          if (!Array.isArray(compArr)) continue;
+          for (const comp of compArr) {
+            if (!comp || !comp.name) continue;
+            const compType = comp.type || 'material';
+            if (!resourceTypes.includes(compType)) continue;
+            addComponent(ref.sectionId, ref.itemId, {
+              type: compType,
+              name: comp.name,
+              code: comp.code || '',
+              unit: comp.unit || 'szt.',
+              quantity: comp.norm || comp.quantity || 1,
+              unit_price: comp.unit_price || 0,
+              total_price: (comp.norm || comp.quantity || 1) * (comp.unit_price || 0)
+            });
+            filledCount++;
+          }
+        }
+      }
+
+      setAiFillProgress(`Wypełniono ${filledCount} składników`);
+      setShowAiFillComponentsModal(false);
+      setAiFillConfirmed(false);
+    } catch (err: any) {
+      console.error('AI fill components error:', err);
+      setAiFillError(err.message || 'Błąd AI');
+    } finally {
+      setAiFillLoading(false);
+    }
+  };
+
+  const handleAiFillPrices = async () => {
+    setAiFillLoading(true);
+    setAiFillError(null);
+    setAiFillProgress('Przygotowywanie pozycji...');
+
+    try {
+      const positions: any[] = [];
+      const positionMap: { sectionId: string; itemId: string; componentIds?: string[] }[] = [];
+
+      if (aiFillPriceTarget === 'position') {
+        // Fill unit_price on the item itself
+        for (const sec of sections) {
+          for (const item of sec.items) {
+            if (aiFillMode === 'empty' && item.unit_price > 0) continue;
+            positions.push({
+              id: item.id,
+              name: item.name || '',
+              base: '',
+              unit: item.unit || 'szt.',
+              resources: []
+            });
+            positionMap.push({ sectionId: sec.id, itemId: item.id });
+          }
+        }
+      } else {
+        // Fill component prices
+        for (const sec of sections) {
+          for (const item of sec.items) {
+            const comps = (item.components || []).filter((c: any) => {
+              if (c.type !== aiFillPriceTarget) return false;
+              if (aiFillMode === 'empty' && c.unit_price > 0) return false;
+              return true;
+            });
+            if (comps.length === 0) continue;
+            positions.push({
+              id: item.id,
+              name: item.name || '',
+              base: '',
+              unit: item.unit || 'szt.',
+              resources: comps.map((c: any) => ({
+                type: c.type,
+                name: c.name,
+                unit: c.unit || 'szt.',
+                norm: c.quantity || 1
+              }))
+            });
+            positionMap.push({ sectionId: sec.id, itemId: item.id, componentIds: comps.map((c: any) => c.id) });
+          }
+        }
+      }
+
+      if (positions.length === 0) {
+        setAiFillError('Brak pozycji do wyceny');
+        return;
+      }
+
+      setAiFillProgress(`Szukanie cen AI: ${positions.length} pozycji...`);
+
+      const { data, error } = await supabase.functions.invoke('ai-fill-resources', {
+        body: {
+          positions,
+          mode: 'prices',
+          resourceTypes: aiFillPriceTarget === 'position' ? ['labor', 'material', 'equipment'] : [aiFillPriceTarget],
+          quarter: `Q1 ${new Date().getFullYear()}`
+        }
+      });
+
+      if (error) throw new Error(error.message);
+      if (!data?.success) throw new Error(data?.error || 'AI nie zwróciło cen');
+
+      setAiFillProgress('Wypełnianie cen...');
+      let filledCount = 0;
+
+      const results = data.data?.r || [];
+      for (const [posIdx, priceData] of results) {
+        if (posIdx >= positionMap.length) continue;
+        const ref = positionMap[posIdx];
+
+        if (aiFillPriceTarget === 'position') {
+          // Set item unit_price directly
+          const price = typeof priceData === 'number' ? priceData :
+            (priceData?.unit_price || priceData?.price || priceData?.[0]?.unit_price || 0);
+          if (price > 0) {
+            updateItem(ref.sectionId, ref.itemId, { unit_price: +price.toFixed(2) });
+            filledCount++;
+          }
+        } else {
+          // Set component prices
+          const prices = Array.isArray(priceData) ? priceData : [priceData];
+          const compIds = ref.componentIds || [];
+          for (let ci = 0; ci < compIds.length && ci < prices.length; ci++) {
+            const p = typeof prices[ci] === 'number' ? prices[ci] : (prices[ci]?.unit_price || prices[ci]?.price || 0);
+            if (p > 0) {
+              updateComponent(ref.sectionId, ref.itemId, compIds[ci], { unit_price: +p.toFixed(2) });
+              filledCount++;
+            }
+          }
+        }
+      }
+
+      setAiFillProgress(`Wypełniono ${filledCount} cen`);
+      setShowAiFillPricesModal(false);
+      setAiFillConfirmed(false);
+    } catch (err: any) {
+      console.error('AI fill prices error:', err);
+      setAiFillError(err.message || 'Błąd AI');
+    } finally {
+      setAiFillLoading(false);
+    }
+  };
+
+  // ============================================
   // SECTION & ITEM MANAGEMENT
   // ============================================
   // Deep update helper for nested sections
@@ -6465,30 +6679,85 @@ tr{page-break-inside:avoid;page-break-after:auto;}
             <div className="flex justify-between items-center mb-4">
               <div className="flex items-center gap-4">
                 <h2 className="text-lg font-semibold text-slate-900">Pozycje oferty</h2>
-                {editMode ? (
-                  <button
-                    onClick={() => setCalculationMode(prev => prev === 'markup' ? 'fixed' : 'markup')}
-                    className="flex items-center gap-1.5 px-3 py-1 bg-slate-100 rounded-lg hover:bg-slate-200 transition"
-                  >
-                    {calculationMode === 'markup' ? (
-                      <ToggleLeft className="w-5 h-5 text-blue-600" />
+                <div className="flex flex-col items-start gap-0.5">
+                  <span className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Tryb obliczania</span>
+                  <div className="flex items-center gap-1">
+                    {editMode ? (
+                      <button
+                        onClick={() => setCalculationMode(prev => prev === 'markup' ? 'fixed' : 'markup')}
+                        className="flex items-center gap-1.5 px-3 py-1 bg-slate-100 rounded-lg hover:bg-slate-200 transition"
+                      >
+                        {calculationMode === 'markup' ? (
+                          <ToggleLeft className="w-5 h-5 text-blue-600" />
+                        ) : (
+                          <ToggleRight className="w-5 h-5 text-green-600" />
+                        )}
+                        <span className="text-sm font-medium text-slate-700">
+                          {calculationMode === 'markup' ? 'Narzut' : 'Wartość stała'}
+                        </span>
+                      </button>
                     ) : (
-                      <ToggleRight className="w-5 h-5 text-green-600" />
+                      <span className="flex items-center gap-1.5 px-3 py-1 bg-slate-100 rounded-lg text-sm font-medium text-slate-700">
+                        {calculationMode === 'markup' ? (
+                          <ToggleLeft className="w-5 h-5 text-blue-600" />
+                        ) : (
+                          <ToggleRight className="w-5 h-5 text-green-600" />
+                        )}
+                        {calculationMode === 'markup' ? 'Narzut' : 'Wartość stała'}
+                      </span>
                     )}
-                    <span className="text-sm font-medium text-slate-700">
-                      {calculationMode === 'markup' ? 'Narzut' : 'Wartość stała'}
-                    </span>
-                  </button>
-                ) : (
-                  <span className="flex items-center gap-1.5 px-3 py-1 bg-slate-100 rounded-lg text-sm font-medium text-slate-700">
-                    {calculationMode === 'markup' ? (
-                      <ToggleLeft className="w-5 h-5 text-blue-600" />
-                    ) : (
-                      <ToggleRight className="w-5 h-5 text-green-600" />
+                    {editMode && (
+                      <div className="relative">
+                        <button
+                          onClick={() => setShowAiDropdown(!showAiDropdown)}
+                          className="flex items-center gap-1 px-2.5 py-1 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-lg hover:from-violet-600 hover:to-purple-700 transition text-sm font-medium shadow-sm"
+                        >
+                          <Sparkles className="w-4 h-4" />
+                          AI
+                          <ChevronDown className="w-3 h-3" />
+                        </button>
+                        {showAiDropdown && (
+                          <div className="absolute left-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-30 min-w-[220px]">
+                            <button
+                              onClick={() => {
+                                setShowAiDropdown(false);
+                                setAiFillMode('empty');
+                                setAiFillConfirmed(false);
+                                setAiFillTypes({ labor: true, material: true, equipment: true });
+                                setAiFillError(null);
+                                setShowAiFillComponentsModal(true);
+                              }}
+                              className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left hover:bg-slate-50 rounded-t-lg"
+                            >
+                              <Wrench className="w-4 h-4 text-purple-500" />
+                              <div>
+                                <p className="font-medium">Wypełnij składniki</p>
+                                <p className="text-xs text-slate-400">R, M, S — nakłady AI</p>
+                              </div>
+                            </button>
+                            <button
+                              onClick={() => {
+                                setShowAiDropdown(false);
+                                setAiFillMode('empty');
+                                setAiFillConfirmed(false);
+                                setAiFillPriceTarget('position');
+                                setAiFillError(null);
+                                setShowAiFillPricesModal(true);
+                              }}
+                              className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left hover:bg-slate-50 rounded-b-lg"
+                            >
+                              <DollarSign className="w-4 h-4 text-green-500" />
+                              <div>
+                                <p className="font-medium">Wypełnij ceny</p>
+                                <p className="text-xs text-slate-400">Wycena pozycji przez AI</p>
+                              </div>
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     )}
-                    {calculationMode === 'markup' ? 'Narzut' : 'Wartość stała'}
-                  </span>
-                )}
+                  </div>
+                </div>
               </div>
               <div className="flex gap-2 items-center">
                 {sections.length > 0 && (
@@ -7817,6 +8086,221 @@ tr{page-break-inside:avoid;page-break-after:auto;}
       {showImportFromEstimate && renderImportFromEstimateModal()}
       {showImportFromFile && renderImportFromFileModal()}
       {showFillTemplateModal && renderFillTemplateModal()}
+
+      {/* AI Fill Components Modal */}
+      {showAiFillComponentsModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4">
+          <div className="bg-white rounded-xl w-full max-w-md">
+            <div className="p-4 border-b border-slate-200 flex justify-between items-center">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-purple-500" />
+                <h2 className="text-lg font-semibold">AI — Wypełnij składniki</h2>
+              </div>
+              <button onClick={() => { setShowAiFillComponentsModal(false); setAiFillConfirmed(false); }} className="p-1 hover:bg-slate-100 rounded">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              {/* Mode selection */}
+              <div>
+                <p className="text-sm font-medium text-slate-700 mb-2">Zakres wypełniania</p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => { setAiFillMode('empty'); setAiFillConfirmed(true); }}
+                    className={`flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                      aiFillMode === 'empty' ? 'border-purple-500 bg-purple-50 text-purple-700' : 'border-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    Tylko puste
+                  </button>
+                  <button
+                    onClick={() => { setAiFillMode('all'); setAiFillConfirmed(false); }}
+                    className={`flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                      aiFillMode === 'all' ? 'border-red-400 bg-red-50 text-red-700' : 'border-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    Wszystkie pozycje
+                  </button>
+                </div>
+              </div>
+
+              {/* Confirmation for "all" mode */}
+              {aiFillMode === 'all' && !aiFillConfirmed && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+                  <p className="text-sm text-red-700 font-medium mb-2">Uwaga: zostaną zastąpione składniki we wszystkich pozycjach!</p>
+                  <button
+                    onClick={() => setAiFillConfirmed(true)}
+                    className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-sm hover:bg-red-700"
+                  >
+                    Tak, kontynuuj
+                  </button>
+                </div>
+              )}
+
+              {/* Component type selection */}
+              {(aiFillConfirmed || aiFillMode === 'empty') && (
+                <div>
+                  <p className="text-sm font-medium text-slate-700 mb-2">Składniki do wypełnienia</p>
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={aiFillTypes.labor} onChange={e => setAiFillTypes(p => ({ ...p, labor: e.target.checked }))}
+                        className="rounded border-slate-300 text-purple-600" />
+                      <span className="inline-flex items-center gap-1 text-sm"><span className="w-5 h-5 rounded bg-purple-100 text-purple-700 text-xs font-bold flex items-center justify-center">R</span> Robocizna</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={aiFillTypes.material} onChange={e => setAiFillTypes(p => ({ ...p, material: e.target.checked }))}
+                        className="rounded border-slate-300 text-green-600" />
+                      <span className="inline-flex items-center gap-1 text-sm"><span className="w-5 h-5 rounded bg-green-100 text-green-700 text-xs font-bold flex items-center justify-center">M</span> Materiały</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={aiFillTypes.equipment} onChange={e => setAiFillTypes(p => ({ ...p, equipment: e.target.checked }))}
+                        className="rounded border-slate-300 text-orange-600" />
+                      <span className="inline-flex items-center gap-1 text-sm"><span className="w-5 h-5 rounded bg-orange-100 text-orange-700 text-xs font-bold flex items-center justify-center">S</span> Sprzęt</span>
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              {aiFillLoading && (
+                <div className="flex items-center gap-3 p-3 bg-purple-50 rounded-lg">
+                  <Loader2 className="w-5 h-5 text-purple-500 animate-spin flex-shrink-0" />
+                  <p className="text-sm text-purple-700">{aiFillProgress}</p>
+                </div>
+              )}
+              {aiFillError && (
+                <div className="flex items-start gap-2 p-3 bg-red-50 rounded-lg">
+                  <AlertCircle className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" />
+                  <p className="text-sm text-red-700">{aiFillError}</p>
+                </div>
+              )}
+            </div>
+            <div className="p-4 border-t border-slate-200 flex justify-end gap-3">
+              <button onClick={() => { setShowAiFillComponentsModal(false); setAiFillConfirmed(false); }}
+                className="px-4 py-2 border border-slate-200 rounded-lg hover:bg-slate-50" disabled={aiFillLoading}>
+                Anuluj
+              </button>
+              <button
+                onClick={handleAiFillComponents}
+                disabled={aiFillLoading || (!aiFillConfirmed && aiFillMode !== 'empty') || (!aiFillTypes.labor && !aiFillTypes.material && !aiFillTypes.equipment)}
+                className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50"
+              >
+                {aiFillLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                Wypełnij składniki
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI Fill Prices Modal */}
+      {showAiFillPricesModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4">
+          <div className="bg-white rounded-xl w-full max-w-md">
+            <div className="p-4 border-b border-slate-200 flex justify-between items-center">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-green-500" />
+                <h2 className="text-lg font-semibold">AI — Wypełnij ceny</h2>
+              </div>
+              <button onClick={() => { setShowAiFillPricesModal(false); setAiFillConfirmed(false); }} className="p-1 hover:bg-slate-100 rounded">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              {/* Mode selection */}
+              <div>
+                <p className="text-sm font-medium text-slate-700 mb-2">Zakres wypełniania</p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => { setAiFillMode('empty'); setAiFillConfirmed(true); }}
+                    className={`flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                      aiFillMode === 'empty' ? 'border-green-500 bg-green-50 text-green-700' : 'border-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    Tylko puste
+                  </button>
+                  <button
+                    onClick={() => { setAiFillMode('all'); setAiFillConfirmed(false); }}
+                    className={`flex-1 px-3 py-2 rounded-lg border text-sm font-medium transition ${
+                      aiFillMode === 'all' ? 'border-red-400 bg-red-50 text-red-700' : 'border-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    Wszystkie ceny
+                  </button>
+                </div>
+              </div>
+
+              {/* Confirmation for "all" mode */}
+              {aiFillMode === 'all' && !aiFillConfirmed && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+                  <p className="text-sm text-red-700 font-medium mb-2">Uwaga: zostaną zastąpione wszystkie ceny w ofercie!</p>
+                  <button
+                    onClick={() => setAiFillConfirmed(true)}
+                    className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-sm hover:bg-red-700"
+                  >
+                    Tak, kontynuuj
+                  </button>
+                </div>
+              )}
+
+              {/* Price target selection */}
+              {(aiFillConfirmed || aiFillMode === 'empty') && (
+                <div>
+                  <p className="text-sm font-medium text-slate-700 mb-2">Do czego zastosować ceny</p>
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="radio" name="priceTarget" checked={aiFillPriceTarget === 'position'}
+                        onChange={() => setAiFillPriceTarget('position')} className="text-green-600" />
+                      <span className="text-sm font-medium">Pozycja w całości <span className="text-xs text-slate-400">(R+M+S łącznie)</span></span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="radio" name="priceTarget" checked={aiFillPriceTarget === 'labor'}
+                        onChange={() => setAiFillPriceTarget('labor')} className="text-purple-600" />
+                      <span className="inline-flex items-center gap-1 text-sm"><span className="w-5 h-5 rounded bg-purple-100 text-purple-700 text-xs font-bold flex items-center justify-center">R</span> Robocizna</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="radio" name="priceTarget" checked={aiFillPriceTarget === 'material'}
+                        onChange={() => setAiFillPriceTarget('material')} className="text-green-600" />
+                      <span className="inline-flex items-center gap-1 text-sm"><span className="w-5 h-5 rounded bg-green-100 text-green-700 text-xs font-bold flex items-center justify-center">M</span> Materiały</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="radio" name="priceTarget" checked={aiFillPriceTarget === 'equipment'}
+                        onChange={() => setAiFillPriceTarget('equipment')} className="text-orange-600" />
+                      <span className="inline-flex items-center gap-1 text-sm"><span className="w-5 h-5 rounded bg-orange-100 text-orange-700 text-xs font-bold flex items-center justify-center">S</span> Sprzęt</span>
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              {aiFillLoading && (
+                <div className="flex items-center gap-3 p-3 bg-green-50 rounded-lg">
+                  <Loader2 className="w-5 h-5 text-green-500 animate-spin flex-shrink-0" />
+                  <p className="text-sm text-green-700">{aiFillProgress}</p>
+                </div>
+              )}
+              {aiFillError && (
+                <div className="flex items-start gap-2 p-3 bg-red-50 rounded-lg">
+                  <AlertCircle className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" />
+                  <p className="text-sm text-red-700">{aiFillError}</p>
+                </div>
+              )}
+            </div>
+            <div className="p-4 border-t border-slate-200 flex justify-end gap-3">
+              <button onClick={() => { setShowAiFillPricesModal(false); setAiFillConfirmed(false); }}
+                className="px-4 py-2 border border-slate-200 rounded-lg hover:bg-slate-50" disabled={aiFillLoading}>
+                Anuluj
+              </button>
+              <button
+                onClick={handleAiFillPrices}
+                disabled={aiFillLoading || (!aiFillConfirmed && aiFillMode !== 'empty')}
+                className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
+              >
+                {aiFillLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <DollarSign className="w-4 h-4" />}
+                Wypełnij ceny
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Edit offer modal */}
       {showEditModal && editingOffer && (
