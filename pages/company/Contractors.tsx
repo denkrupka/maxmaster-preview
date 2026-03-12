@@ -176,6 +176,11 @@ export const ContractorsPage: React.FC = () => {
   const [savingWorker, setSavingWorker] = useState(false);
   const [workerFormErrors, setWorkerFormErrors] = useState<Record<string, string>>({});
 
+  // Editing existing contacts / workers (missing CRUD — fix)
+  const [editingContact, setEditingContact] = useState<ContractorClientContact | null>(null);
+  const [editingSupplierContact, setEditingSupplierContact] = useState<ContractorClientContact | null>(null);
+  const [editingWorker, setEditingWorker] = useState<SubcontractorWorker | null>(null);
+
   // Skills dropdown
   const [showSkillsDropdown, setShowSkillsDropdown] = useState(false);
   const skillsDropdownRef = useRef<HTMLDivElement>(null);
@@ -452,6 +457,17 @@ export const ContractorsPage: React.FC = () => {
   // CLIENT CONTACTS (PRZEDSTAWICIELE) CRUD
   // ============================================================
 
+  const openEditContact = (contact: ContractorClientContact) => {
+    setEditingContact(contact);
+    setContactForm({
+      first_name: contact.first_name, last_name: contact.last_name,
+      phone: contact.phone || '', email: contact.email || '',
+      position: contact.position || '', is_main_contact: contact.is_main_contact || false,
+    });
+    setContactFormErrors({});
+    setShowAddContact(true);
+  };
+
   const validateContactForm = (): boolean => {
     const errors: Record<string, string> = {};
     if (!contactForm.first_name.trim()) errors.first_name = 'Wymagane';
@@ -468,29 +484,36 @@ export const ContractorsPage: React.FC = () => {
     if (!currentUser || !selectedClient || !validateContactForm()) return;
     setSavingContact(true);
     try {
-      // If marking as main contact, unset previous main
-      if (contactForm.is_main_contact) {
-        await supabase.from('contractor_client_contacts').update({ is_main_contact: false }).eq('client_id', selectedClient.id).eq('is_main_contact', true);
-      }
-      const payload = { ...contactForm, client_id: selectedClient.id, company_id: currentUser.company_id };
-      const { data } = await supabase.from('contractor_client_contacts').insert(payload).select().single();
-      if (data) {
-        setClientContacts(prev => {
-          if (contactForm.is_main_contact) {
-            return [...prev.map(c => ({ ...c, is_main_contact: false })), data];
-          }
-          return [...prev, data];
-        });
-        // Show invite modal
-        setInviteTarget({
-          companyName: selectedClient.name,
-          firstName: contactForm.first_name,
-          lastName: contactForm.last_name,
-          phone: contactForm.phone,
-          type: 'client',
-        });
-        setShowInviteModal(true);
-        await refreshMainContacts();
+      if (editingContact) {
+        // UPDATE existing contact
+        if (contactForm.is_main_contact && !editingContact.is_main_contact) {
+          await supabase.from('contractor_client_contacts').update({ is_main_contact: false }).eq('client_id', selectedClient.id).eq('is_main_contact', true);
+        }
+        const { data } = await supabase.from('contractor_client_contacts')
+          .update({ first_name: contactForm.first_name, last_name: contactForm.last_name, phone: contactForm.phone, email: contactForm.email, position: contactForm.position, is_main_contact: contactForm.is_main_contact })
+          .eq('id', editingContact.id).select().single();
+        if (data) {
+          setClientContacts(prev => contactForm.is_main_contact
+            ? prev.map(c => c.id === data.id ? data : { ...c, is_main_contact: false })
+            : prev.map(c => c.id === data.id ? data : c));
+          await refreshMainContacts();
+        }
+        setEditingContact(null);
+      } else {
+        // INSERT new contact
+        if (contactForm.is_main_contact) {
+          await supabase.from('contractor_client_contacts').update({ is_main_contact: false }).eq('client_id', selectedClient.id).eq('is_main_contact', true);
+        }
+        const payload = { ...contactForm, client_id: selectedClient.id, company_id: currentUser.company_id };
+        const { data } = await supabase.from('contractor_client_contacts').insert(payload).select().single();
+        if (data) {
+          setClientContacts(prev => contactForm.is_main_contact
+            ? [...prev.map(c => ({ ...c, is_main_contact: false })), data]
+            : [...prev, data]);
+          setInviteTarget({ companyName: selectedClient.name, firstName: contactForm.first_name, lastName: contactForm.last_name, phone: contactForm.phone, type: 'client' });
+          setShowInviteModal(true);
+          await refreshMainContacts();
+        }
       }
       setContactForm(emptyContactForm);
       setContactFormErrors({});
@@ -595,6 +618,17 @@ export const ContractorsPage: React.FC = () => {
     loadSupplierContacts(s.id);
   };
 
+  const openEditSupplierContact = (contact: ContractorClientContact) => {
+    setEditingSupplierContact(contact);
+    setSupplierContactForm({
+      first_name: contact.first_name, last_name: contact.last_name,
+      phone: contact.phone || '', email: contact.email || '',
+      position: contact.position || '', is_main_contact: contact.is_main_contact || false,
+    });
+    setSupplierContactFormErrors({});
+    setShowAddSupplierContact(true);
+  };
+
   const validateSupplierContactForm = (): boolean => {
     const errors: Record<string, string> = {};
     if (!supplierContactForm.first_name.trim()) errors.first_name = 'Wymagane';
@@ -611,16 +645,34 @@ export const ContractorsPage: React.FC = () => {
     if (!currentUser || !selectedSupplier || !validateSupplierContactForm()) return;
     setSavingSupplierContact(true);
     try {
-      if (supplierContactForm.is_main_contact) {
-        await supabase.from('contractor_client_contacts').update({ is_main_contact: false }).eq('client_id', selectedSupplier.id).eq('is_main_contact', true);
-      }
-      const payload = { ...supplierContactForm, client_id: selectedSupplier.id, company_id: currentUser.company_id };
-      const { data } = await supabase.from('contractor_client_contacts').insert(payload).select().single();
-      if (data) {
-        setSupplierContacts(prev => supplierContactForm.is_main_contact ? [...prev.map(c => ({ ...c, is_main_contact: false })), data] : [...prev, data]);
-        setInviteTarget({ companyName: selectedSupplier.name, firstName: supplierContactForm.first_name, lastName: supplierContactForm.last_name, phone: supplierContactForm.phone, type: 'client' });
-        setShowInviteModal(true);
-        await refreshMainContacts();
+      if (editingSupplierContact) {
+        // UPDATE existing supplier contact
+        if (supplierContactForm.is_main_contact && !editingSupplierContact.is_main_contact) {
+          await supabase.from('contractor_client_contacts').update({ is_main_contact: false }).eq('client_id', selectedSupplier.id).eq('is_main_contact', true);
+        }
+        const { data } = await supabase.from('contractor_client_contacts')
+          .update({ first_name: supplierContactForm.first_name, last_name: supplierContactForm.last_name, phone: supplierContactForm.phone, email: supplierContactForm.email, position: supplierContactForm.position, is_main_contact: supplierContactForm.is_main_contact })
+          .eq('id', editingSupplierContact.id).select().single();
+        if (data) {
+          setSupplierContacts(prev => supplierContactForm.is_main_contact
+            ? prev.map(c => c.id === data.id ? data : { ...c, is_main_contact: false })
+            : prev.map(c => c.id === data.id ? data : c));
+          await refreshMainContacts();
+        }
+        setEditingSupplierContact(null);
+      } else {
+        // INSERT new supplier contact
+        if (supplierContactForm.is_main_contact) {
+          await supabase.from('contractor_client_contacts').update({ is_main_contact: false }).eq('client_id', selectedSupplier.id).eq('is_main_contact', true);
+        }
+        const payload = { ...supplierContactForm, client_id: selectedSupplier.id, company_id: currentUser.company_id };
+        const { data } = await supabase.from('contractor_client_contacts').insert(payload).select().single();
+        if (data) {
+          setSupplierContacts(prev => supplierContactForm.is_main_contact ? [...prev.map(c => ({ ...c, is_main_contact: false })), data] : [...prev, data]);
+          setInviteTarget({ companyName: selectedSupplier.name, firstName: supplierContactForm.first_name, lastName: supplierContactForm.last_name, phone: supplierContactForm.phone, type: 'client' });
+          setShowInviteModal(true);
+          await refreshMainContacts();
+        }
       }
       setSupplierContactForm(emptyContactForm);
       setSupplierContactFormErrors({});
@@ -726,6 +778,17 @@ export const ContractorsPage: React.FC = () => {
   // SUBCONTRACTOR WORKERS (PRZEDSTAWICIELE) CRUD
   // ============================================================
 
+  const openEditWorker = (worker: SubcontractorWorker) => {
+    setEditingWorker(worker);
+    setWorkerForm({
+      first_name: worker.first_name, last_name: worker.last_name,
+      phone: worker.phone || '', email: worker.email || '',
+      position: worker.position || '', is_main_contact: worker.is_main_contact || false,
+    });
+    setWorkerFormErrors({});
+    setShowAddWorker(true);
+  };
+
   const validateWorkerForm = (): boolean => {
     const errors: Record<string, string> = {};
     if (!workerForm.first_name.trim()) errors.first_name = 'Wymagane';
@@ -742,29 +805,36 @@ export const ContractorsPage: React.FC = () => {
     if (!currentUser || !selectedSub || !validateWorkerForm()) return;
     setSavingWorker(true);
     try {
-      // If marking as main contact, unset previous main
-      if (workerForm.is_main_contact) {
-        await supabase.from('subcontractor_workers').update({ is_main_contact: false }).eq('subcontractor_id', selectedSub.id).eq('is_main_contact', true);
-      }
-      const payload = { ...workerForm, subcontractor_id: selectedSub.id, company_id: currentUser.company_id };
-      const { data } = await supabase.from('subcontractor_workers').insert(payload).select().single();
-      if (data) {
-        setSubWorkers(prev => {
-          if (workerForm.is_main_contact) {
-            return [...prev.map(w => ({ ...w, is_main_contact: false })), data];
-          }
-          return [...prev, data];
-        });
-        // Show invite modal
-        setInviteTarget({
-          companyName: selectedSub.name,
-          firstName: workerForm.first_name,
-          lastName: workerForm.last_name,
-          phone: workerForm.phone,
-          type: 'sub',
-        });
-        setShowInviteModal(true);
-        await refreshMainContacts();
+      if (editingWorker) {
+        // UPDATE existing worker
+        if (workerForm.is_main_contact && !editingWorker.is_main_contact) {
+          await supabase.from('subcontractor_workers').update({ is_main_contact: false }).eq('subcontractor_id', selectedSub.id).eq('is_main_contact', true);
+        }
+        const { data } = await supabase.from('subcontractor_workers')
+          .update({ first_name: workerForm.first_name, last_name: workerForm.last_name, phone: workerForm.phone, email: workerForm.email, position: workerForm.position, is_main_contact: workerForm.is_main_contact })
+          .eq('id', editingWorker.id).select().single();
+        if (data) {
+          setSubWorkers(prev => workerForm.is_main_contact
+            ? prev.map(w => w.id === data.id ? data : { ...w, is_main_contact: false })
+            : prev.map(w => w.id === data.id ? data : w));
+          await refreshMainContacts();
+        }
+        setEditingWorker(null);
+      } else {
+        // INSERT new worker
+        if (workerForm.is_main_contact) {
+          await supabase.from('subcontractor_workers').update({ is_main_contact: false }).eq('subcontractor_id', selectedSub.id).eq('is_main_contact', true);
+        }
+        const payload = { ...workerForm, subcontractor_id: selectedSub.id, company_id: currentUser.company_id };
+        const { data } = await supabase.from('subcontractor_workers').insert(payload).select().single();
+        if (data) {
+          setSubWorkers(prev => workerForm.is_main_contact
+            ? [...prev.map(w => ({ ...w, is_main_contact: false })), data]
+            : [...prev, data]);
+          setInviteTarget({ companyName: selectedSub.name, firstName: workerForm.first_name, lastName: workerForm.last_name, phone: workerForm.phone, type: 'sub' });
+          setShowInviteModal(true);
+          await refreshMainContacts();
+        }
       }
       setWorkerForm(emptyWorkerForm);
       setWorkerFormErrors({});
@@ -806,21 +876,43 @@ export const ContractorsPage: React.FC = () => {
   // FILTERED DATA
   // ============================================================
 
-  const filteredClients = clients.filter(c =>
-    c.name.toLowerCase().includes(clientSearch.toLowerCase()) ||
-    (c.nip || '').replace(/\D/g, '').includes(clientSearch.replace(/\D/g, ''))
-  );
+  const filteredClients = clients.filter(c => {
+    const q = clientSearch.toLowerCase();
+    const mc = clientMainContacts[c.id];
+    return (
+      c.name.toLowerCase().includes(q) ||
+      (c.nip || '').replace(/\D/g, '').includes(clientSearch.replace(/\D/g, '')) ||
+      (c.address_city || '').toLowerCase().includes(q) ||
+      (mc ? `${mc.first_name} ${mc.last_name}`.toLowerCase().includes(q) : false) ||
+      (mc?.email || '').toLowerCase().includes(q) ||
+      (mc?.phone || '').replace(/\D/g, '').includes(clientSearch.replace(/\D/g, ''))
+    );
+  });
 
-  const filteredSubs = subcontractors.filter(s =>
-    s.name.toLowerCase().includes(subSearch.toLowerCase()) ||
-    (s.nip || '').replace(/\D/g, '').includes(subSearch.replace(/\D/g, '')) ||
-    (s.skills || '').toLowerCase().includes(subSearch.toLowerCase())
-  );
+  const filteredSubs = subcontractors.filter(s => {
+    const q = subSearch.toLowerCase();
+    const mw = subMainContacts[s.id];
+    return (
+      s.name.toLowerCase().includes(q) ||
+      (s.nip || '').replace(/\D/g, '').includes(subSearch.replace(/\D/g, '')) ||
+      (s.skills || '').toLowerCase().includes(q) ||
+      (s.address_city || '').toLowerCase().includes(q) ||
+      (mw ? `${mw.first_name} ${mw.last_name}`.toLowerCase().includes(q) : false) ||
+      (mw?.email || '').toLowerCase().includes(q)
+    );
+  });
 
-  const filteredSuppliers = suppliers.filter(s =>
-    s.name.toLowerCase().includes(supplierSearch.toLowerCase()) ||
-    (s.nip || '').replace(/\D/g, '').includes(supplierSearch.replace(/\D/g, ''))
-  );
+  const filteredSuppliers = suppliers.filter(s => {
+    const q = supplierSearch.toLowerCase();
+    const mc = supplierMainContacts[s.id];
+    return (
+      s.name.toLowerCase().includes(q) ||
+      (s.nip || '').replace(/\D/g, '').includes(supplierSearch.replace(/\D/g, '')) ||
+      (s.address_city || '').toLowerCase().includes(q) ||
+      (mc ? `${mc.first_name} ${mc.last_name}`.toLowerCase().includes(q) : false) ||
+      (mc?.email || '').toLowerCase().includes(q)
+    );
+  });
 
   // ============================================================
   // RENDER
@@ -1218,7 +1310,7 @@ export const ContractorsPage: React.FC = () => {
                 <div>
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-xs font-medium text-slate-500">{clientContacts.length} przedstawicieli</span>
-                    <button onClick={() => { setContactForm(emptyContactForm); setContactFormErrors({}); setShowAddContact(true); }}
+                    <button onClick={() => { setEditingContact(null); setContactForm(emptyContactForm); setContactFormErrors({}); setShowAddContact(true); }}
                       className="flex items-center space-x-1 text-xs text-blue-600 hover:text-blue-700 font-medium">
                       <UserPlus size={14} /><span>Dodaj</span>
                     </button>
@@ -1264,11 +1356,11 @@ export const ContractorsPage: React.FC = () => {
                           </span>
                         </label>
                         <div className="flex space-x-2">
-                          <button onClick={() => { setShowAddContact(false); setContactFormErrors({}); }} className="px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 rounded-lg">Anuluj</button>
+                          <button onClick={() => { setShowAddContact(false); setEditingContact(null); setContactFormErrors({}); }} className="px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 rounded-lg">Anuluj</button>
                           <button onClick={saveContact} disabled={savingContact}
                             className="px-3 py-1 text-xs text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50 flex items-center space-x-1">
                             {savingContact && <Loader2 size={12} className="animate-spin" />}
-                            <span>Dodaj</span>
+                            <span>{editingContact ? 'Zapisz' : 'Dodaj'}</span>
                           </button>
                         </div>
                       </div>
@@ -1294,6 +1386,7 @@ export const ContractorsPage: React.FC = () => {
                           </div>
                         </div>
                         <div className="flex items-center space-x-1 shrink-0">
+                          <button onClick={() => openEditContact(contact)} title="Edytuj kontakt" className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Pencil size={14} /></button>
                           <button onClick={() => toggleMainContact(contact)}
                             title={contact.is_main_contact ? 'Usuń jako główny kontakt' : 'Ustaw jako główny kontakt'}
                             className={`p-1 rounded-lg transition-colors ${contact.is_main_contact ? 'text-amber-500 hover:text-amber-600 hover:bg-amber-50' : 'text-slate-300 hover:text-amber-500 hover:bg-amber-50'}`}>
@@ -1540,7 +1633,7 @@ export const ContractorsPage: React.FC = () => {
                 <div>
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-xs font-medium text-slate-500">{subWorkers.length} przedstawicieli</span>
-                    <button onClick={() => { setWorkerForm(emptyWorkerForm); setWorkerFormErrors({}); setShowAddWorker(true); }}
+                    <button onClick={() => { setEditingWorker(null); setWorkerForm(emptyWorkerForm); setWorkerFormErrors({}); setShowAddWorker(true); }}
                       className="flex items-center space-x-1 text-xs text-blue-600 hover:text-blue-700 font-medium">
                       <UserPlus size={14} /><span>Dodaj</span>
                     </button>
@@ -1586,11 +1679,11 @@ export const ContractorsPage: React.FC = () => {
                           </span>
                         </label>
                         <div className="flex space-x-2">
-                          <button onClick={() => { setShowAddWorker(false); setWorkerFormErrors({}); }} className="px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 rounded-lg">Anuluj</button>
+                          <button onClick={() => { setShowAddWorker(false); setEditingWorker(null); setWorkerFormErrors({}); }} className="px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 rounded-lg">Anuluj</button>
                           <button onClick={saveWorker} disabled={savingWorker}
                             className="px-3 py-1 text-xs text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50 flex items-center space-x-1">
                             {savingWorker && <Loader2 size={12} className="animate-spin" />}
-                            <span>Dodaj</span>
+                            <span>{editingWorker ? 'Zapisz' : 'Dodaj'}</span>
                           </button>
                         </div>
                       </div>
@@ -1616,6 +1709,7 @@ export const ContractorsPage: React.FC = () => {
                           </div>
                         </div>
                         <div className="flex items-center space-x-1 shrink-0">
+                          <button onClick={() => openEditWorker(worker)} title="Edytuj pracownika" className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Pencil size={14} /></button>
                           <button onClick={() => toggleMainWorker(worker)}
                             title={worker.is_main_contact ? 'Usuń jako główny kontakt' : 'Ustaw jako główny kontakt'}
                             className={`p-1 rounded-lg transition-colors ${worker.is_main_contact ? 'text-amber-500 hover:text-amber-600 hover:bg-amber-50' : 'text-slate-300 hover:text-amber-500 hover:bg-amber-50'}`}>
@@ -1794,7 +1888,7 @@ export const ContractorsPage: React.FC = () => {
                 <div>
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-xs font-medium text-slate-500">{supplierContacts.length} przedstawicieli</span>
-                    <button onClick={() => { setSupplierContactForm(emptyContactForm); setSupplierContactFormErrors({}); setShowAddSupplierContact(true); }}
+                    <button onClick={() => { setEditingSupplierContact(null); setSupplierContactForm(emptyContactForm); setSupplierContactFormErrors({}); setShowAddSupplierContact(true); }}
                       className="flex items-center space-x-1 text-xs text-blue-600 hover:text-blue-700 font-medium">
                       <UserPlus size={14} /><span>Dodaj</span>
                     </button>
@@ -1839,11 +1933,11 @@ export const ContractorsPage: React.FC = () => {
                           </span>
                         </label>
                         <div className="flex space-x-2">
-                          <button onClick={() => { setShowAddSupplierContact(false); setSupplierContactFormErrors({}); }} className="px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 rounded-lg">Anuluj</button>
+                          <button onClick={() => { setShowAddSupplierContact(false); setEditingSupplierContact(null); setSupplierContactFormErrors({}); }} className="px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 rounded-lg">Anuluj</button>
                           <button onClick={saveSupplierContact} disabled={savingSupplierContact}
                             className="px-3 py-1 text-xs text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50 flex items-center space-x-1">
                             {savingSupplierContact && <Loader2 size={12} className="animate-spin" />}
-                            <span>Dodaj</span>
+                            <span>{editingSupplierContact ? 'Zapisz' : 'Dodaj'}</span>
                           </button>
                         </div>
                       </div>
@@ -1868,6 +1962,7 @@ export const ContractorsPage: React.FC = () => {
                           </div>
                         </div>
                         <div className="flex items-center space-x-1 shrink-0">
+                          <button onClick={() => openEditSupplierContact(contact)} title="Edytuj kontakt" className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Pencil size={14} /></button>
                           <button onClick={() => toggleSupplierMainContact(contact)}
                             title={contact.is_main_contact ? 'Usuń jako główny kontakt' : 'Ustaw jako główny kontakt'}
                             className={`p-1 rounded-lg transition-colors ${contact.is_main_contact ? 'text-amber-500 hover:text-amber-600 hover:bg-amber-50' : 'text-slate-300 hover:text-amber-500 hover:bg-amber-50'}`}>
