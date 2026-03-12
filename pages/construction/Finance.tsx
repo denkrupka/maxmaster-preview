@@ -466,6 +466,171 @@ export const FinancePage: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
+  const handleExportXLS = async () => {
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'MaxMaster Portal';
+    workbook.created = new Date();
+
+    const sheet = workbook.addWorksheet('Operacje finansowe');
+
+    // Column definitions
+    sheet.columns = [
+      { header: 'Data', key: 'date', width: 14 },
+      { header: 'Typ', key: 'type', width: 18 },
+      { header: 'Kwota (PLN)', key: 'amount', width: 16 },
+      { header: 'Opis', key: 'description', width: 30 },
+      { header: 'Nr dokumentu', key: 'document', width: 18 },
+      { header: 'Projekt', key: 'project', width: 22 },
+      { header: 'Status', key: 'status', width: 16 },
+    ];
+
+    // Bold header row
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE2E8F0' }
+    };
+    headerRow.border = {
+      bottom: { style: 'thin', color: { argb: 'FF94A3B8' } }
+    };
+
+    // Data rows
+    filteredOperations.forEach(op => {
+      const rawDate = op.operation_date || (op as any).transaction_date || '';
+      const amount = op.operation_type === 'expense' ? -op.amount : op.amount;
+
+      const row = sheet.addRow({
+        date: rawDate ? new Date(rawDate).toLocaleDateString('pl-PL') : '—',
+        type: FINANCE_OPERATION_TYPE_LABELS[op.operation_type as FinanceOperationType] || op.operation_type,
+        amount: Number(amount),
+        description: op.description || '',
+        document: (op as any).invoice_number || (op as any).document_number || '',
+        project: (op as any).project?.name || '',
+        status: FINANCE_OPERATION_STATUS_LABELS[op.status as FinanceOperationStatus] || op.status,
+      });
+
+      // Format amount column: 2 decimal places
+      const amountCell = row.getCell('amount');
+      amountCell.numFmt = '#,##0.00 "zł"';
+      if (amount < 0) {
+        amountCell.font = { color: { argb: 'FFDC2626' } }; // red for expenses
+      } else {
+        amountCell.font = { color: { argb: 'FF16A34A' } }; // green for income
+      }
+    });
+
+    // Auto-filter on header
+    sheet.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: 7 }
+    };
+
+    // Generate file
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `operacje_finansowe_${new Date().toLocaleDateString('pl-PL').replace(/\./g, '-')}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+
+  const handleExportActsPDF = () => {
+    const doc = new jsPDF({ orientation: 'landscape' });
+    const company = 'MaxMaster';
+    const dateStr = new Date().toLocaleDateString('pl-PL');
+
+    doc.setFontSize(16);
+    doc.setFont('helvetica', 'bold');
+    doc.text('Akty wykonawcze', 14, 20);
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Wygenerowano: ${dateStr}`, 14, 28);
+    if (projectFilter !== 'all') {
+      const proj = projects.find(p => p.id === projectFilter);
+      if (proj) doc.text(`Projekt: ${proj.name}`, 14, 35);
+    }
+
+    const tableRows = filteredActs.map(act => [
+      act.number || '—',
+      act.name || '—',
+      formatDate(act.act_date || act.date || ''),
+      (act as any).project?.name || '—',
+      (act as any).contractor?.name || '—',
+      ACT_STATUS_LABELS[act.status as ActStatus] || act.status,
+      act.payment_status === 'paid' ? 'Opłacony' : act.payment_status === 'partial' ? 'Częściowo' : 'Oczekuje',
+      formatCurrency(act.total ?? act.amount ?? 0),
+    ]);
+
+    autoTable(doc, {
+      startY: projectFilter !== 'all' ? 42 : 35,
+      head: [['Nr aktu', 'Nazwa', 'Data', 'Projekt', 'Wykonawca', 'Status aktu', 'Płatność', 'Kwota']],
+      body: tableRows,
+      theme: 'striped',
+      headStyles: { fillColor: [59, 130, 246], textColor: 255, fontStyle: 'bold' },
+      columnStyles: { 7: { halign: 'right' } },
+      styles: { fontSize: 9, cellPadding: 3 },
+    });
+
+    // Summary row
+    const total = filteredActs.reduce((s, a) => s + (a.total ?? a.amount ?? 0), 0);
+    const finalY = (doc as any).lastAutoTable.finalY + 6;
+    doc.setFont('helvetica', 'bold');
+    doc.text(`Łącznie: ${formatCurrency(total)}`, 14, finalY);
+
+    doc.save(`akty_wykonawcze_${new Date().toISOString().split('T')[0]}.pdf`);
+  };
+
+  const handlePrintOperations = () => {
+    const printContent = `
+      <html><head><title>Operacje finansowe</title>
+      <style>
+        body { font-family: Arial, sans-serif; font-size: 12px; }
+        h1 { font-size: 18px; margin-bottom: 4px; }
+        .meta { color: #666; font-size: 11px; margin-bottom: 16px; }
+        table { width: 100%; border-collapse: collapse; }
+        th { background: #e2e8f0; padding: 6px 8px; text-align: left; border-bottom: 2px solid #94a3b8; font-weight: bold; }
+        td { padding: 5px 8px; border-bottom: 1px solid #e2e8f0; }
+        .income { color: #16a34a; font-weight: 600; }
+        .expense { color: #dc2626; font-weight: 600; }
+        .summary { margin-top: 16px; font-weight: bold; font-size: 13px; }
+      </style></head><body>
+      <h1>Operacje finansowe</h1>
+      <div class="meta">Wygenerowano: ${new Date().toLocaleDateString('pl-PL')}${dateFrom || dateTo ? ` | Zakres: ${dateFrom || '—'} → ${dateTo || '—'}` : ''}</div>
+      <table>
+        <thead><tr>
+          <th>Data</th><th>Opis</th><th>Typ</th><th>Projekt</th><th>Nr dokumentu</th><th>Status</th><th style="text-align:right">Kwota</th>
+        </tr></thead>
+        <tbody>
+          ${filteredOperations.map(op => {
+            const opType = op.operation_type || (op as any).transaction_type;
+            const amount = (opType === 'expense' ? '-' : '+') + formatCurrency(op.amount);
+            const cls = opType === 'income' ? 'income' : 'expense';
+            return `<tr>
+              <td>${formatDate(op.operation_date || (op as any).transaction_date || '')}</td>
+              <td>${op.description || '—'}</td>
+              <td>${FINANCE_OPERATION_TYPE_LABELS[op.operation_type as FinanceOperationType] || op.operation_type}</td>
+              <td>${(op as any).project?.name || '—'}</td>
+              <td>${(op as any).invoice_number || (op as any).document_number || '—'}</td>
+              <td>${FINANCE_OPERATION_STATUS_LABELS[op.status as FinanceOperationStatus] || op.status}</td>
+              <td class="${cls}" style="text-align:right">${amount}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+      <div class="summary">
+        Przychody: ${formatCurrency(stats.income)} | Wydatki: ${formatCurrency(stats.expense)} | Bilans: ${formatCurrency(stats.balance)}
+      </div>
+      </body></html>
+    `;
+    const w = window.open('', '_blank');
+    if (w) { w.document.write(printContent); w.document.close(); w.print(); }
+  };
+
   const tabs: { key: TabType; label: string; icon: React.ElementType }[] = [
     { key: 'operations', label: 'Operacje', icon: DollarSign },
     { key: 'acts', label: 'Akty', icon: FileText },
