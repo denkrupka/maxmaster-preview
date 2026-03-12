@@ -322,6 +322,12 @@ export const OffersPage: React.FC = () => {
   const [bulkNarzutValue, setBulkNarzutValue] = useState(0);
   const [itemSearchQuery, setItemSearchQuery] = useState('');
   const [itemFilterSection, setItemFilterSection] = useState('');
+  // Catalog save after offer save
+  const [showCatalogSaveModal, setShowCatalogSaveModal] = useState(false);
+  const [catalogSaveTypes, setCatalogSaveTypes] = useState<Record<string, 'values' | 'values+prices' | null>>({
+    labor: null, material: null, equipment: null, position: null
+  });
+  const [catalogSaveLoading, setCatalogSaveLoading] = useState(false);
   // Preview & Send
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [previewTemplate, setPreviewTemplate] = useState<'netto' | 'brutto' | 'rabat' | 'no_prices' | 'full'>('netto');
@@ -2288,6 +2294,14 @@ export const OffersPage: React.FC = () => {
       setEditMode(false);
       await loadOfferDetails(selectedOffer.id);
       showToast('Oferta została zapisana', 'success');
+
+      // Check if there are components/items that could be saved to catalogs
+      const allItems = getAllItems(sections);
+      const hasComponents = allItems.some(i => (i.components || []).length > 0);
+      if (hasComponents || allItems.length > 0) {
+        setCatalogSaveTypes({ labor: null, material: null, equipment: null, position: null });
+        setShowCatalogSaveModal(true);
+      }
     } catch (err) {
       console.error('Error updating offer:', err);
       showToast('Błąd podczas zapisywania oferty', 'error');
@@ -4005,6 +4019,120 @@ export const OffersPage: React.FC = () => {
     setSections(prev => updateItems(prev));
     setShowBulkNarzutModal(false);
     setShowBulkBar(false);
+  };
+
+  const handleSaveToCatalogs = async () => {
+    if (!currentUser) return;
+    setCatalogSaveLoading(true);
+    try {
+      const allItems = getAllItems(sections);
+      const companyId = currentUser.company_id;
+      let savedCount = 0;
+
+      // Helper: toggle tile state (null -> 'values' -> 'values+prices' -> null)
+      const saveLabor = catalogSaveTypes.labor || (catalogSaveTypes.position ? catalogSaveTypes.position : null);
+      const saveMaterial = catalogSaveTypes.material || (catalogSaveTypes.position ? catalogSaveTypes.position : null);
+      const saveEquipment = catalogSaveTypes.equipment || (catalogSaveTypes.position ? catalogSaveTypes.position : null);
+      const withPrices = (mode: 'values' | 'values+prices' | null) => mode === 'values+prices';
+
+      // Save labor components to kosztorys_own_labours
+      if (saveLabor) {
+        const laborComps = allItems.flatMap(item =>
+          (item.components || []).filter(c => c.type === 'labor' && c.name)
+        );
+        for (const comp of laborComps) {
+          const existing = await supabase.from('kosztorys_own_labours')
+            .select('id').eq('company_id', companyId).eq('name', comp.name).limit(1);
+          if (existing.data && existing.data.length > 0) {
+            // Update price if saving with prices
+            if (withPrices(saveLabor)) {
+              await supabase.from('kosztorys_own_labours').update({
+                unit: comp.unit || 'r-g',
+                ...(calculationMode === 'markup'
+                  ? { price_unit: comp.unit_price, default_price: comp.unit_price }
+                  : { price_unit: comp.unit_price, default_price: comp.unit_price })
+              }).eq('id', existing.data[0].id);
+            }
+          } else {
+            const code = `ROB-${String(Date.now()).slice(-5)}`;
+            await supabase.from('kosztorys_own_labours').insert({
+              company_id: companyId,
+              code,
+              name: comp.name,
+              unit: comp.unit || 'r-g',
+              ...(withPrices(saveLabor) ? { price_unit: comp.unit_price, default_price: comp.unit_price } : {})
+            });
+            savedCount++;
+          }
+        }
+      }
+
+      // Save material components to kosztorys_materials
+      if (saveMaterial) {
+        const matComps = allItems.flatMap(item =>
+          (item.components || []).filter(c => c.type === 'material' && c.name)
+        );
+        for (const comp of matComps) {
+          const existing = await supabase.from('kosztorys_materials')
+            .select('id').eq('company_id', companyId).eq('name', comp.name).limit(1);
+          if (existing.data && existing.data.length > 0) {
+            if (withPrices(saveMaterial)) {
+              await supabase.from('kosztorys_materials').update({
+                unit: comp.unit || 'szt.',
+                default_price: comp.unit_price
+              }).eq('id', existing.data[0].id);
+            }
+          } else {
+            const code = `MAT-${String(Date.now()).slice(-5)}`;
+            await supabase.from('kosztorys_materials').insert({
+              company_id: companyId,
+              code,
+              name: comp.name,
+              unit: comp.unit || 'szt.',
+              ...(withPrices(saveMaterial) ? { default_price: comp.unit_price } : {})
+            });
+            savedCount++;
+          }
+        }
+      }
+
+      // Save equipment components to kosztorys_equipment
+      if (saveEquipment) {
+        const eqComps = allItems.flatMap(item =>
+          (item.components || []).filter(c => c.type === 'equipment' && c.name)
+        );
+        for (const comp of eqComps) {
+          const existing = await supabase.from('kosztorys_equipment')
+            .select('id').eq('company_id', companyId).eq('name', comp.name).limit(1);
+          if (existing.data && existing.data.length > 0) {
+            if (withPrices(saveEquipment)) {
+              await supabase.from('kosztorys_equipment').update({
+                unit: comp.unit || 'm-g',
+                default_price: comp.unit_price
+              }).eq('id', existing.data[0].id);
+            }
+          } else {
+            const code = `EQ-${String(Date.now()).slice(-5)}`;
+            await supabase.from('kosztorys_equipment').insert({
+              company_id: companyId,
+              code,
+              name: comp.name,
+              unit: comp.unit || 'm-g',
+              ...(withPrices(saveEquipment) ? { default_price: comp.unit_price } : {})
+            });
+            savedCount++;
+          }
+        }
+      }
+
+      showToast(`Zapisano ${savedCount} nowych pozycji do katalogów`, 'success');
+      setShowCatalogSaveModal(false);
+    } catch (err) {
+      console.error('Error saving to catalogs:', err);
+      showToast('Błąd zapisu do katalogów', 'error');
+    } finally {
+      setCatalogSaveLoading(false);
+    }
   };
 
   // Load kartoteka data when search modal opens
@@ -8823,6 +8951,99 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                 className="px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700"
               >
                 Zastosuj
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Catalog Save Modal */}
+      {showCatalogSaveModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[70] p-4">
+          <div className="bg-white rounded-xl w-full max-w-md">
+            <div className="p-4 border-b border-slate-200 flex justify-between items-center">
+              <h2 className="text-lg font-semibold">Zapisać do katalogów?</h2>
+              <button onClick={() => setShowCatalogSaveModal(false)} className="p-1 hover:bg-slate-100 rounded">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              <p className="text-sm text-slate-600">
+                Zapisz nowe składniki i pozycje do katalogów własnych w kartotece.
+                Kliknij raz — tylko dane, dwa razy — dane + ceny{calculationMode === 'markup' ? ' (koszt + narzut)' : ''}.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                {(['labor', 'material', 'equipment', 'position'] as const).map(type => {
+                  const state = catalogSaveTypes[type];
+                  const labels: Record<string, string> = {
+                    labor: 'Robocizna', material: 'Materiał', equipment: 'Sprzęt', position: 'Pozycja (wszystko)'
+                  };
+                  return (
+                    <button
+                      key={type}
+                      onClick={() => {
+                        setCatalogSaveTypes(prev => {
+                          const next = { ...prev };
+                          if (type === 'position') {
+                            // Position toggles all
+                            if (prev.position === null) {
+                              next.position = 'values';
+                              next.labor = null; next.material = null; next.equipment = null;
+                            } else if (prev.position === 'values') {
+                              next.position = 'values+prices';
+                              next.labor = null; next.material = null; next.equipment = null;
+                            } else {
+                              next.position = null;
+                            }
+                          } else {
+                            // Individual type toggle
+                            if (prev[type] === null) {
+                              next[type] = 'values';
+                              next.position = null;
+                            } else if (prev[type] === 'values') {
+                              next[type] = 'values+prices';
+                              next.position = null;
+                            } else {
+                              next[type] = null;
+                            }
+                          }
+                          return next;
+                        });
+                      }}
+                      className={`px-4 py-3 rounded-lg border-2 text-sm font-medium transition-all ${
+                        state === 'values+prices'
+                          ? type === 'labor' ? 'bg-purple-600 text-white border-purple-600 ring-2 ring-purple-300'
+                          : type === 'material' ? 'bg-green-600 text-white border-green-600 ring-2 ring-green-300'
+                          : type === 'equipment' ? 'bg-orange-600 text-white border-orange-600 ring-2 ring-orange-300'
+                          : 'bg-blue-600 text-white border-blue-600 ring-2 ring-blue-300'
+                        : state === 'values'
+                          ? type === 'labor' ? 'bg-purple-100 text-purple-700 border-purple-400'
+                          : type === 'material' ? 'bg-green-100 text-green-700 border-green-400'
+                          : type === 'equipment' ? 'bg-orange-100 text-orange-700 border-orange-400'
+                          : 'bg-blue-100 text-blue-700 border-blue-400'
+                        : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
+                      }`}
+                    >
+                      <div>{labels[type]}</div>
+                      <div className="text-xs mt-0.5 opacity-75">
+                        {state === 'values+prices' ? 'dane + ceny' : state === 'values' ? 'tylko dane' : 'nie zapisuj'}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="p-4 border-t border-slate-200 flex justify-end gap-3">
+              <button onClick={() => setShowCatalogSaveModal(false)} className="px-4 py-2 border border-slate-200 rounded-lg hover:bg-slate-50 text-sm">
+                Pomiń
+              </button>
+              <button
+                onClick={handleSaveToCatalogs}
+                disabled={catalogSaveLoading || !Object.values(catalogSaveTypes).some(v => v !== null)}
+                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium disabled:opacity-50 flex items-center gap-2"
+              >
+                {catalogSaveLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+                Zapisz do katalogów
               </button>
             </div>
           </div>
