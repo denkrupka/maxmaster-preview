@@ -6,7 +6,7 @@ import {
   Mail, Link as LinkIcon, RefreshCw, ChevronDown, ChevronRight,
   Save, X, GripVertical, Percent, AlertCircle, FileSpreadsheet,
   FolderPlus, Package, Star, UserPlus, Briefcase, MapPin,
-  ToggleLeft, ToggleRight, ListChecks, ChevronUp, Wrench, Hammer,
+  ToggleLeft, ToggleRight, ListChecks, ChevronUp, Wrench, Hammer, TrendingUp,
   FolderOpen, Printer, MessageSquare, Phone, Globe, Store, Settings, Upload, Sparkles
 } from 'lucide-react';
 import jsPDF from 'jspdf';
@@ -33,7 +33,7 @@ const OFFER_SOURCE_LABELS: Record<KosztorysRequestSource, string> = {
 };
 
 const DEFAULT_UNITS = [
-  'szt.', 'm', 'm²', 'm³', 'kg', 'kpl.', 'godz.', 'mb', 'op.', 'l', 't'
+  'szt.', 'm', 'm²', 'm³', 'kg', 'kpl.', 'godz.', 'mb', 'op.', 'l', 't', 'r-g', 'm-g'
 ];
 
 const OBJECT_TYPE_LABELS: Record<KosztorysObjectType, string> = {
@@ -318,6 +318,8 @@ export const OffersPage: React.FC = () => {
   const [showBulkBar, setShowBulkBar] = useState(false);
   const [showBulkRabatModal, setShowBulkRabatModal] = useState(false);
   const [bulkRabatValue, setBulkRabatValue] = useState(0);
+  const [showBulkNarzutModal, setShowBulkNarzutModal] = useState(false);
+  const [bulkNarzutValue, setBulkNarzutValue] = useState(0);
   const [itemSearchQuery, setItemSearchQuery] = useState('');
   const [itemFilterSection, setItemFilterSection] = useState('');
   // Preview & Send
@@ -402,6 +404,7 @@ export const OffersPage: React.FC = () => {
         if (confirmModal.show) { setConfirmModal(prev => ({ ...prev, show: false })); return; }
         if (showSettingsModal) { setShowSettingsModal(false); return; }
         if (showBulkRabatModal) { setShowBulkRabatModal(false); return; }
+        if (showBulkNarzutModal) { setShowBulkNarzutModal(false); return; }
         if (showPreviewModal) { setShowPreviewModal(false); return; }
         if (showSendModal) { setShowSendModal(false); return; }
         if (showImportFromEstimate) { setShowImportFromEstimate(false); return; }
@@ -3590,11 +3593,18 @@ export const OffersPage: React.FC = () => {
           if (!compName) continue;
           if (!resourceTypes.includes(compType)) continue;
 
+          // Ensure correct default units for labor (r-g) and equipment (m-g)
+          let finalUnit = compUnit || 'szt.';
+          if (!compUnit || compUnit === 'szt.') {
+            if (compType === 'labor') finalUnit = 'r-g';
+            else if (compType === 'equipment') finalUnit = 'm-g';
+          }
+
           addComponent(ref.sectionId, ref.itemId, {
             type: compType as 'labor' | 'material' | 'equipment',
             name: compName,
             code: compCode || '',
-            unit: compUnit || 'szt.',
+            unit: finalUnit,
             quantity: compNorm || 1,
             unit_price: 0,
             total_price: 0
@@ -3621,24 +3631,35 @@ export const OffersPage: React.FC = () => {
 
     try {
       const positions: any[] = [];
-      const positionMap: { sectionId: string; itemId: string; componentIds?: string[] }[] = [];
+      const positionMap: { sectionId: string; itemId: string; componentIds: string[] }[] = [];
 
       const collectFromSections = (secs: LocalOfferSection[]) => {
         for (const sec of secs) {
-          if (aiFillPriceTarget === 'position') {
-            for (const item of sec.items) {
-              if (aiFillMode === 'empty' && item.unit_price > 0) continue;
+          for (const item of sec.items) {
+            if (aiFillPriceTarget === 'position') {
+              // In 'position' mode: fill all components + recalculate item price
+              const allComps = item.components || [];
+              const compsToPrice = allComps.filter((c: any) => {
+                if (aiFillMode === 'empty' && c.unit_price > 0) return false;
+                return true;
+              });
+              // Include items that have components to price or have no price themselves
+              if (compsToPrice.length === 0 && (aiFillMode === 'empty' && item.unit_price > 0)) continue;
               positions.push({
                 id: item.id,
                 name: item.name || '',
                 base: '',
                 unit: item.unit || 'szt.',
-                resources: []
+                resources: allComps.map((c: any) => ({
+                  type: c.type,
+                  name: c.name,
+                  unit: c.unit || 'szt.',
+                  norm: c.quantity || 1
+                }))
               });
-              positionMap.push({ sectionId: sec.id, itemId: item.id });
-            }
-          } else {
-            for (const item of sec.items) {
+              positionMap.push({ sectionId: sec.id, itemId: item.id, componentIds: allComps.map((c: any) => c.id) });
+            } else {
+              // Fill only specific component type prices
               const comps = (item.components || []).filter((c: any) => {
                 if (c.type !== aiFillPriceTarget) return false;
                 if (aiFillMode === 'empty' && c.unit_price > 0) return false;
@@ -3676,7 +3697,7 @@ export const OffersPage: React.FC = () => {
         body: {
           positions,
           mode: 'prices',
-          resourceTypes: aiFillPriceTarget === 'position' ? ['labor', 'material', 'equipment'] : [aiFillPriceTarget],
+          resourceTypes: ['labor', 'material', 'equipment'],
           quarter: `Q1 ${new Date().getFullYear()}`
         }
       });
@@ -3692,48 +3713,62 @@ export const OffersPage: React.FC = () => {
       for (const [posIdx, priceData] of results) {
         if (posIdx >= positionMap.length) continue;
         const ref = positionMap[posIdx];
+        const compIds = ref.componentIds;
 
-        if (aiFillPriceTarget === 'position') {
-          // For position prices, AI returns [[0, price]] format or just a number
-          let price = 0;
-          if (typeof priceData === 'number') {
-            price = priceData;
-          } else if (Array.isArray(priceData)) {
-            // Could be [[0, 52.50]] or [52.50]
-            if (Array.isArray(priceData[0])) {
-              price = priceData[0][1] || 0; // [[resource_index, price]]
+        if (Array.isArray(priceData)) {
+          for (const entry of priceData) {
+            let resIdx: number, p: number;
+            if (Array.isArray(entry)) {
+              [resIdx, p] = entry;
+            } else if (typeof entry === 'number') {
+              resIdx = priceData.indexOf(entry);
+              p = entry;
             } else {
-              price = priceData[0] || 0;
+              continue;
             }
-          } else {
-            price = priceData?.unit_price || priceData?.price || 0;
-          }
-          if (price > 0) {
-            updateItem(ref.sectionId, ref.itemId, { unit_price: +price.toFixed(2) });
-            filledCount++;
-          }
-        } else {
-          // Component prices: [[resource_index, price], ...]
-          const compIds = ref.componentIds || [];
-          if (Array.isArray(priceData)) {
-            for (const entry of priceData) {
-              let resIdx: number, p: number;
-              if (Array.isArray(entry)) {
-                [resIdx, p] = entry;
-              } else if (typeof entry === 'number') {
-                resIdx = priceData.indexOf(entry);
-                p = entry;
-              } else {
-                continue;
-              }
-              if (p > 0 && resIdx < compIds.length) {
-                updateComponent(ref.sectionId, ref.itemId, compIds[resIdx], { unit_price: +p.toFixed(2) });
-                filledCount++;
-              }
+            if (p > 0 && resIdx < compIds.length) {
+              updateComponent(ref.sectionId, ref.itemId, compIds[resIdx], { unit_price: +(+p).toFixed(2) });
+              filledCount++;
             }
           }
         }
+
+        // After updating component prices, recalculate item price from components
+        if (aiFillPriceTarget === 'position') {
+          // Need to get updated components to sum their costs
+          // We must do this after all component updates
+          // Schedule a recalc after the loop
+        }
       }
+
+      // Recalculate item prices from component totals
+      setAiFillProgress('Przeliczanie pozycji...');
+      setSections(prev => {
+        const recalc = (secs: LocalOfferSection[]): LocalOfferSection[] =>
+          secs.map(s => ({
+            ...s,
+            items: s.items.map(item => {
+              const comps = item.components || [];
+              if (comps.length === 0) return item;
+              // Sum component costs: each comp cost = quantity * unit_price
+              const totalComponentCost = comps.reduce((sum, c) => sum + (c.quantity * c.unit_price), 0);
+              if (totalComponentCost <= 0) return item;
+              const updated = { ...item };
+              if (calculationMode === 'markup') {
+                // Narzut mode: set cost_price, keep markup, recalc unit_price
+                updated.cost_price = +(totalComponentCost).toFixed(2);
+                updated.unit_price = +(totalComponentCost * (1 + (updated.markup_percent || 0) / 100)).toFixed(2);
+              } else {
+                // Fixed mode: set unit_price directly from components
+                updated.unit_price = +(totalComponentCost).toFixed(2);
+              }
+              updated.total_price = updated.quantity * updated.unit_price;
+              return updated;
+            }),
+            children: s.children ? recalc(s.children) : s.children
+          }));
+        return recalc(prev);
+      });
 
       setAiFillProgress(`Wypełniono ${filledCount} cen`);
       setShowAiFillPricesModal(false);
@@ -3877,22 +3912,46 @@ export const OffersPage: React.FC = () => {
   const updateComponent = (sectionId: string, itemId: string, componentId: string, updates: Partial<OfferComponent>) => {
     setSections(prev => updateSectionsDeep(prev, sectionId, s => ({
       ...s,
-      items: s.items.map(i => i.id === itemId ? {
-        ...i,
-        components: (i.components || []).map(c => {
+      items: s.items.map(i => {
+        if (i.id !== itemId) return i;
+        const updatedComps = (i.components || []).map(c => {
           if (c.id !== componentId) return c;
           const upd = { ...c, ...updates };
           upd.total_price = upd.quantity * upd.unit_price;
           return upd;
-        })
-      } : i)
+        });
+        // Recalculate item cost_price from component totals
+        const totalComponentCost = updatedComps.reduce((sum, c) => sum + (c.quantity * c.unit_price), 0);
+        const updated = { ...i, components: updatedComps };
+        if (totalComponentCost > 0) {
+          updated.cost_price = +totalComponentCost.toFixed(2);
+          if (calculationMode === 'markup') {
+            updated.unit_price = +(totalComponentCost * (1 + (updated.markup_percent || 0) / 100)).toFixed(2);
+          }
+          updated.total_price = updated.quantity * updated.unit_price;
+        }
+        return updated;
+      })
     })));
   };
 
   const deleteComponent = (sectionId: string, itemId: string, componentId: string) => {
     setSections(prev => updateSectionsDeep(prev, sectionId, s => ({
       ...s,
-      items: s.items.map(i => i.id === itemId ? { ...i, components: (i.components || []).filter(c => c.id !== componentId) } : i)
+      items: s.items.map(i => {
+        if (i.id !== itemId) return i;
+        const remainingComps = (i.components || []).filter(c => c.id !== componentId);
+        const totalComponentCost = remainingComps.reduce((sum, c) => sum + (c.quantity * c.unit_price), 0);
+        const updated = { ...i, components: remainingComps };
+        if (remainingComps.length > 0 && totalComponentCost > 0) {
+          updated.cost_price = +totalComponentCost.toFixed(2);
+          if (calculationMode === 'markup') {
+            updated.unit_price = +(totalComponentCost * (1 + (updated.markup_percent || 0) / 100)).toFixed(2);
+          }
+          updated.total_price = updated.quantity * updated.unit_price;
+        }
+        return updated;
+      })
     })));
   };
 
@@ -3926,6 +3985,26 @@ export const OffersPage: React.FC = () => {
         children: s.children ? updateItems(s.children) : s.children
       }));
     setSections(prev => updateItems(prev));
+  };
+
+  const applyBulkNarzut = () => {
+    const updateItems = (secs: LocalOfferSection[]): LocalOfferSection[] =>
+      secs.map(s => ({
+        ...s,
+        items: s.items.map(i => {
+          if (!i.selected) return i;
+          const updated = { ...i, markup_percent: bulkNarzutValue };
+          if (calculationMode === 'markup' && updated.cost_price && updated.cost_price > 0) {
+            updated.unit_price = +(updated.cost_price * (1 + bulkNarzutValue / 100)).toFixed(2);
+            updated.total_price = updated.quantity * updated.unit_price;
+          }
+          return updated;
+        }),
+        children: s.children ? updateItems(s.children) : s.children
+      }));
+    setSections(prev => updateItems(prev));
+    setShowBulkNarzutModal(false);
+    setShowBulkBar(false);
   };
 
   // Load kartoteka data when search modal opens
@@ -6711,6 +6790,16 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                   <Percent className="w-4 h-4" />
                   Rabat
                 </button>
+                {calculationMode === 'markup' && (
+                  <button
+                    onClick={() => setShowBulkNarzutModal(true)}
+                    disabled={selectedItemsCount === 0}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm disabled:opacity-50"
+                  >
+                    <TrendingUp className="w-4 h-4" />
+                    Narzut
+                  </button>
+                )}
                 <select
                   onChange={e => { if (e.target.value) applyBulkVat(Number(e.target.value)); }}
                   disabled={selectedItemsCount === 0}
@@ -8690,6 +8779,48 @@ tr{page-break-inside:avoid;page-break-after:auto;}
               <button
                 onClick={applyBulkDiscount}
                 className="px-6 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700"
+              >
+                Zastosuj
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Narzut Modal */}
+      {showBulkNarzutModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[70] p-4">
+          <div className="bg-white rounded-xl w-full max-w-sm">
+            <div className="p-4 border-b border-slate-200 flex justify-between items-center">
+              <h2 className="text-lg font-semibold">Ustaw narzut masowo</h2>
+              <button onClick={() => setShowBulkNarzutModal(false)} className="p-1 hover:bg-slate-100 rounded" title="Zamknij">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
+              <p className="text-sm text-slate-600">
+                Zastosuj narzut do {selectedItemsCount} zaznaczonych pozycji:
+              </p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  value={bulkNarzutValue}
+                  onChange={e => setBulkNarzutValue(parseFloat(e.target.value) || 0)}
+                  className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-lg text-center"
+                  min="0"
+                  max="1000"
+                  step="1"
+                />
+                <span className="text-lg font-medium text-slate-600">%</span>
+              </div>
+            </div>
+            <div className="p-4 border-t border-slate-200 flex justify-end gap-3">
+              <button onClick={() => setShowBulkNarzutModal(false)} className="px-4 py-2 border border-slate-200 rounded-lg hover:bg-slate-50">
+                Anuluj
+              </button>
+              <button
+                onClick={applyBulkNarzut}
+                className="px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700"
               >
                 Zastosuj
               </button>
