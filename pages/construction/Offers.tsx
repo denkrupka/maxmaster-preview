@@ -7,7 +7,7 @@ import {
   Save, X, GripVertical, Percent, AlertCircle, FileSpreadsheet,
   FolderPlus, Package, Star, UserPlus, Briefcase, MapPin,
   ToggleLeft, ToggleRight, ListChecks, ChevronUp, Wrench, Hammer,
-  FolderOpen, Printer, MessageSquare, Phone, Globe, Store, Settings
+  FolderOpen, Printer, MessageSquare, Phone, Globe, Store, Settings, Upload
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import * as XLSX from 'xlsx';
@@ -458,6 +458,20 @@ export const OffersPage: React.FC = () => {
   const [kosztorysEstimates, setKosztorysEstimates] = useState<any[]>([]);
   const [selectedKosztorysId, setSelectedKosztorysId] = useState('');
   const [importedKosztorysName, setImportedKosztorysName] = useState<string | null>(null);
+  const [showImportDropdown, setShowImportDropdown] = useState(false);
+  const [showImportFromFile, setShowImportFromFile] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importDragActive, setImportDragActive] = useState(false);
+  const [importProgress, setImportProgress] = useState('');
+  const [importError, setImportError] = useState<string | null>(null);
+  const [showFillTemplateModal, setShowFillTemplateModal] = useState(false);
+  const [templateFile, setTemplateFile] = useState<File | null>(null);
+  const [templateDragActive, setTemplateDragActive] = useState(false);
+  const [templateLoading, setTemplateLoading] = useState(false);
+  const [templateProgress, setTemplateProgress] = useState('');
+  const [templateError, setTemplateError] = useState<string | null>(null);
+  const [templateParsed, setTemplateParsed] = useState(false);
+  const [templateData, setTemplateData] = useState<any>(null);
 
   const autoSelectDone = useRef(false);
 
@@ -548,7 +562,7 @@ export const OffersPage: React.FC = () => {
           .is('deleted_at', null),
         supabase
           .from('kosztorys_estimates')
-          .select('*, request:kosztorys_requests(investment_name, client_name)')
+          .select('*, request:kosztorys_requests(investment_name, client_name, nip)')
           .eq('company_id', currentUser.company_id)
           .in('status', ['draft', 'pending_approval', 'approved', 'sent'])
           .order('created_at', { ascending: false })
@@ -2903,10 +2917,7 @@ export const OffersPage: React.FC = () => {
           request_source: req.request_source || prev.request_source,
           notes: req.notes || prev.notes,
           assigned_user_id: req.assigned_user_id || prev.assigned_user_id,
-          // FIX: import representative (contact_person)
-          contact_person: req.contact_person || prev.contact_person,
-          phone: req.phone || prev.phone,
-          email: req.email || prev.email,
+          // contact_person fields handled via kosztorys_request_contacts below
         }));
 
         // Pre-fill new offer fields from kosztorys request
@@ -2916,9 +2927,8 @@ export const OffersPage: React.FC = () => {
         if (req.planned_start_date) setWorkStartDate(req.planned_start_date.split('T')[0]);
         if (req.planned_end_date) setWorkEndDate(req.planned_end_date.split('T')[0]);
 
-        // FIX: set project_id if available (match by object_code or investment_name)
+        // Set project_id if available (match by object_code)
         if (req.object_code) {
-          // Try to find matching project by object_code
           const { data: matchedProjects } = await supabase
             .from('projects')
             .select('id, name')
@@ -2929,23 +2939,41 @@ export const OffersPage: React.FC = () => {
           }
         }
 
-        // Try to load contacts for the client + auto-set representative
+        // Try to load contacts for the client
         if (req.nip) {
           await offerFindAndLoadContacts(req.nip, req.client_name);
         } else if (req.client_name) {
           await offerFindAndLoadContacts(undefined, req.client_name);
         }
 
-        // FIX: auto-select representative by contact_person name match
-        if (req.contact_person) {
-          // contacts are loaded by offerFindAndLoadContacts above
-          // We'll try to match after a small delay (contacts load async)
-          setTimeout(() => {
-            // Access contacts from closure - find by name match
-            const nameToFind = req.contact_person.toLowerCase().trim();
-            // contacts state is updated by offerFindAndLoadContacts
-            // Try to find in the DOM contacts list (the state is set by the function)
-          }, 500);
+        // Load kosztorys request contacts (representative) and use as fallback
+        if (estimate.request_id) {
+          const { data: kContacts } = await supabase
+            .from('kosztorys_request_contacts')
+            .select('*')
+            .eq('request_id', estimate.request_id)
+            .order('is_primary', { ascending: false });
+
+          if (kContacts && kContacts.length > 0) {
+            const primary = kContacts.find((c: any) => c.is_primary) || kContacts[0];
+            setOfferContacts([{
+              first_name: primary.first_name || '',
+              last_name: primary.last_name || '',
+              phone: primary.phone || '',
+              email: primary.email || '',
+              position: primary.position || '',
+              is_primary: true
+            }]);
+            setShowAddRepInline(true);
+            setNewRepData({
+              first_name: primary.first_name || '',
+              last_name: primary.last_name || '',
+              phone: primary.phone || '',
+              email: primary.email || '',
+              position: primary.position || '',
+              is_main_contact: true
+            });
+          }
         }
 
         setOfferClientSelected(true);
@@ -2978,7 +3006,7 @@ export const OffersPage: React.FC = () => {
         if (normalizedSections.length > 0) requestAnimationFrame(revNext);
         showToast(`Zaimportowano ${normalizedSections.length} sekcji z kosztorysu`, 'success');
       } else {
-        showToast('Kosztorys nie zawiera pozycji do importu', 'warning');
+        showToast('Kosztorys nie zawiera pozycji do importu', 'info');
       }
 
       setImportedKosztorysName(investmentName + (clientName ? ` — ${clientName}` : ''));
@@ -2989,6 +3017,400 @@ export const OffersPage: React.FC = () => {
       showToast('Błąd podczas importu z modułu kosztorysowania', 'error');
     } finally {
       setImportLoading(false);
+    }
+  };
+
+  // Import from file (przedmiar) for offers
+  const handleOfferImportFile = async (file: File) => {
+    setImportLoading(true);
+    setImportError(null);
+    setImportProgress('Wczytywanie pliku...');
+
+    try {
+      const ext = file.name.split('.').pop()?.toLowerCase() || '';
+
+      if (['pdf', 'jpg', 'jpeg', 'png', 'webp'].includes(ext)) {
+        setImportProgress('Przesyłanie do AI...');
+        const buffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const base64 = btoa(binary);
+        const mimeMap: Record<string, string> = {
+          pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+          png: 'image/png', webp: 'image/webp',
+        };
+
+        setImportProgress('Analiza dokumentu przez AI...');
+        const { data: funcData, error: funcError } = await supabase.functions.invoke('parse-kosztorys-document', {
+          body: { fileBase64: base64, mimeType: mimeMap[ext] || 'application/pdf' },
+        });
+
+        if (funcError) throw new Error(funcError.message || 'Błąd wywołania funkcji AI');
+        if (!funcData?.success) throw new Error(funcData?.error || 'AI nie zwróciło danych');
+
+        setImportProgress('Konwertowanie wyników...');
+        const { convertGeminiResponseToEstimate } = await import('../../lib/kosztorysImportParsers');
+        const importedData = convertGeminiResponseToEstimate(funcData.data);
+        convertImportedDataToOfferSections(importedData);
+      } else if (ext === 'ath') {
+        setImportProgress('Parsowanie pliku ATH...');
+        const { parseAthFile } = await import('../../lib/kosztorysImportParsers');
+        const buffer = await file.arrayBuffer();
+        const importedData = parseAthFile(buffer);
+        convertImportedDataToOfferSections(importedData);
+      } else if (ext === 'xlsx' || ext === 'xls') {
+        setImportProgress('Wczytywanie pliku Excel...');
+        const { previewXlsxFile, parseXlsxWithAiStructure } = await import('../../lib/kosztorysImportParsers');
+        const buffer = await file.arrayBuffer();
+        const preview = previewXlsxFile(buffer);
+
+        setImportProgress('Analiza struktury przez AI...');
+        const compactRows = preview.allRows.map((row: any) =>
+          (row || []).slice(0, 10).map((c: any) => String(c ?? '').trim().substring(0, 60))
+        );
+        const { data: aiData, error: aiErr } = await supabase.functions.invoke('xlsx-ai-analyze', {
+          body: { rows: compactRows, sheetName: preview.activeSheet },
+        });
+        if (aiErr || !aiData?.success) throw new Error('AI nie mogło przeanalizować pliku Excel');
+
+        const analysis = aiData.data;
+        const columns = {
+          lp: analysis.columns?.lp ?? -1,
+          base: analysis.columns?.base ?? -1,
+          name: analysis.columns?.name ?? -1,
+          unit: analysis.columns?.unit ?? -1,
+          qty: analysis.columns?.qty ?? -1,
+        };
+        const headerRowIdx = analysis.headerRow ?? 0;
+
+        setImportProgress('Parsowanie pozycji...');
+        const importedData = parseXlsxWithAiStructure(
+          preview.allRows, columns, headerRowIdx, analysis.structure || []
+        );
+        convertImportedDataToOfferSections(importedData);
+      } else if (ext === 'xml') {
+        setImportProgress('Parsowanie pliku XML...');
+        const { parseXmlFile } = await import('../../lib/kosztorysImportParsers');
+        const text = await file.text();
+        const importedData = parseXmlFile(text);
+        convertImportedDataToOfferSections(importedData);
+      } else if (ext === 'json') {
+        setImportProgress('Parsowanie pliku JSON...');
+        const { parseJsonFile } = await import('../../lib/kosztorysImportParsers');
+        const text = await file.text();
+        const importedData = parseJsonFile(text);
+        convertImportedDataToOfferSections(importedData);
+      } else {
+        throw new Error(`Nieobsługiwany format: .${ext}. Obsługiwane: .ath, .xlsx, .pdf, .xml, .json, .jpg, .png`);
+      }
+
+      setShowImportFromFile(false);
+      setImportFile(null);
+    } catch (error: any) {
+      console.error('Import error:', error);
+      setImportError(error.message || 'Błąd podczas importu pliku');
+    } finally {
+      setImportLoading(false);
+      setImportProgress('');
+    }
+  };
+
+  // Convert imported KosztorysCostEstimateData to offer sections
+  const convertImportedDataToOfferSections = (importedData: any) => {
+    const newSections: any[] = [];
+    const sectionIds = importedData.root?.sectionIds || [];
+
+    for (const secId of sectionIds) {
+      const sec = importedData.sections?.[secId];
+      if (!sec) continue;
+
+      const items: any[] = [];
+      const posIds = sec.positionIds || [];
+
+      for (const posId of posIds) {
+        const pos = importedData.positions?.[posId];
+        if (!pos) continue;
+
+        // Calculate unit price from resources
+        let unitPrice = 0;
+        if (pos.resources) {
+          for (const res of Object.values(pos.resources) as any[]) {
+            unitPrice += (res.unitPrice || 0) * (res.norma || res.quantity || 0);
+          }
+        }
+        if (unitPrice === 0 && pos.totalValue) {
+          unitPrice = pos.quantity ? pos.totalValue / pos.quantity : pos.totalValue;
+        }
+
+        items.push({
+          id: crypto.randomUUID(),
+          name: pos.name || pos.description || '',
+          unit: pos.unit || 'szt.',
+          quantity: pos.quantity || 0,
+          unit_price: +unitPrice.toFixed(2),
+          discount_percent: 0,
+          vat_rate: 23,
+          components: [],
+          isEditing: false,
+          isExpanded: false,
+          markup_percent: 0,
+          cost_price: 0,
+          selected: false
+        });
+      }
+
+      // Process subsections recursively
+      if (sec.subsectionIds) {
+        for (const subId of sec.subsectionIds) {
+          const sub = importedData.sections?.[subId];
+          if (!sub) continue;
+          for (const posId of (sub.positionIds || [])) {
+            const pos = importedData.positions?.[posId];
+            if (!pos) continue;
+            let unitPrice = 0;
+            if (pos.resources) {
+              for (const res of Object.values(pos.resources) as any[]) {
+                unitPrice += (res.unitPrice || 0) * (res.norma || res.quantity || 0);
+              }
+            }
+            if (unitPrice === 0 && pos.totalValue) {
+              unitPrice = pos.quantity ? pos.totalValue / pos.quantity : pos.totalValue;
+            }
+            items.push({
+              id: crypto.randomUUID(),
+              name: `${sub.name ? sub.name + ' — ' : ''}${pos.name || pos.description || ''}`,
+              unit: pos.unit || 'szt.',
+              quantity: pos.quantity || 0,
+              unit_price: +unitPrice.toFixed(2),
+              discount_percent: 0,
+              vat_rate: 23,
+              components: [],
+              isEditing: false,
+              isExpanded: false,
+              markup_percent: 0,
+              cost_price: 0,
+              selected: false
+            });
+          }
+        }
+      }
+
+      if (items.length > 0) {
+        newSections.push({
+          id: crypto.randomUUID(),
+          name: sec.name || `Dział ${newSections.length + 1}`,
+          children: [],
+          items
+        });
+      }
+    }
+
+    if (newSections.length > 0) {
+      setSections(newSections);
+      setSectionsReady(0);
+      let rev = 0;
+      const revNext = () => { rev++; setSectionsReady(rev); if (rev < newSections.length) requestAnimationFrame(revNext); };
+      requestAnimationFrame(revNext);
+    }
+
+    // Open create modal with imported data
+    if (!showCreateModal) {
+      resetOfferForm();
+      setShowCreateModal(true);
+    }
+  };
+
+  // Handle template fill
+  const handleFillTemplate = async (file: File) => {
+    setTemplateLoading(true);
+    setTemplateError(null);
+    setTemplateProgress('Wczytywanie szablonu...');
+    setTemplateParsed(false);
+    setTemplateData(null);
+
+    try {
+      const ext = file.name.split('.').pop()?.toLowerCase() || '';
+
+      if (ext === 'xlsx' || ext === 'xls') {
+        setTemplateProgress('Analiza struktury Excel...');
+        const buffer = await file.arrayBuffer();
+        const workbook = XLSX.read(buffer, { type: 'array' });
+        const sheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+        // Send to AI for structure analysis
+        const compactRows = rows.map(row =>
+          (row || []).slice(0, 15).map((c: any) => String(c ?? '').trim().substring(0, 80))
+        );
+
+        setTemplateProgress('Rozpoznawanie tabeli przez AI...');
+        const { data: aiData, error: aiErr } = await supabase.functions.invoke('xlsx-ai-analyze', {
+          body: { rows: compactRows, sheetName },
+        });
+
+        if (aiErr || !aiData?.success) throw new Error('AI nie mogło rozpoznać struktury szablonu');
+
+        setTemplateData({
+          type: 'xlsx',
+          workbook,
+          sheetName,
+          rows,
+          analysis: aiData.data,
+          fileName: file.name
+        });
+        setTemplateParsed(true);
+      } else if (ext === 'pdf') {
+        setTemplateProgress('Analiza dokumentu PDF...');
+        const buffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const base64 = btoa(binary);
+
+        setTemplateProgress('Rozpoznawanie tabeli przez AI...');
+        const { data: funcData, error: funcError } = await supabase.functions.invoke('parse-kosztorys-document', {
+          body: { fileBase64: base64, mimeType: 'application/pdf' },
+        });
+
+        if (funcError) throw new Error(funcError.message || 'Błąd analizy PDF');
+        if (!funcData?.success) throw new Error(funcData?.error || 'AI nie rozpoznało tabeli');
+
+        setTemplateData({
+          type: 'pdf',
+          parsed: funcData.data,
+          fileName: file.name,
+          base64
+        });
+        setTemplateParsed(true);
+      } else {
+        throw new Error(`Obsługiwane formaty szablonów: .xlsx, .xls, .pdf`);
+      }
+    } catch (error: any) {
+      console.error('Template analysis error:', error);
+      setTemplateError(error.message || 'Błąd analizy szablonu');
+    } finally {
+      setTemplateLoading(false);
+      setTemplateProgress('');
+    }
+  };
+
+  // Fill template with offer data and download
+  const handleDownloadFilledTemplate = async () => {
+    if (!templateData) return;
+    setTemplateLoading(true);
+    setTemplateProgress('Wypełnianie szablonu...');
+
+    try {
+      const allItems = sections.flatMap(sec =>
+        sec.items.map((item: any) => ({
+          name: item.name,
+          unit: item.unit,
+          quantity: item.quantity,
+          unit_price: item.unit_price,
+          total: +(item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100)).toFixed(2),
+          section: sec.name
+        }))
+      );
+
+      if (templateData.type === 'xlsx') {
+        const workbook = templateData.workbook;
+        const sheet = workbook.Sheets[templateData.sheetName];
+        const analysis = templateData.analysis;
+
+        // Find price/value columns from AI analysis
+        const colQty = analysis.columns?.qty ?? -1;
+        const colName = analysis.columns?.name ?? -1;
+        const headerRow = analysis.headerRow ?? 0;
+
+        // Try to match template rows with offer items by name similarity
+        const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+        for (let rowIdx = headerRow + 1; rowIdx < rows.length; rowIdx++) {
+          const row = rows[rowIdx];
+          if (!row || row.length === 0) continue;
+
+          const rowName = colName >= 0 ? String(row[colName] || '').toLowerCase().trim() : '';
+          if (!rowName) continue;
+
+          // Find matching offer item
+          const match = allItems.find(item => {
+            const itemName = (item.name || '').toLowerCase().trim();
+            return itemName.includes(rowName) || rowName.includes(itemName) ||
+              (rowName.length > 5 && itemName.length > 5 &&
+               (rowName.substring(0, 10) === itemName.substring(0, 10)));
+          });
+
+          if (match) {
+            // Fill unit price column (look for it near qty column)
+            const priceCol = colQty >= 0 ? colQty + 1 : row.length - 2;
+            const valueCol = priceCol + 1;
+
+            const cellPrice = XLSX.utils.encode_cell({ r: rowIdx, c: priceCol });
+            const cellValue = XLSX.utils.encode_cell({ r: rowIdx, c: valueCol });
+            sheet[cellPrice] = { t: 'n', v: match.unit_price };
+            sheet[cellValue] = { t: 'n', v: match.total };
+          }
+        }
+
+        // Add summary at bottom
+        const lastRow = rows.length + 1;
+        const sumCell = XLSX.utils.encode_cell({ r: lastRow, c: (colName >= 0 ? colName : 0) });
+        const sumValCell = XLSX.utils.encode_cell({ r: lastRow, c: (colQty >= 0 ? colQty + 2 : rows[0]?.length ? rows[0].length - 1 : 5) });
+        sheet[sumCell] = { t: 's', v: 'RAZEM NETTO:' };
+        const totalNetto = totals.total + totals.surchargeAmount;
+        sheet[sumValCell] = { t: 'n', v: totalNetto };
+
+        // Update sheet range
+        const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
+        range.e.r = Math.max(range.e.r, lastRow);
+        sheet['!ref'] = XLSX.utils.encode_range(range);
+
+        const outName = templateData.fileName.replace(/\.(xlsx|xls)$/i, '_wypelniony.xlsx');
+        XLSX.writeFile(workbook, outName);
+      } else {
+        // For PDF templates - generate filled Excel based on parsed structure
+        const wsData: any[][] = [
+          ['WYPEŁNIONY SZABLON'],
+          ['Źródło:', templateData.fileName],
+          ['Oferta:', selectedOffer?.number || offerData.name || ''],
+          [],
+          ['Lp.', 'Nazwa', 'Jedn.', 'Ilość', 'Cena jedn.', 'Wartość netto']
+        ];
+
+        let lp = 1;
+        allItems.forEach(item => {
+          wsData.push([lp++, item.name, item.unit, item.quantity, item.unit_price, item.total]);
+        });
+
+        const totalNetto = totals.total + totals.surchargeAmount;
+        wsData.push([]);
+        wsData.push(['', '', '', '', 'RAZEM NETTO:', totalNetto]);
+
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.aoa_to_sheet(wsData);
+        ws['!cols'] = [{ wch: 5 }, { wch: 40 }, { wch: 8 }, { wch: 10 }, { wch: 12 }, { wch: 14 }];
+        XLSX.utils.book_append_sheet(wb, ws, 'Szablon');
+
+        const outName = templateData.fileName.replace(/\.[^.]+$/, '_wypelniony.xlsx');
+        XLSX.writeFile(wb, outName);
+      }
+
+      setShowFillTemplateModal(false);
+      setTemplateFile(null);
+      setTemplateParsed(false);
+      setTemplateData(null);
+    } catch (error: any) {
+      console.error('Template fill error:', error);
+      setTemplateError(error.message || 'Błąd wypełniania szablonu');
+    } finally {
+      setTemplateLoading(false);
+      setTemplateProgress('');
     }
   };
 
@@ -4360,7 +4782,7 @@ tr{page-break-inside:avoid;page-break-after:auto;}
   // ============================================
   const renderImportFromEstimateModal = () => (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4">
-      <div className="bg-white rounded-xl w-full max-w-lg">
+      <div className="bg-white rounded-xl w-full max-w-2xl">
         <div className="p-4 border-b border-slate-200 flex justify-between items-center">
           <h2 className="text-lg font-semibold">Importuj z kosztorysu</h2>
           <button onClick={() => setShowImportFromEstimate(false)} className="p-1 hover:bg-slate-100 rounded" title="Zamknij">
@@ -4376,33 +4798,62 @@ tr{page-break-inside:avoid;page-break-after:auto;}
               <p className="text-sm mt-1">Najpierw utwórz kosztorys w module Kosztorysowanie.</p>
             </div>
           ) : (
-            <div className="space-y-2 max-h-[400px] overflow-y-auto">
-              {kosztorysEstimates.map(est => (
-                <label
-                  key={est.id}
-                  className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition ${
-                    selectedKosztorysId === est.id
-                      ? 'border-blue-500 bg-blue-50'
-                      : 'border-slate-200 hover:bg-slate-50'
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="kosztorys"
-                    checked={selectedKosztorysId === est.id}
-                    onChange={() => setSelectedKosztorysId(est.id)}
-                    className="w-4 h-4 text-blue-600"
-                  />
-                  <div className="flex-1">
-                    <p className="font-medium text-slate-900">
-                      {est.request?.investment_name || 'Kosztorys'}
-                    </p>
-                    <p className="text-sm text-slate-500">
-                      {est.request?.client_name || 'Klient'}
-                    </p>
-                  </div>
-                </label>
-              ))}
+            <div className="max-h-[400px] overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 sticky top-0">
+                  <tr>
+                    <th className="w-8 px-2 py-2"></th>
+                    <th className="px-3 py-2 text-left font-medium text-slate-600">Nr</th>
+                    <th className="px-3 py-2 text-left font-medium text-slate-600">Inwestycja</th>
+                    <th className="px-3 py-2 text-left font-medium text-slate-600">Klient</th>
+                    <th className="px-3 py-2 text-left font-medium text-slate-600">Status</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-600">Netto</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {kosztorysEstimates.map(est => (
+                    <tr
+                      key={est.id}
+                      onClick={() => setSelectedKosztorysId(est.id)}
+                      className={`cursor-pointer transition ${
+                        selectedKosztorysId === est.id
+                          ? 'bg-blue-50'
+                          : 'hover:bg-slate-50'
+                      }`}
+                    >
+                      <td className="px-2 py-2">
+                        <input
+                          type="radio"
+                          name="kosztorys"
+                          checked={selectedKosztorysId === est.id}
+                          onChange={() => setSelectedKosztorysId(est.id)}
+                          className="w-4 h-4 text-blue-600"
+                        />
+                      </td>
+                      <td className="px-3 py-2 text-slate-600 font-mono text-xs">{est.estimate_number || '-'}</td>
+                      <td className="px-3 py-2 font-medium text-slate-900">{est.request?.investment_name || 'Kosztorys'}</td>
+                      <td className="px-3 py-2 text-slate-600">{est.request?.client_name || '-'}</td>
+                      <td className="px-3 py-2">
+                        <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
+                          est.status === 'approved' ? 'bg-green-100 text-green-700' :
+                          est.status === 'pending_approval' ? 'bg-yellow-100 text-yellow-700' :
+                          est.status === 'rejected' ? 'bg-red-100 text-red-700' :
+                          'bg-slate-100 text-slate-600'
+                        }`}>
+                          {est.status === 'draft' ? 'Roboczy' :
+                           est.status === 'pending_approval' ? 'Do akceptacji' :
+                           est.status === 'approved' ? 'Zaakceptowany' :
+                           est.status === 'rejected' ? 'Odrzucony' :
+                           est.status === 'sent' ? 'Wysłany' : est.status}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-right font-medium text-slate-900">
+                        {est.subtotal_net ? `${Number(est.subtotal_net).toLocaleString('pl-PL', { minimumFractionDigits: 2 })} zł` : '-'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </div>
@@ -4421,6 +4872,256 @@ tr{page-break-inside:avoid;page-break-after:auto;}
             {importLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileSpreadsheet className="w-4 h-4" />}
             Importuj
           </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderImportFromFileModal = () => (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4">
+      <div className="bg-white rounded-xl w-full max-w-lg">
+        <div className="p-4 border-b border-slate-200 flex justify-between items-center">
+          <h2 className="text-lg font-semibold">Import przedmiaru z pliku</h2>
+          <button
+            onClick={() => { setShowImportFromFile(false); setImportFile(null); setImportError(null); }}
+            className="p-1 hover:bg-slate-100 rounded"
+            disabled={importLoading}
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="p-6">
+          {/* Drag & Drop Zone */}
+          <div
+            className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
+              importDragActive ? 'border-blue-500 bg-blue-50' : 'border-slate-300 hover:border-slate-400'
+            } ${importLoading ? 'opacity-50 pointer-events-none' : 'cursor-pointer'}`}
+            onDragOver={(e) => { e.preventDefault(); setImportDragActive(true); }}
+            onDragLeave={() => setImportDragActive(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setImportDragActive(false);
+              const file = e.dataTransfer.files[0];
+              if (file) { setImportFile(file); setImportError(null); }
+            }}
+            onClick={() => {
+              if (importLoading) return;
+              const input = document.createElement('input');
+              input.type = 'file';
+              input.accept = '.ath,.xlsx,.xls,.xml,.json,.pdf,.jpg,.jpeg,.png,.webp';
+              input.onchange = (e) => {
+                const file = (e.target as HTMLInputElement).files?.[0];
+                if (file) { setImportFile(file); setImportError(null); }
+              };
+              input.click();
+            }}
+          >
+            <Upload className="w-10 h-10 text-slate-400 mx-auto mb-3" />
+            <p className="text-sm text-slate-600 mb-1">
+              Przeciągnij plik tutaj lub <span className="text-blue-600 font-medium">wybierz z dysku</span>
+            </p>
+            <p className="text-xs text-slate-400">
+              Obsługiwane formaty: .ath, .xlsx, .xml, .json, .pdf, .jpg, .png
+            </p>
+          </div>
+
+          {/* Selected file info */}
+          {importFile && !importLoading && (
+            <div className="mt-4 flex items-center gap-3 p-3 bg-slate-50 rounded-lg">
+              <FileText className="w-5 h-5 text-blue-500 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-slate-900 truncate">{importFile.name}</p>
+                <p className="text-xs text-slate-500">{(importFile.size / 1024).toFixed(1)} KB</p>
+              </div>
+              <button
+                onClick={(e) => { e.stopPropagation(); setImportFile(null); setImportError(null); }}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* Loading spinner */}
+          {importLoading && (
+            <div className="mt-4 flex items-center gap-3 p-3 bg-blue-50 rounded-lg">
+              <Loader2 className="w-5 h-5 text-blue-500 animate-spin flex-shrink-0" />
+              <p className="text-sm text-blue-700">{importProgress || 'Przetwarzanie...'}</p>
+            </div>
+          )}
+
+          {/* Error display */}
+          {importError && (
+            <div className="mt-4 flex items-start gap-3 p-3 bg-red-50 rounded-lg">
+              <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+              <p className="text-sm text-red-700">{importError}</p>
+            </div>
+          )}
+        </div>
+        <div className="p-4 border-t border-slate-200 flex justify-end gap-3">
+          <button
+            onClick={() => { setShowImportFromFile(false); setImportFile(null); setImportError(null); }}
+            className="px-4 py-2 border border-slate-200 rounded-lg hover:bg-slate-50"
+            disabled={importLoading}
+          >
+            Anuluj
+          </button>
+          <button
+            onClick={() => importFile && handleOfferImportFile(importFile)}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+            disabled={!importFile || importLoading}
+          >
+            {importLoading ? 'Importowanie...' : 'Importuj'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderFillTemplateModal = () => (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[70] p-4">
+      <div className="bg-white rounded-xl w-full max-w-lg">
+        <div className="p-4 border-b border-slate-200 flex justify-between items-center">
+          <h2 className="text-lg font-semibold">Wypełnij szablon</h2>
+          <button
+            onClick={() => { setShowFillTemplateModal(false); setTemplateFile(null); setTemplateError(null); setTemplateParsed(false); setTemplateData(null); }}
+            className="p-1 hover:bg-slate-100 rounded"
+            disabled={templateLoading}
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="p-6">
+          {!templateParsed ? (
+            <>
+              <p className="text-sm text-slate-600 mb-4">
+                Wgraj szablon przedmiaru od klienta (Excel lub PDF). AI rozpozna strukturę tabeli i wypełni ją cenami z oferty.
+              </p>
+              {/* Drag & Drop Zone */}
+              <div
+                className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
+                  templateDragActive ? 'border-purple-500 bg-purple-50' : 'border-slate-300 hover:border-slate-400'
+                } ${templateLoading ? 'opacity-50 pointer-events-none' : 'cursor-pointer'}`}
+                onDragOver={(e) => { e.preventDefault(); setTemplateDragActive(true); }}
+                onDragLeave={() => setTemplateDragActive(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setTemplateDragActive(false);
+                  const file = e.dataTransfer.files[0];
+                  if (file) { setTemplateFile(file); setTemplateError(null); }
+                }}
+                onClick={() => {
+                  if (templateLoading) return;
+                  const input = document.createElement('input');
+                  input.type = 'file';
+                  input.accept = '.xlsx,.xls,.pdf';
+                  input.onchange = (e) => {
+                    const file = (e.target as HTMLInputElement).files?.[0];
+                    if (file) { setTemplateFile(file); setTemplateError(null); }
+                  };
+                  input.click();
+                }}
+              >
+                <Upload className="w-10 h-10 text-slate-400 mx-auto mb-3" />
+                <p className="text-sm text-slate-600 mb-1">
+                  Przeciągnij szablon lub <span className="text-purple-600 font-medium">wybierz z dysku</span>
+                </p>
+                <p className="text-xs text-slate-400">
+                  Obsługiwane formaty: .xlsx, .xls, .pdf
+                </p>
+              </div>
+
+              {/* Selected file */}
+              {templateFile && !templateLoading && (
+                <div className="mt-4 flex items-center gap-3 p-3 bg-slate-50 rounded-lg">
+                  <FileText className="w-5 h-5 text-purple-500 flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-slate-900 truncate">{templateFile.name}</p>
+                    <p className="text-xs text-slate-500">{(templateFile.size / 1024).toFixed(1)} KB</p>
+                  </div>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setTemplateFile(null); setTemplateError(null); }}
+                    className="text-slate-400 hover:text-slate-600"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+
+              {/* Loading */}
+              {templateLoading && (
+                <div className="mt-4 flex items-center gap-3 p-3 bg-purple-50 rounded-lg">
+                  <Loader2 className="w-5 h-5 text-purple-500 animate-spin flex-shrink-0" />
+                  <p className="text-sm text-purple-700">{templateProgress || 'Analizowanie...'}</p>
+                </div>
+              )}
+
+              {/* Error */}
+              {templateError && (
+                <div className="mt-4 flex items-start gap-3 p-3 bg-red-50 rounded-lg">
+                  <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                  <p className="text-sm text-red-700">{templateError}</p>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-3 p-4 bg-green-50 rounded-lg mb-4">
+                <CheckCircle className="w-6 h-6 text-green-500 flex-shrink-0" />
+                <div>
+                  <p className="font-medium text-green-900">Szablon rozpoznany</p>
+                  <p className="text-sm text-green-700">
+                    {templateData?.type === 'xlsx' ? 'Excel' : 'PDF'}: {templateData?.fileName}
+                  </p>
+                  <p className="text-xs text-green-600 mt-1">
+                    AI rozpoznało strukturę tabeli. Gotowe do wypełnienia cenami z oferty.
+                  </p>
+                </div>
+              </div>
+
+              {/* Template loading */}
+              {templateLoading && (
+                <div className="flex items-center gap-3 p-3 bg-purple-50 rounded-lg mb-4">
+                  <Loader2 className="w-5 h-5 text-purple-500 animate-spin flex-shrink-0" />
+                  <p className="text-sm text-purple-700">{templateProgress || 'Wypełnianie...'}</p>
+                </div>
+              )}
+
+              {templateError && (
+                <div className="flex items-start gap-3 p-3 bg-red-50 rounded-lg mb-4">
+                  <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                  <p className="text-sm text-red-700">{templateError}</p>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        <div className="p-4 border-t border-slate-200 flex justify-end gap-3">
+          <button
+            onClick={() => { setShowFillTemplateModal(false); setTemplateFile(null); setTemplateError(null); setTemplateParsed(false); setTemplateData(null); }}
+            className="px-4 py-2 border border-slate-200 rounded-lg hover:bg-slate-50"
+            disabled={templateLoading}
+          >
+            {templateParsed ? 'Zamknij' : 'Anuluj'}
+          </button>
+          {!templateParsed ? (
+            <button
+              onClick={() => templateFile && handleFillTemplate(templateFile)}
+              className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50"
+              disabled={!templateFile || templateLoading}
+            >
+              {templateLoading ? 'Analizowanie...' : 'Analizuj szablon'}
+            </button>
+          ) : (
+            <button
+              onClick={handleDownloadFilledTemplate}
+              className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50"
+              disabled={templateLoading}
+            >
+              <Download className="w-4 h-4" />
+              Wypełnij i pobierz
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -6592,13 +7293,43 @@ tr{page-break-inside:avoid;page-break-after:auto;}
           </button>
         </div>
         {offersTab === 'offers' ? (
-          <button
-            onClick={() => { resetOfferForm(); setShowCreateModal(true); }}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
-          >
-            <Plus className="w-5 h-5" />
-            Nowa oferta
-          </button>
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <button
+                onClick={() => setShowImportDropdown(!showImportDropdown)}
+                className="flex items-center gap-2 px-4 py-2 border border-slate-200 rounded-lg hover:bg-slate-50 transition text-slate-700"
+              >
+                <Upload className="w-4 h-4" />
+                Import
+                <ChevronDown className="w-3 h-3" />
+              </button>
+              {showImportDropdown && (
+                <div className="absolute right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-20 min-w-[200px]">
+                  <button
+                    onClick={() => { setShowImportDropdown(false); setShowImportFromEstimate(true); }}
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left hover:bg-slate-50 rounded-t-lg"
+                  >
+                    <FileSpreadsheet className="w-4 h-4 text-blue-500" />
+                    Kosztorys
+                  </button>
+                  <button
+                    onClick={() => { setShowImportDropdown(false); setShowImportFromFile(true); }}
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left hover:bg-slate-50 rounded-b-lg"
+                  >
+                    <Upload className="w-4 h-4 text-green-600" />
+                    Przedmiar z pliku
+                  </button>
+                </div>
+              )}
+            </div>
+            <button
+              onClick={() => { resetOfferForm(); setShowCreateModal(true); }}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
+            >
+              <Plus className="w-5 h-5" />
+              Nowa oferta
+            </button>
+          </div>
         ) : (
           <button
             onClick={() => {
@@ -6992,6 +7723,8 @@ tr{page-break-inside:avoid;page-break-after:auto;}
       {selectedRequest && renderRequestDetail()}
       {showCreateModal && renderCreateModal()}
       {showImportFromEstimate && renderImportFromEstimateModal()}
+      {showImportFromFile && renderImportFromFileModal()}
+      {showFillTemplateModal && renderFillTemplateModal()}
 
       {/* Edit offer modal */}
       {showEditModal && editingOffer && (
@@ -7771,10 +8504,18 @@ tr{page-break-inside:avoid;page-break-after:auto;}
                           XLSX.utils.book_append_sheet(wb, ws, 'Oferta');
                           XLSX.writeFile(wb, `${selectedOffer?.number || 'oferta'}.xlsx`);
                         }}
-                        className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left hover:bg-slate-50 rounded-b-lg"
+                        className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left hover:bg-slate-50"
                       >
                         <FileSpreadsheet className="w-4 h-4 text-green-600" />
                         Pobierz Excel
+                      </button>
+                      <div className="border-t border-slate-100" />
+                      <button
+                        onClick={() => { setShowDownloadDropdown(false); setShowFillTemplateModal(true); }}
+                        className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-left hover:bg-slate-50 rounded-b-lg"
+                      >
+                        <Pencil className="w-4 h-4 text-purple-500" />
+                        Wypełnij szablon
                       </button>
                     </div>
                   )}

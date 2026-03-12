@@ -303,6 +303,9 @@ export const EstimatesPage: React.FC = () => {
   const [workTypes, setWorkTypes] = useState<{ id: string; code: string; name: string }[]>([]);
   const [selectedWorkTypes, setSelectedWorkTypes] = useState<string[]>([]);
   const [showWorkTypesDropdown, setShowWorkTypesDropdown] = useState(false);
+  const [showAddWorkType, setShowAddWorkType] = useState(false);
+  const [newWorkTypeCode, setNewWorkTypeCode] = useState('');
+  const [newWorkTypeName, setNewWorkTypeName] = useState('');
 
   // Object types and categories
   const [objectTypes, setObjectTypes] = useState<any[]>([]);
@@ -2456,21 +2459,31 @@ export const EstimatesPage: React.FC = () => {
                     <div className="col-span-2 relative">
                       <label className="block text-sm font-medium text-slate-700 mb-1">Rodzaj prac *</label>
                       <div className="relative">
-                        <button
-                          type="button"
-                          onClick={() => setShowWorkTypesDropdown(!showWorkTypesDropdown)}
-                          className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white text-left flex items-center justify-between"
-                        >
-                          <span className={selectedWorkTypes.length === 0 ? 'text-slate-400' : 'text-slate-900'}>
-                            {selectedWorkTypes.length === 0
-                              ? 'Wybierz rodzaj prac...'
-                              : workTypes
-                                  .filter(wt => selectedWorkTypes.includes(wt.id))
-                                  .map(wt => wt.code)
-                                  .join(', ')}
-                          </span>
-                          <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showWorkTypesDropdown ? 'rotate-180' : ''}`} />
-                        </button>
+                        <div className="flex gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setShowWorkTypesDropdown(!showWorkTypesDropdown)}
+                            className="flex-1 px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white text-left flex items-center justify-between"
+                          >
+                            <span className={selectedWorkTypes.length === 0 ? 'text-slate-400' : 'text-slate-900'}>
+                              {selectedWorkTypes.length === 0
+                                ? 'Wybierz rodzaj prac...'
+                                : workTypes
+                                    .filter(wt => selectedWorkTypes.includes(wt.id))
+                                    .map(wt => wt.code)
+                                    .join(', ')}
+                            </span>
+                            <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showWorkTypesDropdown ? 'rotate-180' : ''}`} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => { setShowAddWorkType(true); setShowWorkTypesDropdown(false); }}
+                            className="px-2 py-2 text-blue-600 border border-blue-200 bg-blue-50 rounded-lg hover:bg-blue-100 flex-shrink-0"
+                            title="Dodaj nowy rodzaj prac"
+                          >
+                            <Plus className="w-4 h-4" />
+                          </button>
+                        </div>
                         {showWorkTypesDropdown && (
                           <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg py-1">
                             {workTypes.map(wt => (
@@ -2496,6 +2509,71 @@ export const EstimatesPage: React.FC = () => {
                             {workTypes.length === 0 && (
                               <div className="px-3 py-2 text-sm text-slate-500">Brak typów prac</div>
                             )}
+                          </div>
+                        )}
+                        {showAddWorkType && (
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            <input
+                              type="text"
+                              value={newWorkTypeCode}
+                              onChange={e => setNewWorkTypeCode(e.target.value.toUpperCase())}
+                              placeholder="Kod (np. IE)"
+                              className="w-16 px-2 py-1.5 border border-slate-200 rounded-lg text-sm"
+                              autoFocus
+                            />
+                            <input
+                              type="text"
+                              value={newWorkTypeName}
+                              onChange={e => setNewWorkTypeName(e.target.value)}
+                              placeholder="Nazwa (np. Elektryka)"
+                              className="flex-1 min-w-[120px] px-2 py-1.5 border border-slate-200 rounded-lg text-sm"
+                              onKeyDown={async e => {
+                                if (e.key === 'Enter' && newWorkTypeCode.trim() && newWorkTypeName.trim()) {
+                                  const fullName = `${newWorkTypeCode.trim()} - ${newWorkTypeName.trim()}`;
+                                  const { data } = await supabase.from('kosztorys_work_types').insert({
+                                    code: newWorkTypeCode.trim(),
+                                    name: fullName,
+                                    category: newWorkTypeCode.trim(),
+                                    company_id: currentUser?.company_id,
+                                    is_active: true
+                                  }).select('id, code, name').single();
+                                  if (data) {
+                                    setWorkTypes(prev => [...prev, data]);
+                                    setSelectedWorkTypes(prev => [...prev, data.id]);
+                                  }
+                                  setNewWorkTypeCode('');
+                                  setNewWorkTypeName('');
+                                  setShowAddWorkType(false);
+                                }
+                                if (e.key === 'Escape') { setShowAddWorkType(false); setNewWorkTypeCode(''); setNewWorkTypeName(''); }
+                              }}
+                            />
+                            <button
+                              onClick={async () => {
+                                if (newWorkTypeCode.trim() && newWorkTypeName.trim()) {
+                                  const fullName = `${newWorkTypeCode.trim()} - ${newWorkTypeName.trim()}`;
+                                  const { data } = await supabase.from('kosztorys_work_types').insert({
+                                    code: newWorkTypeCode.trim(),
+                                    name: fullName,
+                                    category: newWorkTypeCode.trim(),
+                                    company_id: currentUser?.company_id,
+                                    is_active: true
+                                  }).select('id, code, name').single();
+                                  if (data) {
+                                    setWorkTypes(prev => [...prev, data]);
+                                    setSelectedWorkTypes(prev => [...prev, data.id]);
+                                  }
+                                }
+                                setNewWorkTypeCode('');
+                                setNewWorkTypeName('');
+                                setShowAddWorkType(false);
+                              }}
+                              className="px-2 py-1.5 bg-blue-600 text-white rounded-lg text-xs"
+                            >OK</button>
+                            <button
+                              onClick={() => { setShowAddWorkType(false); setNewWorkTypeCode(''); setNewWorkTypeName(''); }}
+                              className="px-2 py-1.5 text-slate-600 border border-slate-200 rounded-lg text-xs"
+                            >&#10005;</button>
                           </div>
                         )}
                       </div>
@@ -3997,21 +4075,31 @@ export const EstimatesPage: React.FC = () => {
                   <div className="col-span-2 relative">
                     <label className="block text-sm font-medium text-slate-700 mb-1">Rodzaj prac *</label>
                     <div className="relative">
-                      <button
-                        type="button"
-                        onClick={() => setShowWorkTypesDropdown(!showWorkTypesDropdown)}
-                        className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white text-left flex items-center justify-between"
-                      >
-                        <span className={selectedWorkTypes.length === 0 ? 'text-slate-400' : 'text-slate-900'}>
-                          {selectedWorkTypes.length === 0
-                            ? 'Wybierz rodzaj prac...'
-                            : workTypes
-                                .filter(wt => selectedWorkTypes.includes(wt.id))
-                                .map(wt => wt.code)
-                                .join(', ')}
-                        </span>
-                        <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showWorkTypesDropdown ? 'rotate-180' : ''}`} />
-                      </button>
+                      <div className="flex gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setShowWorkTypesDropdown(!showWorkTypesDropdown)}
+                          className="flex-1 px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white text-left flex items-center justify-between"
+                        >
+                          <span className={selectedWorkTypes.length === 0 ? 'text-slate-400' : 'text-slate-900'}>
+                            {selectedWorkTypes.length === 0
+                              ? 'Wybierz rodzaj prac...'
+                              : workTypes
+                                  .filter(wt => selectedWorkTypes.includes(wt.id))
+                                  .map(wt => wt.code)
+                                  .join(', ')}
+                          </span>
+                          <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showWorkTypesDropdown ? 'rotate-180' : ''}`} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setShowAddWorkType(true); setShowWorkTypesDropdown(false); }}
+                          className="px-2 py-2 text-blue-600 border border-blue-200 bg-blue-50 rounded-lg hover:bg-blue-100 flex-shrink-0"
+                          title="Dodaj nowy rodzaj prac"
+                        >
+                          <Plus className="w-4 h-4" />
+                        </button>
+                      </div>
                       {showWorkTypesDropdown && (
                         <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg py-1">
                           {workTypes.map(wt => (
@@ -4037,6 +4125,71 @@ export const EstimatesPage: React.FC = () => {
                           {workTypes.length === 0 && (
                             <div className="px-3 py-2 text-sm text-slate-500">Brak typów prac</div>
                           )}
+                        </div>
+                      )}
+                      {showAddWorkType && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          <input
+                            type="text"
+                            value={newWorkTypeCode}
+                            onChange={e => setNewWorkTypeCode(e.target.value.toUpperCase())}
+                            placeholder="Kod (np. IE)"
+                            className="w-16 px-2 py-1.5 border border-slate-200 rounded-lg text-sm"
+                            autoFocus
+                          />
+                          <input
+                            type="text"
+                            value={newWorkTypeName}
+                            onChange={e => setNewWorkTypeName(e.target.value)}
+                            placeholder="Nazwa (np. Elektryka)"
+                            className="flex-1 min-w-[120px] px-2 py-1.5 border border-slate-200 rounded-lg text-sm"
+                            onKeyDown={async e => {
+                              if (e.key === 'Enter' && newWorkTypeCode.trim() && newWorkTypeName.trim()) {
+                                const fullName = `${newWorkTypeCode.trim()} - ${newWorkTypeName.trim()}`;
+                                const { data } = await supabase.from('kosztorys_work_types').insert({
+                                  code: newWorkTypeCode.trim(),
+                                  name: fullName,
+                                  category: newWorkTypeCode.trim(),
+                                  company_id: currentUser?.company_id,
+                                  is_active: true
+                                }).select('id, code, name').single();
+                                if (data) {
+                                  setWorkTypes(prev => [...prev, data]);
+                                  setSelectedWorkTypes(prev => [...prev, data.id]);
+                                }
+                                setNewWorkTypeCode('');
+                                setNewWorkTypeName('');
+                                setShowAddWorkType(false);
+                              }
+                              if (e.key === 'Escape') { setShowAddWorkType(false); setNewWorkTypeCode(''); setNewWorkTypeName(''); }
+                            }}
+                          />
+                          <button
+                            onClick={async () => {
+                              if (newWorkTypeCode.trim() && newWorkTypeName.trim()) {
+                                const fullName = `${newWorkTypeCode.trim()} - ${newWorkTypeName.trim()}`;
+                                const { data } = await supabase.from('kosztorys_work_types').insert({
+                                  code: newWorkTypeCode.trim(),
+                                  name: fullName,
+                                  category: newWorkTypeCode.trim(),
+                                  company_id: currentUser?.company_id,
+                                  is_active: true
+                                }).select('id, code, name').single();
+                                if (data) {
+                                  setWorkTypes(prev => [...prev, data]);
+                                  setSelectedWorkTypes(prev => [...prev, data.id]);
+                                }
+                              }
+                              setNewWorkTypeCode('');
+                              setNewWorkTypeName('');
+                              setShowAddWorkType(false);
+                            }}
+                            className="px-2 py-1.5 bg-blue-600 text-white rounded-lg text-xs"
+                          >OK</button>
+                          <button
+                            onClick={() => { setShowAddWorkType(false); setNewWorkTypeCode(''); setNewWorkTypeName(''); }}
+                            className="px-2 py-1.5 text-slate-600 border border-slate-200 rounded-lg text-xs"
+                          >&#10005;</button>
                         </div>
                       )}
                     </div>
