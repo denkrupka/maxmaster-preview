@@ -2758,6 +2758,8 @@ export interface DocumentRecord {
   created_at: string;
   updated_at: string;
   created_by: string;
+  current_version?: number;
+  approval_status?: string;
   /** Joined template info (populated by select) */
   document_templates?: Pick<DocumentTemplate, 'name' | 'type' | 'content' | 'variables'>;
 }

@@ -10,6 +10,9 @@ import {
   fetchDocuments, fetchDocument, createDocument, updateDocument,
   getAutofillData, applyAutofill, renderTemplate, generatePDF,
   fetchDocumentSettings, updateDocumentSettings, generateDocumentNumber,
+  getDocumentVersions, restoreDocumentVersion, getDocumentAuditLog, logDocumentEvent,
+  createPublicLink, getPublicLinks, deactivatePublicLink,
+  createSignatureRequest, getSignatureRequests,
 } from '../../lib/documentService';
 import type {
   DocumentTemplate, DocumentRecord, TemplateVariable,
@@ -759,6 +762,188 @@ const SettingsTab = ({ companyId }: { companyId: string }) => {
   );
 };
 
+// ── Document Details Panel ────────────────────────────────────────────────────
+
+function DocumentDetailsPanel({ doc, companyId, userId, onClose }: {
+  doc: DocumentRecord; companyId: string; userId: string; onClose: () => void;
+}) {
+  const [detailTab, setDetailTab] = useState<'versions'|'signatures'|'audit'|'links'>('versions');
+  const [versions, setVersions] = useState<any[]>([]);
+  const [signatures, setSignatures] = useState<any[]>([]);
+  const [auditLog, setAuditLog] = useState<any[]>([]);
+  const [publicLinks, setPublicLinks] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => { loadData(); }, [detailTab, doc.id]);
+
+  async function loadData() {
+    setLoading(true);
+    try {
+      if (detailTab === 'versions') setVersions(await getDocumentVersions(doc.id));
+      else if (detailTab === 'signatures') setSignatures(await getSignatureRequests(doc.id));
+      else if (detailTab === 'audit') setAuditLog(await getDocumentAuditLog(doc.id));
+      else if (detailTab === 'links') setPublicLinks(await getPublicLinks(doc.id));
+    } finally { setLoading(false); }
+  }
+
+  const tabs = [
+    { key: 'versions' as const, label: 'Wersje', icon: '📋' },
+    { key: 'signatures' as const, label: 'Podpisy', icon: '✍️' },
+    { key: 'audit' as const, label: 'Historia', icon: '📜' },
+    { key: 'links' as const, label: 'Linki', icon: '🔗' },
+  ];
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" role="dialog">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col">
+        <div className="flex items-center justify-between p-4 border-b">
+          <div>
+            <h3 className="font-semibold text-lg">{doc.name}</h3>
+            <p className="text-xs text-slate-500">{doc.number} · v{doc.current_version || 1}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={async () => {
+              await logDocumentEvent(doc.id, 'viewed');
+            }} className="text-xs px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg" aria-label="Pobierz PDF">
+              📄 PDF
+            </button>
+            <button onClick={async () => {
+              const link = await createPublicLink(doc.id, companyId, userId, { expiresInDays: 7 });
+              navigator.clipboard.writeText(link.url);
+              alert('Link skopiowany do schowka');
+            }} className="text-xs px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg" aria-label="Udostępnij">
+              🔗 Udostępnij
+            </button>
+            <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-lg" aria-label="Zamknij">✕</button>
+          </div>
+        </div>
+
+        <div className="flex border-b px-4 gap-1">
+          {tabs.map(t => (
+            <button key={t.key} onClick={() => setDetailTab(t.key)}
+              className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors ${
+                detailTab === t.key ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
+              }`}>
+              {t.icon} {t.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4">
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="animate-spin h-6 w-6 text-blue-500" />
+            </div>
+          ) : detailTab === 'versions' ? (
+            <div className="space-y-3">
+              {versions.length === 0 ? (
+                <p className="text-sm text-slate-400 text-center py-8">Brak wersji</p>
+              ) : versions.map(v => (
+                <div key={v.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+                  <div>
+                    <p className="text-sm font-medium">Wersja {v.version_number}</p>
+                    <p className="text-xs text-slate-500">{new Date(v.created_at).toLocaleString('pl-PL')}</p>
+                    {v.change_summary && <p className="text-xs text-slate-400 mt-0.5">{v.change_summary}</p>}
+                  </div>
+                  <button onClick={async () => {
+                    if (confirm(`Przywrócić wersję ${v.version_number}?`)) {
+                      await restoreDocumentVersion(doc.id, v.version_number, userId);
+                      loadData();
+                    }
+                  }} className="text-xs text-blue-600 hover:underline">Przywróć</button>
+                </div>
+              ))}
+            </div>
+          ) : detailTab === 'signatures' ? (
+            <div className="space-y-3">
+              <div className="mb-4 p-3 bg-blue-50 rounded-lg space-y-2">
+                <p className="text-sm font-medium text-blue-700">Wyślij zapytanie o podpis</p>
+                <div className="flex gap-2">
+                  <input type="text" placeholder="Imię i nazwisko" id="signer-name"
+                    className="flex-1 px-3 py-1.5 text-sm border rounded-lg" />
+                  <input type="email" placeholder="Email" id="signer-email"
+                    className="flex-1 px-3 py-1.5 text-sm border rounded-lg" />
+                  <button onClick={async () => {
+                    const nameEl = document.getElementById('signer-name') as HTMLInputElement;
+                    const emailEl = document.getElementById('signer-email') as HTMLInputElement;
+                    if (!nameEl.value || !emailEl.value) return;
+                    await createSignatureRequest(doc.id, companyId, userId, [
+                      { name: nameEl.value, email: emailEl.value }
+                    ]);
+                    nameEl.value = ''; emailEl.value = '';
+                    loadData();
+                  }} className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700">
+                    Wyślij
+                  </button>
+                </div>
+              </div>
+              {signatures.length === 0 ? (
+                <p className="text-sm text-slate-400 text-center py-8">Brak zapytań o podpis</p>
+              ) : signatures.map(s => (
+                <div key={s.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+                  <div>
+                    <p className="text-sm font-medium">{s.signer_name}</p>
+                    <p className="text-xs text-slate-500">{s.signer_email}</p>
+                  </div>
+                  <span className={`text-xs px-2 py-1 rounded-full ${
+                    s.status === 'signed' ? 'bg-green-100 text-green-700' :
+                    s.status === 'declined' ? 'bg-red-100 text-red-700' :
+                    s.status === 'expired' ? 'bg-slate-100 text-slate-500' :
+                    'bg-yellow-100 text-yellow-700'
+                  }`}>{s.status === 'signed' ? 'Podpisano' : s.status === 'declined' ? 'Odrzucono' : s.status === 'expired' ? 'Wygasło' : 'Oczekuje'}</span>
+                </div>
+              ))}
+            </div>
+          ) : detailTab === 'audit' ? (
+            <div className="space-y-2">
+              {auditLog.length === 0 ? (
+                <p className="text-sm text-slate-400 text-center py-8">Brak historii</p>
+              ) : auditLog.map(a => (
+                <div key={a.id} className="flex items-start gap-3 p-2 text-xs">
+                  <span className="text-slate-400 whitespace-nowrap">{new Date(a.created_at).toLocaleString('pl-PL')}</span>
+                  <span className="text-slate-600">{a.actor_name || 'System'}</span>
+                  <span className="text-slate-800 font-medium">{a.action.replace(/_/g, ' ')}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <button onClick={async () => {
+                const link = await createPublicLink(doc.id, companyId, userId, { expiresInDays: 7 });
+                await loadData();
+                navigator.clipboard.writeText(link.url);
+                alert('Link skopiowany do schowka');
+              }} className="text-sm text-blue-600 hover:underline mb-3">+ Utwórz nowy link (7 dni)</button>
+              {publicLinks.length === 0 ? (
+                <p className="text-sm text-slate-400 text-center py-8">Brak linków publicznych</p>
+              ) : publicLinks.map(l => (
+                <div key={l.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+                  <div>
+                    <p className="text-xs font-mono text-slate-600 truncate max-w-[300px]">{l.token}</p>
+                    <p className="text-xs text-slate-400">
+                      {l.expires_at ? `Wygasa: ${new Date(l.expires_at).toLocaleDateString('pl-PL')}` : 'Bez limitu czasu'}
+                      {l.max_views ? ` · ${l.current_views}/${l.max_views} wyświetleń` : ''}
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <span className={`text-xs px-2 py-1 rounded-full ${l.is_active ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}>
+                      {l.is_active ? 'Aktywny' : 'Nieaktywny'}
+                    </span>
+                    {l.is_active && (
+                      <button onClick={async () => { await deactivatePublicLink(l.id); loadData(); }}
+                        className="text-xs text-red-500 hover:underline">Dezaktywuj</button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export const DMSPage: React.FC = () => {
@@ -784,6 +969,7 @@ export const DMSPage: React.FC = () => {
   const [docStatus, setDocStatus] = useState<DocumentStatus | ''>('');
   const [showDocWizard, setShowDocWizard] = useState(false);
   const [viewDocId, setViewDocId] = useState<string | null>(null);
+  const [selectedDoc, setSelectedDoc] = useState<DocumentRecord | null>(null);
 
   // Shared
   const [contractors, setContractors] = useState<any[]>([]);
@@ -975,7 +1161,7 @@ export const DMSPage: React.FC = () => {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredDocuments.map(d => (
-                    <tr key={d.id} className="hover:bg-slate-50 transition-colors">
+                    <tr key={d.id} className="hover:bg-slate-50 transition-colors cursor-pointer" onClick={() => setSelectedDoc(d)}>
                       <td className="px-4 py-3 hidden sm:table-cell text-slate-400 font-mono text-xs">{d.number ?? '—'}</td>
                       <td className="px-4 py-3 font-medium text-slate-800 max-w-xs truncate">{d.name}</td>
                       <td className="px-4 py-3 hidden md:table-cell text-slate-500">
@@ -1029,6 +1215,14 @@ export const DMSPage: React.FC = () => {
           docId={viewDocId}
           onClose={() => setViewDocId(null)}
           onRefresh={loadDocuments}
+        />
+      )}
+      {selectedDoc && (
+        <DocumentDetailsPanel
+          doc={selectedDoc}
+          companyId={companyId}
+          userId={userId}
+          onClose={() => setSelectedDoc(null)}
         />
       )}
     </div>

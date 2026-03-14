@@ -522,3 +522,237 @@ export async function generatePDF(documentId: string): Promise<string> {
 
   return data.url;
 }
+
+// =====================================================
+// DOCUMENT VERSIONING
+// =====================================================
+
+/**
+ * Create a new version of a document.
+ * Call this on every save to maintain version history.
+ */
+export async function createDocumentVersion(
+  documentId: string,
+  companyId: string,
+  data: Record<string, any>,
+  pdfPath: string | null,
+  changeSummary: string,
+  userId: string,
+): Promise<{ version_number: number }> {
+  // 1. Get current version from documents
+  const { data: doc, error: docError } = await supabase
+    .from('documents')
+    .select('current_version')
+    .eq('id', documentId)
+    .single();
+
+  if (docError) throw docError;
+
+  const currentVersion = doc?.current_version ?? 0;
+  const newVersion = currentVersion + 1;
+
+  // 2. Insert into document_versions
+  const { error: insertError } = await supabase
+    .from('document_versions')
+    .insert({
+      document_id: documentId,
+      company_id: companyId,
+      version_number: newVersion,
+      data,
+      pdf_path: pdfPath,
+      change_summary: changeSummary,
+      created_by: userId,
+    });
+
+  if (insertError) throw insertError;
+
+  // 3. Update current_version on the document
+  const { error: updateError } = await supabase
+    .from('documents')
+    .update({ current_version: newVersion, updated_at: new Date().toISOString() })
+    .eq('id', documentId);
+
+  if (updateError) throw updateError;
+
+  return { version_number: newVersion };
+}
+
+/**
+ * Get all versions of a document, newest first.
+ */
+export async function getDocumentVersions(documentId: string): Promise<any[]> {
+  const { data } = await supabase
+    .from('document_versions')
+    .select('*')
+    .eq('document_id', documentId)
+    .order('version_number', { ascending: false });
+  return data || [];
+}
+
+/**
+ * Restore a previous version by copying its data into a new version.
+ */
+export async function restoreDocumentVersion(
+  documentId: string,
+  versionNumber: number,
+  userId: string,
+): Promise<void> {
+  // 1. Get data from the target version
+  const { data: version, error: versionError } = await supabase
+    .from('document_versions')
+    .select('data, company_id')
+    .eq('document_id', documentId)
+    .eq('version_number', versionNumber)
+    .single();
+
+  if (versionError) throw versionError;
+  if (!version) throw new Error(`Version ${versionNumber} not found`);
+
+  // 2. Create a new version with the restored data
+  await createDocumentVersion(
+    documentId,
+    version.company_id,
+    version.data,
+    null,
+    `Przywrócono wersję ${versionNumber}`,
+    userId,
+  );
+
+  // 3. Update document data to the restored version
+  const { error: updateError } = await supabase
+    .from('documents')
+    .update({ data: version.data, updated_at: new Date().toISOString() })
+    .eq('id', documentId);
+
+  if (updateError) throw updateError;
+}
+
+// =====================================================
+// AUDIT LOG
+// =====================================================
+
+/**
+ * Get audit log entries for a document, newest first (max 100).
+ */
+export async function getDocumentAuditLog(documentId: string): Promise<any[]> {
+  const { data } = await supabase
+    .from('document_audit_log')
+    .select('*')
+    .eq('document_id', documentId)
+    .order('created_at', { ascending: false })
+    .limit(100);
+  return data || [];
+}
+
+/**
+ * Log a document event via Edge Function (SECURITY DEFINER).
+ */
+export async function logDocumentEvent(
+  documentId: string,
+  action: string,
+  metadata?: Record<string, any>,
+): Promise<void> {
+  await supabase.functions.invoke('log-document-event', {
+    body: { document_id: documentId, action, metadata: metadata || {} },
+  });
+}
+
+// =====================================================
+// PUBLIC LINKS
+// =====================================================
+
+/**
+ * Create a public sharing link for a document.
+ */
+export async function createPublicLink(
+  documentId: string,
+  companyId: string,
+  userId: string,
+  options?: { expiresInDays?: number; maxViews?: number; pin?: string },
+): Promise<{ token: string; url: string }> {
+  const { data, error } = await supabase
+    .from('document_public_links')
+    .insert({
+      company_id: companyId,
+      document_id: documentId,
+      expires_at: options?.expiresInDays
+        ? new Date(Date.now() + options.expiresInDays * 86400000).toISOString()
+        : null,
+      max_views: options?.maxViews || null,
+      pin_hash: options?.pin || null, // hashed server-side via Edge Function
+      created_by: userId,
+    })
+    .select('token')
+    .single();
+
+  if (error) throw error;
+  return {
+    token: data.token,
+    url: `${window.location.origin}/public/doc/${data.token}`,
+  };
+}
+
+/**
+ * Get all public links for a document, newest first.
+ */
+export async function getPublicLinks(documentId: string): Promise<any[]> {
+  const { data } = await supabase
+    .from('document_public_links')
+    .select('*')
+    .eq('document_id', documentId)
+    .order('created_at', { ascending: false });
+  return data || [];
+}
+
+/**
+ * Deactivate a public link.
+ */
+export async function deactivatePublicLink(linkId: string): Promise<void> {
+  await supabase
+    .from('document_public_links')
+    .update({ is_active: false })
+    .eq('id', linkId);
+}
+
+// =====================================================
+// SIGNATURE REQUESTS
+// =====================================================
+
+/**
+ * Create signature requests for one or more signers.
+ */
+export async function createSignatureRequest(
+  documentId: string,
+  companyId: string,
+  userId: string,
+  signers: Array<{ name: string; email: string; message?: string }>,
+): Promise<any[]> {
+  const requests = signers.map((s) => ({
+    company_id: companyId,
+    document_id: documentId,
+    signer_name: s.name,
+    signer_email: s.email,
+    message: s.message || null,
+    created_by: userId,
+  }));
+
+  const { data, error } = await supabase
+    .from('signature_requests')
+    .insert(requests)
+    .select();
+
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * Get all signature requests for a document, newest first.
+ */
+export async function getSignatureRequests(documentId: string): Promise<any[]> {
+  const { data } = await supabase
+    .from('signature_requests')
+    .select('*')
+    .eq('document_id', documentId)
+    .order('created_at', { ascending: false });
+  return data || [];
+}
