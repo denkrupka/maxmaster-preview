@@ -3684,6 +3684,8 @@ export interface NumberingConfig {
   separator: string;
   digits: number;
   reset: 'yearly' | 'monthly' | 'never';
+  includeProjectCode: boolean;
+  includeMonth: boolean;
 }
 
 export interface DocumentSettings {

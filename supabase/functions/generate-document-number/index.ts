@@ -1,7 +1,24 @@
 // Edge Function: generate-document-number
-// Вызывается при создании документа для получения автоинкрементного номера
-// Формат: {PREFIX}/{YEAR}/{NUMBER:03d} → CON/2026/001
-// Используем service_role для записи в document_numbering
+// Генерирует автоинкрементный номер документа по настройкам компании.
+//
+// Принимает: { template_type, project_id? }
+//
+// Логика сборки номера:
+//   parts = [prefix]
+//   if (includeProjectCode && project_id) {
+//     parts.push(projectCode)          // код объекта УЖЕ содержит год
+//     if (includeMonth) parts.push(MM)
+//   } else {
+//     parts.push(YYYY)
+//     if (includeMonth) parts.push(MM)
+//   }
+//   parts.push(paddedNumber)
+//
+// Примеры:
+//   Базовый:          CON/2026/001
+//   + месяц:          CON/2026/03/001
+//   + код объекта:    CON/ZD-II/001
+//   + оба:            CON/ZD-II/03/001
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { corsHeaders } from '../_shared/cors.ts'
@@ -19,7 +36,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Авторизация: проверить JWT из заголовка
+    // --- Auth ---
     const authHeader = req.headers.get('Authorization')
     if (!authHeader) {
       return new Response(JSON.stringify({ error: 'Missing authorization' }), {
@@ -27,14 +44,12 @@ Deno.serve(async (req) => {
       })
     }
 
-    // Создаём клиент с JWT пользователя для проверки доступа
     const userClient = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_ANON_KEY')!,
       { global: { headers: { Authorization: authHeader } } }
     )
-    
-    // Получаем данные пользователя
+
     const { data: { user }, error: userError } = await userClient.auth.getUser()
     if (userError || !user) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -42,28 +57,59 @@ Deno.serve(async (req) => {
       })
     }
 
-    // Получаем company_id пользователя
-    const { data: userData } = await userClient.from('users').select('company_id').eq('id', user.id).single()
+    const { data: userData } = await userClient
+      .from('users')
+      .select('company_id')
+      .eq('id', user.id)
+      .single()
+
     if (!userData?.company_id) {
       return new Response(JSON.stringify({ error: 'No company' }), {
         status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       })
     }
 
-    const { template_type } = await req.json()
-    const prefix = TYPE_PREFIX[template_type] || 'DOC'
-    const year = new Date().getFullYear()
+    const { template_type, project_id } = await req.json()
     const companyId = userData.company_id
+    const now = new Date()
+    const year = now.getFullYear()
+    const month = String(now.getMonth() + 1).padStart(2, '0')
 
-    // Service role client для записи в document_numbering
+    // --- Admin client ---
     const adminClient = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     )
 
-    // Атомарный инкремент через raw SQL — без race condition
-    // Сначала пробуем UPDATE ... RETURNING
-    const { data: updated, error: updateErr } = await adminClient.rpc('exec_sql', {
+    // --- Загружаем настройки нумерации ---
+    const { data: settingsRow } = await adminClient
+      .from('document_settings')
+      .select('numbering_config')
+      .eq('company_id', companyId)
+      .single()
+
+    const allConfig = settingsRow?.numbering_config as Record<string, any> | null
+    const typeConfig = allConfig?.[template_type] ?? null
+
+    const prefix: string = typeConfig?.prefix ?? TYPE_PREFIX[template_type] ?? 'DOC'
+    const separator: string = typeConfig?.separator ?? '/'
+    const digits: number = typeConfig?.digits ?? 3
+    const includeProjectCode: boolean = typeConfig?.includeProjectCode === true
+    const includeMonth: boolean = typeConfig?.includeMonth === true
+
+    // --- Код проекта (если нужен) ---
+    let projectCode: string | null = null
+    if (includeProjectCode && project_id) {
+      const { data: projectData } = await adminClient
+        .from('projects')
+        .select('code')
+        .eq('id', project_id)
+        .single()
+      projectCode = projectData?.code ?? null
+    }
+
+    // --- Атомарный инкремент ---
+    const { data: updated } = await adminClient.rpc('exec_sql', {
       query: `UPDATE document_numbering
               SET last_number = last_number + 1
               WHERE company_id = '${companyId}' AND prefix = '${prefix}' AND year = ${year}
@@ -75,7 +121,7 @@ Deno.serve(async (req) => {
     if (updated?.last_number) {
       nextNumber = updated.last_number
     } else {
-      // Если RPC не доступен — fallback на стандартный upsert с select-for-update
+      // Fallback: upsert без RPC
       const { data: existing } = await adminClient
         .from('document_numbering')
         .select('id, last_number')
@@ -98,14 +144,29 @@ Deno.serve(async (req) => {
       }
     }
 
-    const number = `${prefix}/${year}/${String(nextNumber).padStart(3, '0')}`
+    // --- Сборка номера ---
+    const parts: string[] = [prefix]
+
+    if (projectCode) {
+      // Код объекта УЖЕ содержит год → НЕ добавляем year отдельно
+      parts.push(projectCode)
+      if (includeMonth) parts.push(month)
+    } else {
+      // Без кода объекта → год обязателен
+      parts.push(String(year))
+      if (includeMonth) parts.push(month)
+    }
+
+    parts.push(String(nextNumber).padStart(digits, '0'))
+
+    const number = parts.join(separator)
 
     return new Response(JSON.stringify({ number }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     })
 
   } catch (err) {
-    return new Response(JSON.stringify({ error: err.message }), {
+    return new Response(JSON.stringify({ error: (err as Error).message }), {
       status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     })
   }

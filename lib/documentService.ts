@@ -432,9 +432,9 @@ export async function removeContractorCategory(
  * and falls back to reading the current counter from
  * document_numbering (SELECT only — no increment on the client).
  */
-export async function generateDocumentNumber(companyId: string, templateType: string): Promise<string> {
+export async function generateDocumentNumber(companyId: string, templateType: string, projectId?: string): Promise<string> {
   const { data, error } = await supabase.functions.invoke('generate-document-number', {
-    body: { template_type: templateType }
+    body: { template_type: templateType, project_id: projectId }
   });
   if (error || !data?.number) {
     // Fallback: DRAFT номер

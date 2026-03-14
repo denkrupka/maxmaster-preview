@@ -9,7 +9,7 @@ import {
   fetchTemplates, fetchTemplate, createTemplate, updateTemplate, deleteTemplate,
   fetchDocuments, fetchDocument, createDocument, updateDocument,
   getAutofillData, applyAutofill, renderTemplate, generatePDF,
-  fetchDocumentSettings, updateDocumentSettings,
+  fetchDocumentSettings, updateDocumentSettings, generateDocumentNumber,
 } from '../../lib/documentService';
 import type {
   DocumentTemplate, DocumentRecord, TemplateVariable,
@@ -303,9 +303,11 @@ const DocumentWizard = ({
     setSaving(true); setErr('');
     try {
       const docName = formData['contract_name'] || formData['document_name'] || `${TYPE_LABELS[tpl.type]} — ${tpl.name}`;
+      const number = await generateDocumentNumber(companyId, tpl.type, projectId || undefined);
       const inp: CreateDocumentInput = {
         company_id: companyId, template_id: templateId, created_by: userId,
         name: docName, status, data: formData,
+        number,
         contractor_id: contractorId || undefined,
         project_id: projectId || undefined,
       };
@@ -559,20 +561,24 @@ const DOC_TYPE_LABELS: Record<DocumentTemplateType, string> = {
 };
 
 const DEFAULT_NUMBERING: Record<DocumentTemplateType, NumberingConfig> = {
-  contract:  { prefix: 'CON', separator: '/', digits: 3, reset: 'yearly' },
-  protocol:  { prefix: 'PRO', separator: '/', digits: 3, reset: 'yearly' },
-  annex:     { prefix: 'ANX', separator: '/', digits: 3, reset: 'yearly' },
-  other:     { prefix: 'DOC', separator: '/', digits: 3, reset: 'yearly' },
+  contract:  { prefix: 'CON', separator: '/', digits: 3, reset: 'yearly', includeProjectCode: false, includeMonth: false },
+  protocol:  { prefix: 'PRO', separator: '/', digits: 3, reset: 'yearly', includeProjectCode: false, includeMonth: false },
+  annex:     { prefix: 'ANX', separator: '/', digits: 3, reset: 'yearly', includeProjectCode: false, includeMonth: false },
+  other:     { prefix: 'DOC', separator: '/', digits: 3, reset: 'yearly', includeProjectCode: false, includeMonth: false },
 };
 
 const buildPreview = (cfg: NumberingConfig): string => {
-  const year  = new Date().getFullYear();
-  const month = String(new Date().getMonth() + 1).padStart(2, '0');
-  const num   = String(1).padStart(cfg.digits, '0');
-  const sep   = cfg.separator;
-  if (cfg.reset === 'monthly') return `${cfg.prefix}${sep}${year}${sep}${month}${sep}${num}`;
-  if (cfg.reset === 'never')   return `${cfg.prefix}${sep}${num}`;
-  return `${cfg.prefix}${sep}${year}${sep}${num}`;
+  const num = '1'.padStart(cfg.digits, '0');
+  const parts: string[] = [cfg.prefix];
+  if (cfg.includeProjectCode) {
+    parts.push('ZD-II'); // пример кода объекта (уже содержит год)
+    if (cfg.includeMonth) parts.push('03');
+  } else {
+    parts.push('2026');
+    if (cfg.includeMonth) parts.push('03');
+  }
+  parts.push(num);
+  return parts.join(cfg.separator);
 };
 
 const SettingsTab = ({ companyId }: { companyId: string }) => {
@@ -595,7 +601,7 @@ const SettingsTab = ({ companyId }: { companyId: string }) => {
   const updateField = (
     type: DocumentTemplateType,
     field: keyof NumberingConfig,
-    value: string | number,
+    value: string | number | boolean,
   ) => {
     setNumbering(prev => ({
       ...prev,
@@ -704,6 +710,30 @@ const SettingsTab = ({ companyId }: { companyId: string }) => {
                     <option value="never">nigdy</option>
                   </select>
                 </div>
+              </div>
+
+              {/* Include month checkbox */}
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id={`${type}-month`}
+                  checked={cfg.includeMonth || false}
+                  onChange={e => updateField(type, 'includeMonth', e.target.checked)}
+                  className="rounded border-slate-300 text-blue-600"
+                />
+                <label htmlFor={`${type}-month`} className="text-xs text-slate-500">Dołącz miesiąc</label>
+              </div>
+
+              {/* Include project code checkbox */}
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id={`${type}-project`}
+                  checked={cfg.includeProjectCode || false}
+                  onChange={e => updateField(type, 'includeProjectCode', e.target.checked)}
+                  className="rounded border-slate-300 text-blue-600"
+                />
+                <label htmlFor={`${type}-project`} className="text-xs text-slate-500">Dołącz kod obiektu</label>
               </div>
 
               {/* Preview */}
