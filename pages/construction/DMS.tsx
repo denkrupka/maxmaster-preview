@@ -454,7 +454,7 @@ const DocumentWizard = ({
                   if (step === 1) { handleStep1Next(); return; }
                   if (step === 2) { handleStep2Next(); return; }
                 }}
-                disabled={stepLoading}
+                disabled={stepLoading || (step === 1 && !templateId) || (step === 2 && !!tpl && tpl.variables.some(v => v.source === 'manual' && !formData[v.key]))}
                 className="flex items-center gap-2 px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-60">
                 {stepLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                 Dalej <ChevronRight className="w-4 h-4" />
@@ -763,6 +763,26 @@ const SettingsTab = ({ companyId }: { companyId: string }) => {
     </div>
   );
 };
+
+// ── Error Boundary ───────────────────────────────────────────────────────────
+
+class DocumentsErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: string }> {
+  constructor(props: any) { super(props); this.state = { hasError: false, error: '' }; }
+  static getDerivedStateFromError(error: Error) { return { hasError: true, error: error.message }; }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex flex-col items-center justify-center py-20 text-slate-500">
+          <p className="text-lg font-medium mb-2">Coś poszło nie tak</p>
+          <p className="text-sm mb-4">{this.state.error}</p>
+          <button onClick={() => this.setState({ hasError: false, error: '' })}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">Spróbuj ponownie</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
 
@@ -1090,6 +1110,8 @@ export const DMSPage: React.FC = () => {
   const [sortField, setSortField] = useState<'name'|'created_at'|'number'>('created_at');
   const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 20;
 
   // Shared
   const [contractors, setContractors] = useState<any[]>([]);
@@ -1163,7 +1185,11 @@ export const DMSPage: React.FC = () => {
     });
   }, [documents, searchQuery, filterType, filterStatus, sortField, sortDir]);
 
+  const totalPages = Math.ceil(filteredDocuments.length / PAGE_SIZE);
+  const paginatedDocuments = filteredDocuments.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
   return (
+    <DocumentsErrorBoundary>
     <div className="p-4 sm:p-6 space-y-6 font-[Inter,sans-serif]">
       {/* Page header */}
       <div className="flex items-center justify-between">
@@ -1292,10 +1318,10 @@ export const DMSPage: React.FC = () => {
           <div className="flex flex-wrap gap-2 mb-4">
             <div className="relative flex-1 min-w-[200px]">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-              <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+              <input type="text" value={searchQuery} onChange={e => { setSearchQuery(e.target.value); setPage(1); }}
                 placeholder="Szukaj dokumentu..." className="w-full pl-10 pr-3 py-2 text-sm border rounded-lg" />
             </div>
-            <select value={filterType} onChange={e => setFilterType(e.target.value)}
+            <select value={filterType} onChange={e => { setFilterType(e.target.value); setPage(1); }}
               className="px-3 py-2 text-sm border rounded-lg bg-white">
               <option value="all">Wszystkie typy</option>
               <option value="contract">Umowy</option>
@@ -1303,7 +1329,7 @@ export const DMSPage: React.FC = () => {
               <option value="annex">Aneksy</option>
               <option value="other">Inne</option>
             </select>
-            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
+            <select value={filterStatus} onChange={e => { setFilterStatus(e.target.value); setPage(1); }}
               className="px-3 py-2 text-sm border rounded-lg bg-white">
               <option value="all">Wszystkie statusy</option>
               <option value="draft">Szkice</option>
@@ -1318,7 +1344,13 @@ export const DMSPage: React.FC = () => {
             </button>
           </div>
 
-          {docLoading ? <Spinner /> : filteredDocuments.length === 0 ? <Empty label="Brak dokumentów" /> : (
+          {docLoading ? (
+            <div className="space-y-3">
+              {[1,2,3,4,5].map(i => (
+                <div key={i} className="h-14 bg-slate-100 rounded-lg animate-pulse" />
+              ))}
+            </div>
+          ) : filteredDocuments.length === 0 ? <Empty label="Brak dokumentów" /> : (
             <>
             {selectedIds.size > 0 && (
               <div className="flex items-center gap-3 mb-3 p-3 bg-blue-50 rounded-lg">
@@ -1360,7 +1392,7 @@ export const DMSPage: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filteredDocuments.map(d => (
+                  {paginatedDocuments.map(d => (
                     <tr key={d.id} className="hover:bg-slate-50 transition-colors cursor-pointer" onClick={() => setSelectedDoc(d)}>
                       <td className="px-4 py-3">
                         <input type="checkbox" className="rounded border-slate-300"
@@ -1400,6 +1432,24 @@ export const DMSPage: React.FC = () => {
                 </tbody>
               </table>
             </div>
+            {totalPages > 1 && (
+              <div className="flex items-center justify-between px-4 py-3 border-t">
+                <p className="text-xs text-slate-500">{filteredDocuments.length} dokumentów · Strona {page} z {totalPages}</p>
+                <div className="flex gap-1">
+                  <button onClick={() => setPage(p => Math.max(1, p-1))} disabled={page === 1}
+                    className="p-1.5 rounded hover:bg-slate-100 disabled:opacity-30"><ChevronLeft className="w-4 h-4" /></button>
+                  {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => {
+                    const p = totalPages <= 5 ? i + 1 : Math.min(Math.max(page - 2, 1), totalPages - 4) + i;
+                    return (
+                      <button key={p} onClick={() => setPage(p)}
+                        className={`w-8 h-8 text-xs rounded ${p === page ? 'bg-blue-600 text-white' : 'hover:bg-slate-100'}`}>{p}</button>
+                    );
+                  })}
+                  <button onClick={() => setPage(p => Math.min(totalPages, p+1))} disabled={page === totalPages}
+                    className="p-1.5 rounded hover:bg-slate-100 disabled:opacity-30"><ChevronRight className="w-4 h-4" /></button>
+                </div>
+              </div>
+            )}
             </>
           )}
         </div>
@@ -1444,6 +1494,7 @@ export const DMSPage: React.FC = () => {
       )}
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
+    </DocumentsErrorBoundary>
   );
 };
 
