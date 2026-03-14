@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aktywacja konta - MaxMaster</title>
+    <script>
+        // This page handles redirects from Supabase email confirmation links
+        // Supabase redirects here with auth tokens in the URL hash
+
+        (function() {
+            console.log('[email-redirect] Starting redirect handling');
+            console.log('[email-redirect] Current URL:', window.location.href);
+            console.log('[email-redirect] Hash:', window.location.hash);
+
+            // Extract tokens from URL hash
+            // Supabase sends tokens in hash format: #access_token=...&refresh_token=...&type=invite
+            const hash = window.location.hash.substring(1); // Remove leading #
+            const params = new URLSearchParams(hash);
+
+            const accessToken = params.get('access_token');
+            const refreshToken = params.get('refresh_token');
+            const type = params.get('type');
+            const error = params.get('error');
+            const errorDescription = params.get('error_description');
+
+            console.log('[email-redirect] Parsed params:', {
+                hasAccessToken: !!accessToken,
+                hasRefreshToken: !!refreshToken,
+                type: type,
+                error: error
+            });
+
+            // Check for errors
+            if (error) {
+                console.error('[email-redirect] Error detected:', error, errorDescription);
+                // Redirect to login with error message
+                window.location.replace('/#/login?error=' + encodeURIComponent(errorDescription || error));
+                return;
+            }
+
+            // If we have valid tokens, redirect based on type
+            if (accessToken) {
+                // Determine target route based on type
+                let targetRoute = '/setup-password'; // default for invite/signup
+                let message = 'Przekierowujemy do ustawienia hasła...';
+
+                if (type === 'recovery') {
+                    targetRoute = '/reset-password';
+                    message = 'Przekierowujemy do resetowania hasła...';
+                    console.log('[email-redirect] Recovery type detected, redirecting to reset-password');
+                } else if (type === 'invite' || type === 'signup' || type === 'email_confirmation') {
+                    targetRoute = '/setup-password';
+                    console.log('[email-redirect] Invite/signup type detected, redirecting to setup-password');
+                }
+
+                // For HashRouter, we need format: /#/route#access_token=...
+                const newUrl = '/#' + targetRoute + '#' + hash;
+                console.log('[email-redirect] Redirecting to:', newUrl);
+                window.location.replace(newUrl);
+                return;
+            }
+
+            // If no valid tokens found, redirect to login
+            console.log('[email-redirect] No valid tokens, redirecting to login');
+            window.location.replace('/#/login');
+        })();
+    </script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            color: white;
+        }
+        .loader {
+            text-align: center;
+            max-width: 400px;
+            padding: 40px 20px;
+        }
+        .logo {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 20px;
+        }
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top: 4px solid white;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 30px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .message {
+            font-size: 18px;
+            margin-bottom: 10px;
+            font-weight: 500;
+        }
+        .submessage {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+    </style>
+</head>
+<body>
+    <div class="loader">
+        <div class="logo">MaxMaster</div>
+        <div class="spinner"></div>
+        <p class="message">Aktywacja konta...</p>
+        <p class="submessage">Przekierowujemy Cię do strony ustawienia hasła</p>
+    </div>
+</body>
+</html>

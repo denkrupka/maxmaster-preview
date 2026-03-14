@@ -1,0 +1,91 @@
+
+<!DOCTYPE html>
+<html lang="pl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MaxMaster Skills Platform</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+            },
+            colors: {
+              primary: {
+                50: '#eff6ff',
+                500: '#3b82f6',
+                600: '#2563eb',
+                700: '#1d4ed8',
+              },
+            }
+          }
+        }
+      }
+    </script>
+    <style>
+      /* Custom scrollbar for better aesthetics */
+      ::-webkit-scrollbar {
+        width: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #f1f1f1;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #cbd5e1;
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #94a3b8;
+      }
+
+      /* Utility to hide scrollbar while keeping scroll functionality */
+      .scrollbar-hide::-webkit-scrollbar {
+        display: none;
+      }
+      .scrollbar-hide {
+        -ms-overflow-style: none; /* IE and Edge */
+        scrollbar-width: none; /* Firefox */
+      }
+    </style>
+    <script>
+      // Email confirmation redirect handler - runs BEFORE React loads
+      // This handles Supabase auth redirects with tokens in URL hash
+      (function() {
+        // Check if we have auth tokens in the hash
+        // Format: domain.com/#access_token=...&type=...
+        const hash = window.location.hash;
+
+        if (hash && hash.length > 1) {
+          const hashWithoutPound = hash.substring(1); // Remove leading #
+          const params = new URLSearchParams(hashWithoutPound);
+
+          const accessToken = params.get('access_token');
+          const type = params.get('type');
+          const error = params.get('error');
+
+          // If we have auth tokens and we're on root path
+          if (accessToken && !hashWithoutPound.startsWith('/')) {
+            // Determine target route based on type
+            let targetRoute = '/setup-password'; // default for invite/signup
+
+            if (type === 'recovery') {
+              targetRoute = '/reset-password';
+            }
+
+            // Redirect with tokens preserved
+            window.location.hash = targetRoute + '#' + hashWithoutPound;
+            return; // Stop execution, let redirect happen
+          }
+        }
+      })();
+    </script>
+    <script type="module" crossorigin src="/maxmaster-preview/assets/index-DCLi8XFP.js"></script>
+  </head>
+  <body class="bg-gray-50 text-slate-900 antialiased">
+    <div id="root"></div>
+  </body>
+</html>

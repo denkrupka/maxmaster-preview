@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Przekierowanie - MaxMaster</title>
+    <script>
+        // Forward all query parameters to the hash route
+        var params = window.location.search;
+        var target = '/#/candidate/welcome' + params;
+        window.location.replace(target);
+    </script>
+    <meta http-equiv="refresh" content="2; url=/#/candidate/welcome">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            color: white;
+        }
+        .loader {
+            text-align: center;
+        }
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top: 4px solid white;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="loader">
+        <div class="spinner"></div>
+        <p>Przekierowanie do MaxMaster...</p>
+        <p><small>Jeśli nie zostaniesz przekierowany, <a href="/#/candidate/welcome" style="color: white; text-decoration: underline;">kliknij tutaj</a></small></p>
+    </div>
+</body>
+</html>
