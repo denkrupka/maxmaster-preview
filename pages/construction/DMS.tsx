@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   FileText, Plus, Search, Eye, Download, Pencil, Trash2, Archive,
   ChevronLeft, ChevronRight, Check, X, Loader2,
@@ -14,6 +14,7 @@ import {
   createPublicLink, getPublicLinks, deactivatePublicLink,
   createSignatureRequest, getSignatureRequests,
   getVersionDiff, getDocumentComments, addDocumentComment, resolveComment, analyzeDocument, getDocumentAnalyses,
+  getDocumentStats, exportDocumentsCSV, downloadCSV, duplicateDocument,
 } from '../../lib/documentService';
 import type {
   DocumentTemplate, DocumentRecord, TemplateVariable,
@@ -763,10 +764,23 @@ const SettingsTab = ({ companyId }: { companyId: string }) => {
   );
 };
 
+// ── Toast ─────────────────────────────────────────────────────────────────────
+
+function Toast({ message, type = 'success', onClose }: { message: string; type?: 'success'|'error'|'info'; onClose: () => void }) {
+  useEffect(() => { const t = setTimeout(onClose, 3000); return () => clearTimeout(t); }, [onClose]);
+  const colors = { success: 'bg-green-500', error: 'bg-red-500', info: 'bg-blue-500' };
+  return (
+    <div className={`fixed bottom-4 right-4 z-[60] px-4 py-3 rounded-lg text-white text-sm shadow-lg ${colors[type]} animate-slide-up`}>
+      {message}
+    </div>
+  );
+}
+
 // ── Document Details Panel ────────────────────────────────────────────────────
 
-function DocumentDetailsPanel({ doc, companyId, userId, onClose }: {
+function DocumentDetailsPanel({ doc, companyId, userId, onClose, onToast }: {
   doc: DocumentRecord; companyId: string; userId: string; onClose: () => void;
+  onToast: (t: { message: string; type: 'success'|'error'|'info' }) => void;
 }) {
   const [detailTab, setDetailTab] = useState<'versions'|'signatures'|'comments'|'ai'|'audit'|'links'>('versions');
   const [versions, setVersions] = useState<any[]>([]);
@@ -813,14 +827,20 @@ function DocumentDetailsPanel({ doc, companyId, userId, onClose }: {
           </div>
           <div className="flex items-center gap-2">
             <button onClick={async () => {
-              await logDocumentEvent(doc.id, 'viewed');
+              try {
+                const url = await generatePDF(doc.id, doc.company_id);
+                window.open(url, '_blank');
+                await logDocumentEvent(doc.id, 'pdf_downloaded');
+              } catch (err: any) {
+                onToast({ message: 'Błąd generowania PDF: ' + err.message, type: 'error' });
+              }
             }} className="text-xs px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg" aria-label="Pobierz PDF">
               📄 PDF
             </button>
             <button onClick={async () => {
               const link = await createPublicLink(doc.id, companyId, userId, { expiresInDays: 7 });
               navigator.clipboard.writeText(link.url);
-              alert('Link skopiowany do schowka');
+              onToast({ message: 'Link skopiowany do schowka', type: 'success' });
             }} className="text-xs px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg" aria-label="Udostępnij">
               🔗 Udostępnij
             </button>
@@ -1004,7 +1024,7 @@ function DocumentDetailsPanel({ doc, companyId, userId, onClose }: {
                 const link = await createPublicLink(doc.id, companyId, userId, { expiresInDays: 7 });
                 await loadData();
                 navigator.clipboard.writeText(link.url);
-                alert('Link skopiowany do schowka');
+                onToast({ message: 'Link skopiowany do schowka', type: 'success' });
               }} className="text-sm text-blue-600 hover:underline mb-3">+ Utwórz nowy link (7 dni)</button>
               {publicLinks.length === 0 ? (
                 <p className="text-sm text-slate-400 text-center py-8">Brak linków publicznych</p>
@@ -1045,6 +1065,7 @@ export const DMSPage: React.FC = () => {
 
   const [tab, setTab] = useState<'templates' | 'documents' | 'settings'>('documents');
   const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: 'success'|'error'|'info' } | null>(null);
 
   // Templates state
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
@@ -1062,6 +1083,13 @@ export const DMSPage: React.FC = () => {
   const [showDocWizard, setShowDocWizard] = useState(false);
   const [viewDocId, setViewDocId] = useState<string | null>(null);
   const [selectedDoc, setSelectedDoc] = useState<DocumentRecord | null>(null);
+  const [stats, setStats] = useState<any>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterType, setFilterType] = useState<string>('all');
+  const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [sortField, setSortField] = useState<'name'|'created_at'|'number'>('created_at');
+  const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc');
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Shared
   const [contractors, setContractors] = useState<any[]>([]);
@@ -1091,6 +1119,7 @@ export const DMSPage: React.FC = () => {
 
   useEffect(() => { loadTemplates(); }, [loadTemplates]);
   useEffect(() => { loadDocuments(); }, [loadDocuments]);
+  useEffect(() => { if (companyId) getDocumentStats(companyId).then(setStats); }, [companyId, documents]);
 
   useEffect(() => {
     if (!companyId) return;
@@ -1115,10 +1144,24 @@ export const DMSPage: React.FC = () => {
   const filteredTemplates = templates.filter(t =>
     t.name.toLowerCase().includes(tplSearch.toLowerCase())
   );
-  const filteredDocuments = documents.filter(d =>
-    d.name.toLowerCase().includes(docSearch.toLowerCase()) ||
-    (d.number ?? '').toLowerCase().includes(docSearch.toLowerCase())
-  );
+  const filteredDocuments = useMemo(() => {
+    let result = documents;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter(d => d.name.toLowerCase().includes(q) || (d.number || '').toLowerCase().includes(q));
+    }
+    if (filterType !== 'all') {
+      result = result.filter(d => d.document_templates?.type === filterType);
+    }
+    if (filterStatus !== 'all') {
+      result = result.filter(d => d.status === filterStatus);
+    }
+    return [...result].sort((a, b) => {
+      const aVal = a[sortField] || '';
+      const bVal = b[sortField] || '';
+      return sortDir === 'asc' ? String(aVal).localeCompare(String(bVal)) : String(bVal).localeCompare(String(aVal));
+    });
+  }, [documents, searchQuery, filterType, filterStatus, sortField, sortDir]);
 
   return (
     <div className="p-4 sm:p-6 space-y-6 font-[Inter,sans-serif]">
@@ -1221,39 +1264,114 @@ export const DMSPage: React.FC = () => {
       {/* ── DOCUMENTS TAB ── */}
       {tab === 'documents' && (
         <div className="space-y-4">
-          <div className="flex flex-col sm:flex-row gap-3">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-              <input className="w-full border border-slate-200 rounded-lg pl-9 pr-3 py-2 text-sm"
-                placeholder="Szukaj dokumentu…" value={docSearch} onChange={e => setDocSearch(e.target.value)} />
-            </div>
-            <select className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
-              value={docStatus} onChange={e => setDocStatus(e.target.value as any)}>
-              <option value="">Wszystkie statusy</option>
-              {Object.entries(STATUS_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-            </select>
+          <div className="flex justify-end">
             <button onClick={() => setShowDocWizard(true)}
               className="flex items-center gap-2 px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 whitespace-nowrap">
               <Plus className="w-4 h-4" /> Nowy dokument
             </button>
           </div>
 
+          {stats && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
+              {[
+                { label: 'Wszystkie', value: stats.total, color: 'bg-blue-50 text-blue-700' },
+                { label: 'Szkice', value: stats.drafts, color: 'bg-yellow-50 text-yellow-700' },
+                { label: 'Gotowe', value: stats.completed, color: 'bg-green-50 text-green-700' },
+                { label: 'Archiwum', value: stats.archived, color: 'bg-slate-50 text-slate-500' },
+                { label: 'Do podpisu', value: stats.pendingSignatures, color: 'bg-orange-50 text-orange-700' },
+                { label: 'Ten miesiąc', value: stats.thisMonth, color: 'bg-purple-50 text-purple-700' },
+              ].map(s => (
+                <div key={s.label} className={`p-3 rounded-lg ${s.color}`}>
+                  <p className="text-2xl font-bold">{s.value}</p>
+                  <p className="text-xs">{s.label}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2 mb-4">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Szukaj dokumentu..." className="w-full pl-10 pr-3 py-2 text-sm border rounded-lg" />
+            </div>
+            <select value={filterType} onChange={e => setFilterType(e.target.value)}
+              className="px-3 py-2 text-sm border rounded-lg bg-white">
+              <option value="all">Wszystkie typy</option>
+              <option value="contract">Umowy</option>
+              <option value="protocol">Protokoły</option>
+              <option value="annex">Aneksy</option>
+              <option value="other">Inne</option>
+            </select>
+            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
+              className="px-3 py-2 text-sm border rounded-lg bg-white">
+              <option value="all">Wszystkie statusy</option>
+              <option value="draft">Szkice</option>
+              <option value="completed">Gotowe</option>
+              <option value="archived">Archiwum</option>
+            </select>
+            <button onClick={() => {
+              const csv = exportDocumentsCSV(filteredDocuments);
+              downloadCSV(csv, `dokumenty-${new Date().toISOString().slice(0,10)}.csv`);
+            }} className="px-3 py-2 text-sm border rounded-lg hover:bg-slate-50" aria-label="Eksport CSV">
+              📥 CSV
+            </button>
+          </div>
+
           {docLoading ? <Spinner /> : filteredDocuments.length === 0 ? <Empty label="Brak dokumentów" /> : (
+            <>
+            {selectedIds.size > 0 && (
+              <div className="flex items-center gap-3 mb-3 p-3 bg-blue-50 rounded-lg">
+                <span className="text-sm font-medium text-blue-700">Zaznaczono: {selectedIds.size}</span>
+                <button onClick={async () => {
+                  const count = selectedIds.size;
+                  for (const id of selectedIds) {
+                    await supabase.from('documents').update({ status: 'archived' }).eq('id', id);
+                  }
+                  setSelectedIds(new Set()); loadDocuments();
+                  setToast({ message: `Zarchiwizowano ${count} dokumentów`, type: 'success' });
+                }} className="text-xs px-3 py-1.5 bg-slate-600 text-white rounded-lg hover:bg-slate-700">
+                  📦 Archiwizuj
+                </button>
+                <button onClick={() => setSelectedIds(new Set())} className="text-xs text-slate-500 hover:underline">Anuluj</button>
+              </div>
+            )}
             <div className="overflow-x-auto rounded-xl border border-slate-200">
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
                   <tr>
-                    <th className="text-left px-4 py-3 hidden sm:table-cell">Numer</th>
-                    <th className="text-left px-4 py-3">Nazwa</th>
+                    <th className="px-4 py-3 w-10">
+                      <input type="checkbox" className="rounded border-slate-300"
+                        checked={selectedIds.size === filteredDocuments.length && filteredDocuments.length > 0}
+                        onChange={e => setSelectedIds(e.target.checked ? new Set(filteredDocuments.map(d => d.id)) : new Set())} />
+                    </th>
+                    <th className="px-4 py-3 hidden sm:table-cell cursor-pointer hover:text-blue-600 select-none" onClick={() => { setSortField('number'); setSortDir(d => d === 'asc' ? 'desc' : 'asc'); }}>
+                      Nr {sortField === 'number' && (sortDir === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th className="px-4 py-3 cursor-pointer hover:text-blue-600 select-none" onClick={() => { setSortField('name'); setSortDir(d => d === 'asc' ? 'desc' : 'asc'); }}>
+                      Nazwa {sortField === 'name' && (sortDir === 'asc' ? '↑' : '↓')}
+                    </th>
                     <th className="text-left px-4 py-3 hidden md:table-cell">Szablon</th>
                     <th className="text-left px-4 py-3">Status</th>
-                    <th className="text-left px-4 py-3 hidden lg:table-cell">Data</th>
+                    <th className="px-4 py-3 hidden lg:table-cell cursor-pointer hover:text-blue-600 select-none" onClick={() => { setSortField('created_at'); setSortDir(d => d === 'asc' ? 'desc' : 'asc'); }}>
+                      Data {sortField === 'created_at' && (sortDir === 'asc' ? '↑' : '↓')}
+                    </th>
                     <th className="px-4 py-3" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredDocuments.map(d => (
                     <tr key={d.id} className="hover:bg-slate-50 transition-colors cursor-pointer" onClick={() => setSelectedDoc(d)}>
+                      <td className="px-4 py-3">
+                        <input type="checkbox" className="rounded border-slate-300"
+                          checked={selectedIds.has(d.id)}
+                          onClick={e => e.stopPropagation()}
+                          onChange={e => {
+                            const next = new Set(selectedIds);
+                            e.target.checked ? next.add(d.id) : next.delete(d.id);
+                            setSelectedIds(next);
+                          }} />
+                      </td>
                       <td className="px-4 py-3 hidden sm:table-cell text-slate-400 font-mono text-xs">{d.number ?? '—'}</td>
                       <td className="px-4 py-3 font-medium text-slate-800 max-w-xs truncate">{d.name}</td>
                       <td className="px-4 py-3 hidden md:table-cell text-slate-500">
@@ -1271,12 +1389,18 @@ export const DMSPage: React.FC = () => {
                           className="p-1.5 text-slate-400 hover:text-blue-600 rounded hover:bg-blue-50 transition-colors">
                           <Eye className="w-4 h-4" />
                         </button>
+                        <button onClick={(e) => { e.stopPropagation(); duplicateDocument(d.id, companyId, userId).then(() => loadDocuments()); }}
+                          aria-label="Duplikuj dokument" title="Duplikuj"
+                          className="p-1.5 text-slate-400 hover:text-green-600 rounded hover:bg-green-50 transition-colors">
+                          <FileText className="w-4 h-4" />
+                        </button>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+            </>
           )}
         </div>
       )}
@@ -1315,8 +1439,10 @@ export const DMSPage: React.FC = () => {
           companyId={companyId}
           userId={userId}
           onClose={() => setSelectedDoc(null)}
+          onToast={setToast}
         />
       )}
+      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
   );
 };

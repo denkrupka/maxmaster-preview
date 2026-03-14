@@ -887,3 +887,87 @@ export async function toggleAutomation(automationId: string, isActive: boolean):
     .update({ is_active: isActive })
     .eq('id', automationId);
 }
+
+// ===== ДОПОЛНИТЕЛЬНЫЕ ФУНКЦИИ =====
+
+// Дублирование документа
+export async function duplicateDocument(
+  docId: string, companyId: string, userId: string
+): Promise<DocumentRecord> {
+  const { data: original, error: fetchErr } = await supabase
+    .from('documents')
+    .select('*')
+    .eq('id', docId)
+    .single();
+  if (fetchErr || !original) throw fetchErr || new Error('Document not found');
+
+  const { data: newDoc, error: insertErr } = await supabase
+    .from('documents')
+    .insert({
+      company_id: companyId,
+      template_id: original.template_id,
+      project_id: original.project_id,
+      contractor_id: original.contractor_id,
+      name: `${original.name} (kopia)`,
+      status: 'draft' as DocumentStatus,
+      data: original.data,
+      created_by: userId,
+    })
+    .select()
+    .single();
+  if (insertErr) throw insertErr;
+  return newDoc;
+}
+
+// Статистика документов
+export async function getDocumentStats(companyId: string): Promise<{
+  total: number; drafts: number; completed: number; archived: number;
+  pendingSignatures: number; thisMonth: number;
+}> {
+  const { data: docs } = await supabase
+    .from('documents')
+    .select('id, status, created_at')
+    .eq('company_id', companyId);
+
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+
+  const all = docs || [];
+  const { data: pendingSigs } = await supabase
+    .from('signature_requests')
+    .select('id')
+    .eq('company_id', companyId)
+    .eq('status', 'pending');
+
+  return {
+    total: all.length,
+    drafts: all.filter(d => d.status === 'draft').length,
+    completed: all.filter(d => d.status === 'completed').length,
+    archived: all.filter(d => d.status === 'archived').length,
+    pendingSignatures: (pendingSigs || []).length,
+    thisMonth: all.filter(d => d.created_at >= monthStart).length,
+  };
+}
+
+// Экспорт документов в CSV
+export function exportDocumentsCSV(documents: any[]): string {
+  const headers = ['Numer', 'Nazwa', 'Typ', 'Status', 'Data utworzenia'];
+  const rows = documents.map(d => [
+    d.number || '',
+    d.name,
+    d.document_templates?.type || '',
+    d.status,
+    new Date(d.created_at).toLocaleDateString('pl-PL'),
+  ]);
+  const csv = [headers, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+  return csv;
+}
+
+// Скачать CSV файл
+export function downloadCSV(csv: string, filename: string): void {
+  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
