@@ -33,3 +33,4 @@ export { BulkSigningToolbar } from './BulkSigningToolbar';
 export { DocumentCheckbox } from './DocumentCheckbox';
 export { HRTemplatesManager } from './HRTemplatesManager';
 export type { HRTemplate, TemplateField } from './HRTemplatesManager';
+export { ApiSettingsManager } from './ApiSettingsManager';

@@ -1,12 +1,12 @@
 import React, { useState, useRef, useMemo } from 'react';
-import { Upload, X, Archive, Search, Eye, CheckCircle, XCircle, AlertTriangle, FileText, FileSignature, LayoutTemplate } from 'lucide-react';
+import { Upload, X, Archive, Search, Eye, CheckCircle, XCircle, AlertTriangle, FileText, FileSignature, LayoutTemplate, Code } from 'lucide-react';
 import { useAppContext } from '../../context/AppContext';
 import { Button } from '../../components/Button';
 import { VerificationType, SkillStatus, UserSkill } from '../../types';
 import { SKILL_STATUS_LABELS, BONUS_DOCUMENT_TYPES } from '../../constants';
 import { DocumentViewerModal } from '../../components/DocumentViewerModal';
 import { uploadDocument } from '../../lib/supabase';
-import { BulkSigningToolbar, DocumentCheckbox, HRTemplatesManager, HRTemplate } from '../../components/documents';
+import { BulkSigningToolbar, DocumentCheckbox, HRTemplatesManager, HRTemplate, ApiSettingsManager } from '../../components/documents';
 import { t, Language, detectLanguageFromContent } from '../../lib/i18n';
 import { LanguageSelector } from '../../components/LanguageSelector';
 
@@ -270,7 +270,7 @@ export const HRDocumentsPage = () => {
     };
 
     // Tabs state
-    const [activeTab, setActiveTab] = useState<'documents' | 'templates'>('documents');
+    const [activeTab, setActiveTab] = useState<'documents' | 'templates' | 'api'>('documents');
 
     // Handle template send for signing
     const handleTemplateSend = (template: HRTemplate, filledData: Record<string, any>) => {
@@ -322,10 +322,23 @@ export const HRDocumentsPage = () => {
                      <LayoutTemplate size={18} />
                      Szablony HR
                  </button>
+                 <button
+                     onClick={() => setActiveTab('api')}
+                     className={`flex items-center gap-2 px-4 py-3 font-medium text-sm transition-colors border-b-2 ${
+                         activeTab === 'api'
+                             ? 'border-blue-600 text-blue-600'
+                             : 'border-transparent text-slate-600 hover:text-slate-900'
+                     }`}
+                 >
+                     <Code size={18} />
+                     API & Webhooki
+                 </button>
              </div>
 
              {activeTab === 'templates' ? (
                  <HRTemplatesManager onSendForSigning={handleTemplateSend} />
+             ) : activeTab === 'api' ? (
+                 <ApiSettingsManager />
              ) : (
              <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                 {/* Bulk Signing Toolbar */}
