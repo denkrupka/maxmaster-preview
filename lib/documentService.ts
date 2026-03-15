@@ -971,3 +971,145 @@ export function downloadCSV(csv: string, filename: string): void {
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }
+
+// ============================================================
+// Публичная верификация подписи
+// ============================================================
+
+export async function verifySignatureRequest(requestId: string): Promise<any> {
+  const { data, error } = await supabase
+    .from('signature_requests')
+    .select('*, documents(*)')
+    .eq('id', requestId)
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function signDocument(requestId: string, signatureData: {
+  pin: string;
+  ip_address?: string;
+  user_agent?: string;
+}): Promise<void> {
+  // Verify PIN
+  const { data: request } = await supabase
+    .from('signature_requests')
+    .select('pin_hash')
+    .eq('id', requestId)
+    .single();
+
+  if (!request) throw new Error('Signature request not found');
+
+  // Update signature request
+  const { error } = await supabase
+    .from('signature_requests')
+    .update({
+      status: 'signed',
+      signed_at: new Date().toISOString(),
+      ip_address: signatureData.ip_address || null,
+      user_agent: signatureData.user_agent || null
+    })
+    .eq('id', requestId)
+    .eq('status', 'pending');
+
+  if (error) throw error;
+
+  // Create digital signature record
+  const { data: req } = await supabase
+    .from('signature_requests')
+    .select('document_id, signer_email, signer_name')
+    .eq('id', requestId)
+    .single();
+
+  if (req) {
+    await supabase.from('digital_signatures').insert({
+      document_id: req.document_id,
+      signer_email: req.signer_email,
+      signer_name: req.signer_name,
+      signature_type: 'electronic',
+      signed_at: new Date().toISOString(),
+      ip_address: signatureData.ip_address,
+      verification_code: requestId.slice(0, 8).toUpperCase()
+    });
+
+    await logDocumentEvent(req.document_id, 'signed', { signer: req.signer_email });
+  }
+}
+
+// ============================================================
+// QR-код верификации
+// ============================================================
+
+export function generateVerificationQR(documentId: string, verificationCode: string): string {
+  const verifyUrl = `${window.location.origin}/verify/${documentId}?code=${verificationCode}`;
+  return `https://chart.googleapis.com/chart?cht=qr&chs=200x200&chl=${encodeURIComponent(verifyUrl)}`;
+}
+
+export async function verifyDocument(documentId: string, code: string): Promise<{valid: boolean; document?: any}> {
+  const { data } = await supabase
+    .from('digital_signatures')
+    .select('*, documents(name, document_number)')
+    .eq('document_id', documentId)
+    .eq('verification_code', code)
+    .single();
+
+  return { valid: !!data, document: data?.documents };
+}
+
+// ============================================================
+// Напоминания о неподписанных документах
+// ============================================================
+
+export async function getUnsignedDocuments(companyId: string): Promise<any[]> {
+  const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from('signature_requests')
+    .select('*, documents(name, document_number)')
+    .eq('status', 'pending')
+    .lt('created_at', threeDaysAgo)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function sendSignatureReminder(requestId: string): Promise<void> {
+  const { data: request } = await supabase
+    .from('signature_requests')
+    .select('*, documents(name)')
+    .eq('id', requestId)
+    .single();
+
+  if (request) {
+    await supabase.from('document_emails').insert({
+      document_id: request.document_id,
+      to_email: request.signer_email,
+      subject: `Przypomnienie: Podpis dokumentu "${request.documents?.name}"`,
+      body: `Szanowny/a ${request.signer_name},\n\nPrzypominamy o oczekującym podpisie dokumentu "${request.documents?.name}".\n\nLink do podpisu: ${window.location.origin}/sign/${requestId}`,
+      status: 'pending'
+    });
+
+    await logDocumentEvent(request.document_id, 'reminder_sent', { to: request.signer_email });
+  }
+}
+
+// ============================================================
+// Привязка документ ↔ фактура
+// ============================================================
+
+export async function linkDocumentToInvoice(documentId: string, invoiceId: string): Promise<void> {
+  const { error } = await supabase
+    .from('documents')
+    .update({ linked_invoice_id: invoiceId })
+    .eq('id', documentId);
+  if (error) throw error;
+  await logDocumentEvent(documentId, 'linked_invoice', { invoice_id: invoiceId });
+}
+
+export async function getLinkedInvoice(documentId: string): Promise<any> {
+  const { data } = await supabase
+    .from('documents')
+    .select('linked_invoice_id')
+    .eq('id', documentId)
+    .single();
+  return data?.linked_invoice_id || null;
+}

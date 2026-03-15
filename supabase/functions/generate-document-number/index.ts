@@ -1,173 +1,114 @@
 // Edge Function: generate-document-number
-// Генерирует автоинкрементный номер документа по настройкам компании.
-//
-// Принимает: { template_type, project_id? }
-//
-// Логика сборки номера:
-//   parts = [prefix]
-//   if (includeProjectCode && project_id) {
-//     parts.push(projectCode)          // код объекта УЖЕ содержит год
-//     if (includeMonth) parts.push(MM)
-//   } else {
-//     parts.push(YYYY)
-//     if (includeMonth) parts.push(MM)
-//   }
-//   parts.push(paddedNumber)
-//
-// Примеры:
-//   Базовый:          CON/2026/001
-//   + месяц:          CON/2026/03/001
-//   + код объекта:    CON/ZD-II/001
-//   + оба:            CON/ZD-II/03/001
+// Generates unique document numbers with atomic increment
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { corsHeaders } from '../_shared/cors.ts'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-const TYPE_PREFIX: Record<string, string> = {
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+
+interface RequestBody {
+  template_type: string;
+  project_id?: string;
+}
+
+const TYPE_PREFIXES: Record<string, string> = {
   contract: 'CON',
   protocol: 'PRO',
   annex: 'ANX',
   other: 'DOC',
-}
+};
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
+    return new Response('ok', { headers: corsHeaders });
   }
 
   try {
-    // --- Auth ---
-    const authHeader = req.headers.get('Authorization')
-    if (!authHeader) {
-      return new Response(JSON.stringify({ error: 'Missing authorization' }), {
-        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      })
-    }
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+    );
 
-    const userClient = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_ANON_KEY')!,
-      { global: { headers: { Authorization: authHeader } } }
-    )
+    const { template_type, project_id } = await req.json() as RequestBody;
+    
+    // Get user from auth
+    const { data: { user } } = await supabase.auth.getUser(
+      req.headers.get('authorization')?.replace('Bearer ', '') ?? ''
+    );
 
-    const { data: { user }, error: userError } = await userClient.auth.getUser()
-    if (userError || !user) {
+    if (!user) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      })
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
-    const { data: userData } = await userClient
-      .from('users')
+    // Get user's company_id
+    const { data: employee } = await supabase
+      .from('employees')
       .select('company_id')
-      .eq('id', user.id)
-      .single()
+      .eq('user_id', user.id)
+      .single();
 
-    if (!userData?.company_id) {
-      return new Response(JSON.stringify({ error: 'No company' }), {
-        status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      })
+    if (!employee?.company_id) {
+      return new Response(JSON.stringify({ error: 'Company not found' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
-    const { template_type, project_id } = await req.json()
-    const companyId = userData.company_id
-    const now = new Date()
-    const year = now.getFullYear()
-    const month = String(now.getMonth() + 1).padStart(2, '0')
+    const companyId = employee.company_id;
+    const prefix = TYPE_PREFIXES[template_type] || 'DOC';
+    const year = new Date().getFullYear();
 
-    // --- Admin client ---
-    const adminClient = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-    )
-
-    // --- Загружаем настройки нумерации ---
-    const { data: settingsRow } = await adminClient
-      .from('document_settings')
-      .select('numbering_config')
+    // Atomic increment using RPC or direct SQL
+    const { data: numbering, error: numberingError } = await supabase
+      .from('document_numbering')
+      .select('last_number')
       .eq('company_id', companyId)
-      .single()
+      .eq('prefix', prefix)
+      .eq('year', year)
+      .single();
 
-    const allConfig = settingsRow?.numbering_config as Record<string, any> | null
-    const typeConfig = allConfig?.[template_type] ?? null
+    let nextNumber: number;
 
-    const prefix: string = typeConfig?.prefix ?? TYPE_PREFIX[template_type] ?? 'DOC'
-    const separator: string = typeConfig?.separator ?? '/'
-    const digits: number = typeConfig?.digits ?? 3
-    const includeProjectCode: boolean = typeConfig?.includeProjectCode === true
-    const includeMonth: boolean = typeConfig?.includeMonth === true
-
-    // --- Код проекта (если нужен) ---
-    let projectCode: string | null = null
-    if (includeProjectCode && project_id) {
-      const { data: projectData } = await adminClient
-        .from('projects')
-        .select('code')
-        .eq('id', project_id)
-        .single()
-      projectCode = projectData?.code ?? null
-    }
-
-    // --- Атомарный инкремент ---
-    const { data: updated } = await adminClient.rpc('exec_sql', {
-      query: `UPDATE document_numbering
-              SET last_number = last_number + 1
-              WHERE company_id = '${companyId}' AND prefix = '${prefix}' AND year = ${year}
-              RETURNING last_number`
-    }).single()
-
-    let nextNumber: number
-
-    if (updated?.last_number) {
-      nextNumber = updated.last_number
+    if (numberingError && numberingError.code === 'PGRST116') {
+      // No record exists, create one
+      nextNumber = 1;
+      await supabase.from('document_numbering').insert({
+        company_id: companyId,
+        prefix,
+        year,
+        last_number: 1,
+      });
+    } else if (numberingError) {
+      throw numberingError;
     } else {
-      // Fallback: upsert без RPC
-      const { data: existing } = await adminClient
+      // Increment existing
+      nextNumber = (numbering?.last_number || 0) + 1;
+      const { error: updateError } = await supabase
         .from('document_numbering')
-        .select('id, last_number')
+        .update({ last_number: nextNumber })
         .eq('company_id', companyId)
         .eq('prefix', prefix)
-        .eq('year', year)
-        .single()
-
-      if (existing) {
-        nextNumber = existing.last_number + 1
-        await adminClient
-          .from('document_numbering')
-          .update({ last_number: nextNumber })
-          .eq('id', existing.id)
-      } else {
-        nextNumber = 1
-        await adminClient
-          .from('document_numbering')
-          .insert({ company_id: companyId, prefix, year, last_number: 1 })
-      }
+        .eq('year', year);
+      
+      if (updateError) throw updateError;
     }
 
-    // --- Сборка номера ---
-    const parts: string[] = [prefix]
-
-    if (projectCode) {
-      // Код объекта УЖЕ содержит год → НЕ добавляем year отдельно
-      parts.push(projectCode)
-      if (includeMonth) parts.push(month)
-    } else {
-      // Без кода объекта → год обязателен
-      parts.push(String(year))
-      if (includeMonth) parts.push(month)
-    }
-
-    parts.push(String(nextNumber).padStart(digits, '0'))
-
-    const number = parts.join(separator)
+    // Format: PREFIX/YEAR/NNN
+    const number = `${prefix}/${year}/${String(nextNumber).padStart(3, '0')}`;
 
     return new Response(JSON.stringify({ number }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    })
-
-  } catch (err) {
-    return new Response(JSON.stringify({ error: (err as Error).message }), {
-      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    })
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    console.error('Error generating document number:', error);
+    return new Response(JSON.stringify({ error: error.message }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
   }
-})
+});

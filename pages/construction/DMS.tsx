@@ -15,6 +15,7 @@ import {
   createSignatureRequest, getSignatureRequests,
   getVersionDiff, getDocumentComments, addDocumentComment, resolveComment, analyzeDocument, getDocumentAnalyses,
   getDocumentStats, exportDocumentsCSV, downloadCSV, duplicateDocument,
+  getDocumentAutomations, toggleAutomation,
 } from '../../lib/documentService';
 import type {
   DocumentTemplate, DocumentRecord, TemplateVariable,
@@ -393,19 +394,24 @@ const DocumentWizard = ({
             <div className="space-y-3">
               <p className="text-sm font-medium text-slate-700">Uzupełnij zmienne</p>
               {tpl.variables.length === 0 && <p className="text-sm text-slate-400">Brak zmiennych w szablonie.</p>}
-              {tpl.variables.map(v => (
-                <div key={v.key}>
-                  <label className="block text-xs text-slate-500 mb-1">
-                    {v.label || v.key}
-                    {v.source !== 'manual' && <span className="ml-1 text-blue-500">(autouzupełnione)</span>}
-                  </label>
-                  <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
-                    type={v.type === 'date' ? 'date' : v.type === 'number' ? 'number' : 'text'}
-                    value={formData[v.key] ?? ''}
-                    onChange={e => setFormData(d => ({ ...d, [v.key]: e.target.value }))}
-                    placeholder={v.defaultValue ?? v.label} />
-                </div>
-              ))}
+              {tpl.variables.map(v => {
+                const value = formData[v.key] ?? '';
+                return (
+                  <div key={v.key}>
+                    <label className="block text-xs text-slate-500 mb-1">
+                      {v.label || v.key}
+                      {v.source !== 'manual' && <span className="ml-1 text-blue-500">(autouzupełnione)</span>}
+                      {v.required && <span className="ml-1 text-red-500">*</span>}
+                    </label>
+                    <input className={`w-full border rounded-lg px-3 py-2 text-sm ${!value && v.required ? 'border-red-500' : 'border-slate-200'}`}
+                      type={v.type === 'date' ? 'date' : v.type === 'number' ? 'number' : 'text'}
+                      value={value}
+                      onChange={e => setFormData(d => ({ ...d, [v.key]: e.target.value }))}
+                      placeholder={v.defaultValue ?? v.label} />
+                    {!value && v.required && <p className="text-xs text-red-500 mt-1">Pole wymagane</p>}
+                  </div>
+                );
+              })}
             </div>
           )}
           {/* Step 3: preview */}
@@ -454,7 +460,7 @@ const DocumentWizard = ({
                   if (step === 1) { handleStep1Next(); return; }
                   if (step === 2) { handleStep2Next(); return; }
                 }}
-                disabled={stepLoading || (step === 1 && !templateId) || (step === 2 && !!tpl && tpl.variables.some(v => v.source === 'manual' && !formData[v.key]))}
+                disabled={stepLoading || (step === 1 && !templateId) || (step === 2 && !!tpl && tpl.variables.some(v => v.required && !formData[v.key]))}
                 className="flex items-center gap-2 px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-60">
                 {stepLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                 Dalej <ChevronRight className="w-4 h-4" />
@@ -802,7 +808,7 @@ function DocumentDetailsPanel({ doc, companyId, userId, onClose, onToast }: {
   doc: DocumentRecord; companyId: string; userId: string; onClose: () => void;
   onToast: (t: { message: string; type: 'success'|'error'|'info' }) => void;
 }) {
-  const [detailTab, setDetailTab] = useState<'versions'|'signatures'|'comments'|'ai'|'audit'|'links'>('versions');
+  const [detailTab, setDetailTab] = useState<'versions'|'signatures'|'comments'|'ai'|'audit'|'links'|'email'|'automations'>('versions');
   const [versions, setVersions] = useState<any[]>([]);
   const [signatures, setSignatures] = useState<any[]>([]);
   const [auditLog, setAuditLog] = useState<any[]>([]);
@@ -813,6 +819,23 @@ function DocumentDetailsPanel({ doc, companyId, userId, onClose, onToast }: {
   const [newComment, setNewComment] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
   const [aiResult, setAiResult] = useState<string | null>(null);
+  // Email state
+  const [emailTo, setEmailTo] = useState('');
+  const [emailSubject, setEmailSubject] = useState('');
+  const [emailBody, setEmailBody] = useState('');
+  const [attachPdf, setAttachPdf] = useState(true);
+  const [sendingEmail, setSendingEmail] = useState(false);
+  // Automations state
+  const [automations, setAutomations] = useState<any[]>([]);
+  const [showAddAutomation, setShowAddAutomation] = useState(false);
+  // Audit pagination
+  const [auditPage, setAuditPage] = useState(1);
+  const AUDIT_PAGE_SIZE = 20;
+  // PDF preview
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string|null>(null);
+  // Quick edit
+  const [quickEditMode, setQuickEditMode] = useState(false);
+  const [editData, setEditData] = useState<any>({});
 
   useEffect(() => { loadData(); }, [detailTab, doc.id]);
 
@@ -821,12 +844,36 @@ function DocumentDetailsPanel({ doc, companyId, userId, onClose, onToast }: {
     try {
       if (detailTab === 'versions') setVersions(await getDocumentVersions(doc.id));
       else if (detailTab === 'signatures') setSignatures(await getSignatureRequests(doc.id));
-      else if (detailTab === 'audit') setAuditLog(await getDocumentAuditLog(doc.id));
+      else if (detailTab === 'audit') { setAuditPage(1); setAuditLog(await getDocumentAuditLog(doc.id)); }
       else if (detailTab === 'links') setPublicLinks(await getPublicLinks(doc.id));
       else if (detailTab === 'comments') setComments(await getDocumentComments(doc.id));
       else if (detailTab === 'ai') setAnalyses(await getDocumentAnalyses(doc.id));
+      else if (detailTab === 'automations') setAutomations(await getDocumentAutomations(companyId));
     } finally { setLoading(false); }
   }
+
+  const handleSendEmail = async () => {
+    if (!emailTo || sendingEmail) return;
+    setSendingEmail(true);
+    try {
+      await supabase.from('document_emails').insert({
+        document_id: doc.id,
+        company_id: companyId,
+        sent_by: userId,
+        recipient_email: emailTo,
+        subject: emailSubject,
+        body: emailBody,
+        attach_pdf: attachPdf,
+      });
+      await logDocumentEvent(doc.id, 'email_sent', { to: emailTo, subject: emailSubject });
+      onToast({ type: 'success', message: 'Email wysłany!' });
+      setEmailTo(''); setEmailSubject(''); setEmailBody('');
+    } catch (err: any) {
+      onToast({ type: 'error', message: 'Błąd wysyłki: ' + err.message });
+    } finally {
+      setSendingEmail(false);
+    }
+  };
 
   const tabs = [
     { key: 'versions' as const, label: 'Wersje', icon: '📋' },
@@ -835,6 +882,8 @@ function DocumentDetailsPanel({ doc, companyId, userId, onClose, onToast }: {
     { key: 'ai' as const, label: 'AI', icon: '🤖' },
     { key: 'audit' as const, label: 'Historia', icon: '📜' },
     { key: 'links' as const, label: 'Linki', icon: '🔗' },
+    { key: 'email' as const, label: 'Email', icon: '✉️' },
+    { key: 'automations' as const, label: 'Automatyzacje', icon: '⚙️' },
   ];
 
   return (
@@ -856,6 +905,14 @@ function DocumentDetailsPanel({ doc, companyId, userId, onClose, onToast }: {
               }
             }} className="text-xs px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg" aria-label="Pobierz PDF">
               📄 PDF
+            </button>
+            <button onClick={async () => {
+              try {
+                const url = await generatePDF(doc.id, doc.company_id);
+                setPdfPreviewUrl(url);
+              } catch { onToast({ type: 'error', message: 'Błąd generowania PDF' }); }
+            }} className="flex items-center gap-1 px-3 py-1.5 text-xs bg-slate-100 rounded-lg hover:bg-slate-200">
+              <Eye className="w-3.5 h-3.5" /> Podgląd
             </button>
             <button onClick={async () => {
               const link = await createPublicLink(doc.id, companyId, userId, { expiresInDays: 7 });
@@ -886,6 +943,41 @@ function DocumentDetailsPanel({ doc, companyId, userId, onClose, onToast }: {
             </div>
           ) : detailTab === 'versions' ? (
             <div className="space-y-3">
+              <div className="flex justify-end">
+                <button onClick={() => setQuickEditMode(true)} className="flex items-center gap-1 px-3 py-1.5 text-xs bg-yellow-50 text-yellow-700 rounded-lg hover:bg-yellow-100">
+                  <Pencil className="w-3.5 h-3.5" /> Szybka edycja
+                </button>
+              </div>
+              {quickEditMode && (
+                <div className="space-y-3 p-4 bg-yellow-50 rounded-lg">
+                  <h4 className="text-sm font-medium">Szybka edycja</h4>
+                  <div>
+                    <label className="text-xs text-slate-500">Nazwa</label>
+                    <input className="w-full border rounded px-2 py-1 text-sm" value={editData.name || doc.name}
+                      onChange={e => setEditData({...editData, name: e.target.value})} />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500">Status</label>
+                    <select className="w-full border rounded px-2 py-1 text-sm" value={editData.status || doc.status}
+                      onChange={e => setEditData({...editData, status: e.target.value})}>
+                      <option value="draft">Szkic</option>
+                      <option value="completed">Gotowy</option>
+                      <option value="archived">Archiwum</option>
+                    </select>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={async () => {
+                      await updateDocument(doc.id, editData);
+                      onToast({ type: 'success', message: 'Dokument zaktualizowany' });
+                      setQuickEditMode(false);
+                      setEditData({});
+                      loadData();
+                    }} className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm">Zapisz</button>
+                    <button onClick={() => { setQuickEditMode(false); setEditData({}); }}
+                      className="px-4 py-1.5 bg-slate-200 rounded text-sm">Anuluj</button>
+                  </div>
+                </div>
+              )}
               {versions.length === 0 ? (
                 <p className="text-sm text-slate-400 text-center py-8">Brak wersji</p>
               ) : versions.map(v => (
@@ -948,13 +1040,32 @@ function DocumentDetailsPanel({ doc, companyId, userId, onClose, onToast }: {
             <div className="space-y-2">
               {auditLog.length === 0 ? (
                 <p className="text-sm text-slate-400 text-center py-8">Brak historii</p>
-              ) : auditLog.map(a => (
+              ) : auditLog.slice((auditPage - 1) * AUDIT_PAGE_SIZE, auditPage * AUDIT_PAGE_SIZE).map(a => (
                 <div key={a.id} className="flex items-start gap-3 p-2 text-xs">
                   <span className="text-slate-400 whitespace-nowrap">{new Date(a.created_at).toLocaleString('pl-PL')}</span>
                   <span className="text-slate-600">{a.actor_name || 'System'}</span>
                   <span className="text-slate-800 font-medium">{a.action.replace(/_/g, ' ')}</span>
                 </div>
               ))}
+              {Math.ceil(auditLog.length / AUDIT_PAGE_SIZE) > 1 && (
+                <div className="flex items-center justify-between pt-3 border-t">
+                  <p className="text-xs text-slate-500">{auditLog.length} wpisów · Strona {auditPage} z {Math.ceil(auditLog.length / AUDIT_PAGE_SIZE)}</p>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => setAuditPage(p => Math.max(1, p - 1))} disabled={auditPage === 1}
+                      className="p-1.5 rounded hover:bg-slate-100 disabled:opacity-30"><ChevronLeft className="w-4 h-4" /></button>
+                    {Array.from({ length: Math.min(Math.ceil(auditLog.length / AUDIT_PAGE_SIZE), 5) }, (_, i) => {
+                      const totalAuditPages = Math.ceil(auditLog.length / AUDIT_PAGE_SIZE);
+                      const p = totalAuditPages <= 5 ? i + 1 : Math.min(Math.max(auditPage - 2, 1), totalAuditPages - 4) + i;
+                      return (
+                        <button key={p} onClick={() => setAuditPage(p)}
+                          className={`w-7 h-7 text-xs rounded ${p === auditPage ? 'bg-blue-600 text-white' : 'hover:bg-slate-100'}`}>{p}</button>
+                      );
+                    })}
+                    <button onClick={() => setAuditPage(p => Math.min(Math.ceil(auditLog.length / AUDIT_PAGE_SIZE), p + 1))} disabled={auditPage === Math.ceil(auditLog.length / AUDIT_PAGE_SIZE)}
+                      className="p-1.5 rounded hover:bg-slate-100 disabled:opacity-30"><ChevronRight className="w-4 h-4" /></button>
+                  </div>
+                </div>
+              )}
             </div>
           ) : detailTab === 'comments' ? (
             <div className="space-y-3">
@@ -1038,7 +1149,7 @@ function DocumentDetailsPanel({ doc, companyId, userId, onClose, onToast }: {
                 </div>
               )}
             </div>
-          ) : (
+          ) : detailTab === 'links' ? (
             <div className="space-y-3">
               <button onClick={async () => {
                 const link = await createPublicLink(doc.id, companyId, userId, { expiresInDays: 7 });
@@ -1069,9 +1180,76 @@ function DocumentDetailsPanel({ doc, companyId, userId, onClose, onToast }: {
                 </div>
               ))}
             </div>
+          ) : detailTab === 'email' ? (
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Adresat</label>
+                <input type="email" placeholder="email@example.com" className="w-full border rounded-lg px-3 py-2 text-sm"
+                  value={emailTo} onChange={e => setEmailTo(e.target.value)} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Temat</label>
+                <input type="text" placeholder="Temat wiadomości" className="w-full border rounded-lg px-3 py-2 text-sm"
+                  value={emailSubject} onChange={e => setEmailSubject(e.target.value)} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Wiadomość</label>
+                <textarea rows={4} placeholder="Treść wiadomości..." className="w-full border rounded-lg px-3 py-2 text-sm"
+                  value={emailBody} onChange={e => setEmailBody(e.target.value)} />
+              </div>
+              <div className="flex items-center gap-2">
+                <input type="checkbox" id="attachPdf" checked={attachPdf} onChange={e => setAttachPdf(e.target.checked)} />
+                <label htmlFor="attachPdf" className="text-sm">Dołącz PDF dokumentu</label>
+              </div>
+              <button onClick={handleSendEmail} disabled={!emailTo || sendingEmail}
+                className="w-full py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50">
+                {sendingEmail ? 'Wysyłanie...' : 'Wyślij email'}
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex justify-between items-center">
+                <h4 className="font-medium text-sm">Reguły automatyzacji</h4>
+                <button onClick={() => setShowAddAutomation(true)} className="text-xs text-blue-600 hover:underline">+ Dodaj</button>
+              </div>
+              {automations.map(a => (
+                <div key={a.id} className="p-3 bg-slate-50 rounded-lg flex justify-between items-center">
+                  <div>
+                    <p className="text-sm font-medium">{a.name}</p>
+                    <p className="text-xs text-slate-500">Trigger: {a.trigger_event} → {a.action_type}</p>
+                  </div>
+                  <button onClick={() => toggleAutomation(a.id, !a.is_active).then(() => getDocumentAutomations(companyId).then(setAutomations))}
+                    className={`px-3 py-1 rounded-full text-xs ${a.is_active ? 'bg-green-100 text-green-700' : 'bg-slate-200 text-slate-500'}`}>
+                    {a.is_active ? 'Aktywna' : 'Wyłączona'}
+                  </button>
+                </div>
+              ))}
+              {automations.length === 0 && <p className="text-sm text-slate-400 text-center py-4">Brak automatyzacji</p>}
+            </div>
           )}
         </div>
+        <div className="px-4 pb-4">
+          <button onClick={async () => {
+            const name = prompt('Nazwa szablonu:');
+            if (!name) return;
+            await createTemplate({ name, type: doc.type || 'other', content: doc.data || {}, variables: [], sections: [] });
+            onToast({ type: 'success', message: 'Szablon utworzony!' });
+          }} className="w-full py-2 border border-blue-600 text-blue-600 rounded-lg text-sm hover:bg-blue-50 mt-4">
+            Zapisz jako szablon
+          </button>
+        </div>
       </div>
+      {pdfPreviewUrl && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setPdfPreviewUrl(null)}>
+          <div className="bg-white rounded-xl w-[90vw] h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center p-4 border-b">
+              <h3 className="font-medium">Podgląd PDF</h3>
+              <button onClick={() => setPdfPreviewUrl(null)}><X className="w-5 h-5" /></button>
+            </div>
+            <iframe src={pdfPreviewUrl} className="flex-1 w-full" />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
