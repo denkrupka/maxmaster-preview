@@ -6,6 +6,7 @@ import { VerificationType, SkillStatus, UserSkill } from '../../types';
 import { SKILL_STATUS_LABELS, BONUS_DOCUMENT_TYPES } from '../../constants';
 import { DocumentViewerModal } from '../../components/DocumentViewerModal';
 import { uploadDocument } from '../../lib/supabase';
+import { BulkSigningToolbar, DocumentCheckbox } from '../../components/documents';
 
 export const HRDocumentsPage = () => {
     const { state, updateUserSkillStatus, updateCandidateDocumentDetails, archiveCandidateDocument } = useAppContext();
@@ -33,6 +34,11 @@ export const HRDocumentsPage = () => {
     // File Viewer
     const [fileViewer, setFileViewer] = useState<{isOpen: boolean, urls: string[], title: string, index: number}>({ isOpen: false, urls: [], title: '', index: 0 });
 
+    // Bulk Signing State
+    const [selectedDocs, setSelectedDocs] = useState<Set<string>>(new Set());
+    const [isBulkSigning, setIsBulkSigning] = useState(false);
+    const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number } | undefined>();
+
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // 1. FILTERING: Only show PENDING documents for company users
@@ -49,6 +55,48 @@ export const HRDocumentsPage = () => {
 
         return isDoc && us.status === SkillStatus.PENDING && !us.is_archived;
     });
+
+    // --- Bulk Signing Actions ---
+
+    const handleSelectAll = () => {
+        const allIds = pendingDocs.map(doc => doc.id);
+        setSelectedDocs(new Set(allIds));
+    };
+
+    const handleDeselectAll = () => {
+        setSelectedDocs(new Set());
+    };
+
+    const handleToggleDoc = (docId: string) => {
+        setSelectedDocs(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(docId)) {
+                newSet.delete(docId);
+            } else {
+                newSet.add(docId);
+            }
+            return newSet;
+        });
+    };
+
+    const handleBulkSign = async () => {
+        if (selectedDocs.size === 0) return;
+        
+        setIsBulkSigning(true);
+        const docIds = Array.from(selectedDocs);
+        const total = docIds.length;
+        
+        for (let i = 0; i < docIds.length; i++) {
+            setBulkProgress({ current: i + 1, total });
+            await updateUserSkillStatus(docIds[i], SkillStatus.CONFIRMED);
+            // Small delay for visual feedback
+            await new Promise(resolve => setTimeout(resolve, 200));
+        }
+        
+        setSelectedDocs(new Set());
+        setIsBulkSigning(false);
+        setBulkProgress(undefined);
+    };
 
     // --- Actions ---
 
@@ -218,10 +266,22 @@ export const HRDocumentsPage = () => {
              <h1 className="text-xl sm:text-2xl font-bold text-slate-900 mb-4 sm:mb-6">Dokumenty do sprawdzenia</h1>
              
              <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                {/* Bulk Signing Toolbar */}
+                <BulkSigningToolbar
+                    selectedCount={selectedDocs.size}
+                    totalCount={pendingDocs.length}
+                    onSelectAll={handleSelectAll}
+                    onDeselectAll={handleDeselectAll}
+                    onSignSelected={handleBulkSign}
+                    isSigning={isBulkSigning}
+                    progress={bulkProgress}
+                />
+
                 <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm min-w-[600px]">
                     <thead className="bg-slate-50 text-slate-500 font-medium border-b border-slate-200">
                         <tr>
+                            <th className="px-2 sm:px-4 md:px-6 py-3 md:py-4 w-12"></th>
                             <th className="px-3 sm:px-4 md:px-6 py-3 md:py-4">Pracownik</th>
                             <th className="px-3 sm:px-4 md:px-6 py-3 md:py-4">Dokument</th>
                             <th className="px-3 sm:px-4 md:px-6 py-3 md:py-4">Bonus</th>
@@ -236,9 +296,17 @@ export const HRDocumentsPage = () => {
                             const bonus = doc.bonus_value || skill?.hourly_bonus || 0;
                             const displayName = doc.custom_name || skill?.name_pl || 'Dokument';
                             const urlsFound = Array.isArray(doc.document_urls) && doc.document_urls.length > 0 ? doc.document_urls.length : (doc.document_url ? 1 : 0);
+                            const isSelected = selectedDocs.has(doc.id);
 
                             return (
-                                <tr key={doc.id} className="hover:bg-slate-50 cursor-pointer" onClick={() => handleEditDocument(doc.id)}>
+                                <tr key={doc.id} className={`hover:bg-slate-50 cursor-pointer ${isSelected ? 'bg-blue-50/50' : ''}`} onClick={() => handleEditDocument(doc.id)}>
+                                    <td className="px-2 sm:px-4 md:px-6 py-3 md:py-4" onClick={(e) => e.stopPropagation()}>
+                                        <DocumentCheckbox
+                                            checked={isSelected}
+                                            onChange={() => handleToggleDoc(doc.id)}
+                                            disabled={isBulkSigning}
+                                        />
+                                    </td>
                                     <td className="px-3 sm:px-4 md:px-6 py-3 md:py-4 font-medium">
                                         <div className="flex items-center gap-3">
                                             <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 font-bold text-xs">
@@ -308,7 +376,7 @@ export const HRDocumentsPage = () => {
                         })}
                         {pendingDocs.length === 0 && (
                             <tr>
-                                <td colSpan={5} className="px-3 sm:px-6 py-8 sm:py-12 text-center text-slate-400">
+                                <td colSpan={6} className="px-3 sm:px-6 py-8 sm:py-12 text-center text-slate-400">
                                     Brak dokumentów oczekujących na sprawdzenie.
                                 </td>
                             </tr>

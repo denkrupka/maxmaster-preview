@@ -29,3 +29,5 @@ export { QuickEditField, QuickEditGroup } from './QuickEditField';
 export { DocumentInvoiceLink } from './DocumentInvoiceLink';
 export { DocumentReminders } from './DocumentReminders';
 export { DocumentQRCode } from './DocumentQRCode';
+export { BulkSigningToolbar } from './BulkSigningToolbar';
+export { DocumentCheckbox } from './DocumentCheckbox';
