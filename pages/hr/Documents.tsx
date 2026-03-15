@@ -261,7 +261,7 @@ export const HRDocumentsPage = () => {
                 </div>
             </div>
         );
-    }
+    };
 
     // Detect language from document content
     const detectDocLanguage = (doc: UserSkill): Language => {
@@ -477,6 +477,7 @@ export const HRDocumentsPage = () => {
                 </table>
                 </div>
              </div>
+             )}
 
              {renderDocumentModal()}
              <DocumentViewerModal 
@@ -487,7 +488,5 @@ export const HRDocumentsPage = () => {
                 title={fileViewer.title}
             />
              </div>
-             )}
-        </div>
     );
 };
