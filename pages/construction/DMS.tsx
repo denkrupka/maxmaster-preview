@@ -51,6 +51,27 @@ const handleDuplicateDoc = async (supabase: any, doc: any, refresh: () => void) 
 }
 
 import type {
+
+const DocumentPDFPreview: React.FC<{url: string, onClose: () => void}> = ({url, onClose}) => (
+  <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center" onClick={onClose}>
+    <div className="bg-white rounded-lg w-4/5 h-4/5 p-4 flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="flex justify-between mb-2">
+        <h3 className="font-medium">Podgląd dokumentu</h3>
+        <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+      </div>
+      <iframe src={url} className="flex-1 border-0 rounded" title="PDF Preview" />
+    </div>
+  </div>
+)
+
+const handleSaveAsTemplateDoc = async (supabase: any, doc: any) => {
+  const name = window.prompt('Nazwa szablonu:')
+  if (!name) return
+  const category = window.prompt('Kategoria:') || 'Ogólne'
+  await supabase.from('document_templates').insert({name, content: doc.content, category, company_id: doc.company_id})
+  alert('Szablon zapisany!')
+}
+
   DocumentTemplate, DocumentRecord, TemplateVariable,
   DocumentTemplateType, DocumentStatus, TemplateSection,
   CreateTemplateInput, CreateDocumentInput,
