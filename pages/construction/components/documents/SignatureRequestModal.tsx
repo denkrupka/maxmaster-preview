@@ -32,6 +32,7 @@ const SignatureRequestModal: React.FC<SignatureRequestModalProps> = ({
   const [signerEmail, setSignerEmail] = useState('');
   const [signerName, setSignerName] = useState('');
   const [role, setRole] = useState<SignerRole>('signer');
+  const [signingMode, setSigningMode] = useState<'sequential' | 'parallel'>('sequential');
   const [message, setMessage] = useState('');
   const [expiresAt, setExpiresAt] = useState('');
   const [sending, setSending] = useState(false);
@@ -70,6 +71,7 @@ const SignatureRequestModal: React.FC<SignatureRequestModalProps> = ({
           message: message.trim() || null,
           company_id: companyId,
           signer_role: role,
+          signing_mode: signingMode,
           expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
           created_by: userId,
         },
@@ -173,6 +175,37 @@ const SignatureRequestModal: React.FC<SignatureRequestModalProps> = ({
                   {ROLE_LABELS[r]}
                 </button>
               ))}
+            </div>
+          </div>
+
+          {/* Signing Mode */}
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1.5">
+              Kolejność podpisywania
+            </label>
+            <div className="flex gap-3">
+              <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-700">
+                <input
+                  type="radio"
+                  name="signingMode"
+                  value="sequential"
+                  checked={signingMode === 'sequential'}
+                  onChange={() => setSigningMode('sequential')}
+                  className="text-blue-600"
+                />
+                Sekwencyjnie (jeden po drugim)
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-700">
+                <input
+                  type="radio"
+                  name="signingMode"
+                  value="parallel"
+                  checked={signingMode === 'parallel'}
+                  onChange={() => setSigningMode('parallel')}
+                  className="text-blue-600"
+                />
+                Równolegle (wszyscy naraz)
+              </label>
             </div>
           </div>
 
