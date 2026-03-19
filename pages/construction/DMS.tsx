@@ -17,6 +17,39 @@ import {
   getDocumentStats, exportDocumentsCSV, downloadCSV, duplicateDocument,
   getDocumentAutomations, toggleAutomation,
 } from '../../lib/documentService';
+
+const statusBadge = (status: string) => {
+  const map: Record<string, string> = {
+    draft: 'bg-gray-100 text-gray-600',
+    sent: 'bg-blue-100 text-blue-700',
+    in_review: 'bg-yellow-100 text-yellow-700',
+    signed: 'bg-green-100 text-green-700',
+    declined: 'bg-red-100 text-red-700',
+    withdrawn: 'bg-gray-200 text-gray-500',
+    expired: 'bg-orange-100 text-orange-700',
+    archived: 'bg-purple-100 text-purple-700',
+  }
+  const labels: Record<string, string> = {
+    draft: 'Szkic', sent: 'Wysłany', in_review: 'W trakcie', signed: 'Podpisany',
+    declined: 'Odrzucony', withdrawn: 'Wycofany', expired: 'Wygasły', archived: 'Archiwum',
+  }
+  const cls = map[status] || 'bg-gray-100 text-gray-600'
+  return React.createElement('span', {className: `px-2 py-0.5 rounded-full text-xs font-medium ${cls}`}, labels[status] || status)
+}
+
+const handleWithdrawDoc = async (supabase: any, docId: string, refresh: () => void) => {
+  const reason = window.prompt('Powód wycofania:')
+  if (!reason) return
+  await supabase.from('documents').update({status: 'withdrawn', withdrawn_reason: reason}).eq('id', docId)
+  refresh()
+}
+
+const handleDuplicateDoc = async (supabase: any, doc: any, refresh: () => void) => {
+  const { id, created_at, updated_at, document_number, ...rest } = doc
+  await supabase.from('documents').insert({...rest, status: 'draft', document_number: (document_number || 'DOC') + '-kopia'})
+  refresh()
+}
+
 import type {
   DocumentTemplate, DocumentRecord, TemplateVariable,
   DocumentTemplateType, DocumentStatus, TemplateSection,
