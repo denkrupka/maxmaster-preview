@@ -567,6 +567,130 @@ const DocumentView = ({ docId, onClose, onRefresh }: { docId: string; onClose: (
   );
 };
 
+// ── Signatures Overview Tab ───────────────────────────────────────────────────
+
+const SignaturesOverviewTab = ({ companyId, userId }: { companyId: string; userId: string }) => {
+  const [requests, setRequests] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState<'all' | 'pending' | 'signed' | 'declined' | 'expired'>('all');
+
+  useEffect(() => {
+    if (!companyId) return;
+    loadRequests();
+  }, [companyId]);
+
+  const loadRequests = async () => {
+    setLoading(true);
+    try {
+      const { data } = await supabase
+        .from('signature_requests')
+        .select('*, documents(name, number)')
+        .eq('company_id', companyId)
+        .order('created_at', { ascending: false });
+      setRequests(data ?? []);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const filtered = filter === 'all' ? requests : requests.filter(r => r.status === filter);
+
+  const stats = {
+    all: requests.length,
+    pending: requests.filter(r => r.status === 'pending').length,
+    signed: requests.filter(r => r.status === 'signed').length,
+    declined: requests.filter(r => r.status === 'declined').length,
+    expired: requests.filter(r => r.status === 'expired').length,
+  };
+
+  const STATUS_BADGE: Record<string, string> = {
+    pending: 'bg-yellow-100 text-yellow-700',
+    sent: 'bg-blue-100 text-blue-700',
+    signed: 'bg-green-100 text-green-700',
+    declined: 'bg-red-100 text-red-700',
+    expired: 'bg-slate-100 text-slate-500',
+  };
+
+  const STATUS_LABEL: Record<string, string> = {
+    pending: 'Oczekuje',
+    sent: 'Wysłano',
+    signed: 'Podpisano',
+    declined: 'Odrzucono',
+    expired: 'Wygasło',
+  };
+
+  if (loading) return <Spinner />;
+
+  return (
+    <div className="space-y-4">
+      {/* Stats */}
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        {([['all', 'Wszystkie', 'bg-slate-100 text-slate-700'],
+           ['pending', 'Oczekujące', 'bg-yellow-50 text-yellow-700'],
+           ['signed', 'Podpisane', 'bg-green-50 text-green-700'],
+           ['declined', 'Odrzucone', 'bg-red-50 text-red-700'],
+           ['expired', 'Wygasłe', 'bg-slate-50 text-slate-500']] as const).map(([key, label, color]) => (
+          <button
+            key={key}
+            onClick={() => setFilter(key)}
+            className={`p-3 rounded-lg text-center transition-all ${
+              filter === key ? `${color} ring-2 ring-current shadow-sm` : 'bg-white border border-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            <p className="text-2xl font-bold">{stats[key]}</p>
+            <p className="text-xs font-medium mt-0.5">{label}</p>
+          </button>
+        ))}
+      </div>
+
+      {/* Table */}
+      {filtered.length === 0 ? (
+        <Empty label="Brak zapytań o podpis" />
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-slate-200">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+              <tr>
+                <th className="px-4 py-3 text-left">Dokument</th>
+                <th className="px-4 py-3 text-left">Podpisujący</th>
+                <th className="px-4 py-3 text-left hidden sm:table-cell">Email</th>
+                <th className="px-4 py-3 text-left">Status</th>
+                <th className="px-4 py-3 text-left hidden md:table-cell">Wysłano</th>
+                <th className="px-4 py-3 text-left hidden lg:table-cell">Podpisano</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {filtered.map(r => (
+                <tr key={r.id} className="hover:bg-slate-50 transition-colors">
+                  <td className="px-4 py-3 font-medium text-slate-800 max-w-xs truncate">
+                    {r.documents?.name || '—'}
+                    {r.documents?.number && (
+                      <span className="text-slate-400 font-mono text-xs ml-1">{r.documents.number}</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-slate-700">{r.signer_name || '—'}</td>
+                  <td className="px-4 py-3 text-slate-500 hidden sm:table-cell">{r.signer_email}</td>
+                  <td className="px-4 py-3">
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_BADGE[r.status] || STATUS_BADGE.pending}`}>
+                      {STATUS_LABEL[r.status] || r.status}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-slate-400 hidden md:table-cell">
+                    {new Date(r.created_at).toLocaleDateString('pl-PL')}
+                  </td>
+                  <td className="px-4 py-3 text-slate-400 hidden lg:table-cell">
+                    {r.signed_at ? new Date(r.signed_at).toLocaleDateString('pl-PL') : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ── Settings Tab ─────────────────────────────────────────────────────────────
 
 const DOC_TYPE_LABELS: Record<DocumentTemplateType, string> = {
@@ -1266,7 +1390,7 @@ export const DMSPage: React.FC = () => {
   const companyId = state.currentUser?.company_id ?? '';
   const userId = state.currentUser?.id ?? '';
 
-  const [tab, setTab] = useState<'templates' | 'documents' | 'settings'>('documents');
+  const [tab, setTab] = useState<'templates' | 'documents' | 'settings' | 'signatures'>('documents');
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success'|'error'|'info' } | null>(null);
 
@@ -1393,7 +1517,7 @@ export const DMSPage: React.FC = () => {
 
       {/* Tabs */}
       <div className="flex gap-1 bg-slate-100 p-1 rounded-lg w-full sm:w-fit overflow-x-auto">
-        {([['documents', 'Dokumenty'], ['templates', 'Szablony'], ['settings', 'Ustawienia']] as const).map(([key, label]) => (
+        {([['documents', 'Dokumenty'], ['templates', 'Szablony'], ['signatures', 'Podpisy'], ['settings', 'Ustawienia']] as const).map(([key, label]) => (
           <button key={key} onClick={() => setTab(key)}
             className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
               tab === key ? 'bg-white shadow text-blue-600' : 'text-slate-500 hover:text-slate-700'
@@ -1637,6 +1761,11 @@ export const DMSPage: React.FC = () => {
             </>
           )}
         </div>
+      )}
+
+      {/* ── SIGNATURES TAB ── */}
+      {tab === 'signatures' && (
+        <SignaturesOverviewTab companyId={companyId} userId={userId} />
       )}
 
       {/* ── SETTINGS TAB ── */}
