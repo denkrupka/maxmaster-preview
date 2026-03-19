@@ -61,42 +61,20 @@ const SignatureRequestModal: React.FC<SignatureRequestModalProps> = ({
     setError('');
 
     try {
-      // Create signature request in Supabase
-      const { data, error: insertError } = await supabase
-        .from('signature_requests')
-        .insert({
-          company_id: companyId,
+      // Вызов Edge Function вместо прямого INSERT
+      const { data, error } = await supabase.functions.invoke('send-signature-request', {
+        body: {
           document_id: documentId,
           signer_email: signerEmail.trim(),
           signer_name: signerName.trim() || null,
-          signer_role: role,
           message: message.trim() || null,
+          company_id: companyId,
+          signer_role: role,
           expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
           created_by: userId,
-          status: 'pending',
-        })
-        .select()
-        .single();
-
-      if (insertError) throw insertError;
-
-      // Try to invoke edge function for sending email notification
-      try {
-        await supabase.functions.invoke('send-signature-request', {
-          body: {
-            request_id: data.id,
-            document_name: documentName,
-            signer_email: signerEmail.trim(),
-            signer_name: signerName.trim(),
-            role,
-            message: message.trim(),
-            expires_at: expiresAt,
-          },
-        });
-      } catch {
-        // Edge function might not exist yet — continue silently
-        console.warn('Edge function send-signature-request not available');
-      }
+        },
+      });
+      if (error) throw error;
 
       // Log audit event
       await logDocumentEvent(documentId, 'signature_requested', {
